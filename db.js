@@ -1,110 +1,108 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import 'dotenv/config';
+import { MongoClient } from 'mongodb';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, 'data');
+const uri = process.env.MONGODB_URI;
+const dbName = process.env.MONGODB_DB || 'lunchbuddy';
 
-const ROSTER_PATH = path.join(DATA_DIR, 'roster.json');
-const DAILY_STATE_PATH = path.join(DATA_DIR, 'daily_state.json');
-const HISTORY_PATH = path.join(DATA_DIR, 'history.json');
-const REMINDERS_LOG_PATH = path.join(DATA_DIR, 'reminders_log.json');
-
-// Ensure data directory exists
-async function ensureDir() {
-  try {
-    await fs.mkdir(DATA_DIR, { recursive: true });
-  } catch (err) {
-    if (err.code !== 'EEXIST') throw err;
-  }
+if (!uri) {
+  throw new Error('MONGODB_URI is not set. Add it to your .env file.');
 }
 
-// Atomic file writing
-async function writeJsonAtomic(filePath, data) {
-  await ensureDir();
-  const tempPath = `${filePath}.tmp`;
-  await fs.writeFile(tempPath, JSON.stringify(data, null, 2), 'utf8');
-  await fs.rename(tempPath, filePath);
-}
+const client = new MongoClient(uri);
+let db;
 
-async function readJson(filePath, defaultValue) {
-  await ensureDir();
-  try {
-    const content = await fs.readFile(filePath, 'utf8');
-    return JSON.parse(content);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      await writeJsonAtomic(filePath, defaultValue);
-      return defaultValue;
-    }
-    throw err;
-  }
-}
+// Singleton doc IDs for the two settings-style collections
+const DAILY_STATE_ID = 'current';
+const REMINDERS_LOG_ID = 'log';
 
 export async function initDb() {
-  await ensureDir();
-  
-  // Initialize roster
-  const defaultRoster = [
-    {
-      id: "usr-admin",
-      name: "System Admin",
-      email: "admin@company.com",
-      phone: "",
-      role: "Admin",
-      passcode: "admin123"
-    }
-  ];
-  await readJson(ROSTER_PATH, defaultRoster);
+  await client.connect();
+  db = client.db(dbName);
 
-  // Initialize daily state
-  const defaultDaily = {
-    date: "", // Will be set on first request
-    cutoffTime: "11:30",
-    archiveTime: "14:00",
-    menu: [],
-    menuPublished: false,
-    orders: {} // userId -> { status, itemId, timestamp }
-  };
-  await readJson(DAILY_STATE_PATH, defaultDaily);
+  const rosterCount = await db.collection('roster').countDocuments();
+  if (rosterCount === 0) {
+    await db.collection('roster').insertOne({
+      id: 'usr-admin',
+      name: 'System Admin',
+      email: 'admin@company.com',
+      phone: '',
+      role: 'Admin',
+      passcode: 'admin123'
+    });
+  }
 
-  // Initialize history
-  const defaultHistory = [];
-  await readJson(HISTORY_PATH, defaultHistory);
+  const dailyState = await db.collection('dailyState').findOne({ _id: DAILY_STATE_ID });
+  if (!dailyState) {
+    await db.collection('dailyState').insertOne({
+      _id: DAILY_STATE_ID,
+      date: '',
+      cutoffTime: '11:30',
+      archiveTime: '14:00',
+      menu: [],
+      menuPublished: false,
+      orders: {}
+    });
+  }
 
-  // Initialize reminders log
-  const defaultRemindersLog = [];
-  await readJson(REMINDERS_LOG_PATH, defaultRemindersLog);
+  const remindersLog = await db.collection('remindersLog').findOne({ _id: REMINDERS_LOG_ID });
+  if (!remindersLog) {
+    await db.collection('remindersLog').insertOne({ _id: REMINDERS_LOG_ID, entries: [] });
+  }
 }
 
 export async function getRoster() {
-  return readJson(ROSTER_PATH, []);
+  const docs = await db.collection('roster').find({}).toArray();
+  return docs.map(({ _id, ...rest }) => rest);
 }
 
 export async function saveRoster(roster) {
-  return writeJsonAtomic(ROSTER_PATH, roster);
+  const collection = db.collection('roster');
+  await collection.deleteMany({});
+  if (roster.length > 0) {
+    await collection.insertMany(roster.map((r) => ({ ...r })));
+  }
 }
 
 export async function getDailyState() {
-  return readJson(DAILY_STATE_PATH, {});
+  const doc = await db.collection('dailyState').findOne({ _id: DAILY_STATE_ID });
+  if (!doc) return {};
+  const { _id, ...rest } = doc;
+  return rest;
 }
 
 export async function saveDailyState(state) {
-  return writeJsonAtomic(DAILY_STATE_PATH, state);
+  await db.collection('dailyState').replaceOne(
+    { _id: DAILY_STATE_ID },
+    { _id: DAILY_STATE_ID, ...state },
+    { upsert: true }
+  );
 }
 
 export async function getHistory() {
-  return readJson(HISTORY_PATH, []);
+  const docs = await db.collection('history')
+    .find({})
+    .sort({ _seq: 1 })
+    .toArray();
+  return docs.map(({ _id, _seq, ...rest }) => rest);
 }
 
 export async function saveHistory(history) {
-  return writeJsonAtomic(HISTORY_PATH, history);
+  const collection = db.collection('history');
+  await collection.deleteMany({});
+  if (history.length > 0) {
+    await collection.insertMany(history.map((entry, i) => ({ ...entry, _seq: i })));
+  }
 }
 
 export async function getRemindersLog() {
-  return readJson(REMINDERS_LOG_PATH, []);
+  const doc = await db.collection('remindersLog').findOne({ _id: REMINDERS_LOG_ID });
+  return doc?.entries ?? [];
 }
 
 export async function saveRemindersLog(logs) {
-  return writeJsonAtomic(REMINDERS_LOG_PATH, logs);
+  await db.collection('remindersLog').replaceOne(
+    { _id: REMINDERS_LOG_ID },
+    { _id: REMINDERS_LOG_ID, entries: logs },
+    { upsert: true }
+  );
 }
