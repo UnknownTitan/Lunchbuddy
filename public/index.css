@@ -1317,8 +1317,48 @@ input:checked + .slider:before {
 /* Roster management layouts */
 .roster-manager-layout {
   display: grid;
-  grid-template-columns: 1fr 340px;
+  grid-template-columns: 1fr;
   gap: 1.5rem;
+}
+
+.roster-table-container tbody tr {
+  cursor: pointer;
+}
+.roster-table-container tbody tr:hover {
+  background: var(--overlay-hover);
+}
+
+/* Roster add/edit modal */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 1000;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 420px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.roster-form-danger-actions {
+  justify-content: space-between;
+  border-top: 1px solid var(--card-border);
+  padding-top: 1rem;
+  margin-top: 0.5rem;
 }
 
 .roster-search-box {
@@ -1948,6 +1988,21 @@ input:checked + .slider:before {
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
+}
+
+.cutoff-extend-group {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.cutoff-extend-group .input-sm {
+  width: 6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-sm);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 /* btn-success variant */

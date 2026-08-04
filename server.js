@@ -58,22 +58,34 @@ function getBusinessDateString(archiveTime) {
   return formatDateString(now);
 }
 
-// Helper: Check if orders are locked (manual override OR cutoff time passed)
-function checkCutoff(dailyState) {
-  // Admin can manually lock/unlock regardless of time
-  if (dailyState.isManuallyLocked === true) return true;
-  if (dailyState.isManuallyLocked === false) return false; // explicit open override
-
-  // Fall back to time-based cutoff
-  if (!dailyState.cutoffTime) return false;
+// Helper: The actual cutoff Date/time for the current business date, after
+// adding any extra minutes an admin has granted (see /api/cutoff/extend).
+// Anchoring to dailyState.date (not just the wall-clock hour:minute) matters
+// because a business date can span from archiveTime one calendar day to
+// archiveTime the next — a bare hour:minute comparison would treat a brand
+// new business date as already-past-cutoff for the rest of that calendar day.
+function getEffectiveCutoffDate(dailyState) {
+  const [year, month, day] = dailyState.date.split('-').map(Number);
   const [cutoffHour, cutoffMin] = dailyState.cutoffTime.split(':').map(Number);
-  const now = new Date();
-  const currentHour = now.getHours();
-  const currentMin = now.getMinutes();
+  const cutoffDate = new Date(year, month - 1, day, cutoffHour, cutoffMin, 0, 0);
+  cutoffDate.setMinutes(cutoffDate.getMinutes() + (dailyState.cutoffExtensionMinutes || 0));
+  return cutoffDate;
+}
 
-  if (currentHour > cutoffHour) return true;
-  if (currentHour === cutoffHour && currentMin >= cutoffMin) return true;
-  return false;
+// Helper: Format a Date's time-of-day back to an HH:MM string
+function formatMinutesAsHHMM(date) {
+  const hour = String(date.getHours()).padStart(2, '0');
+  const min = String(date.getMinutes()).padStart(2, '0');
+  return `${hour}:${min}`;
+}
+
+// Helper: Check if orders are locked (manual lock OR effective cutoff time passed)
+function checkCutoff(dailyState) {
+  // Admin can force-lock early regardless of time
+  if (dailyState.isManuallyLocked === true) return true;
+
+  if (!dailyState.cutoffTime || !dailyState.date) return false;
+  return Date.now() >= getEffectiveCutoffDate(dailyState).getTime();
 }
 
 // Helper: Archive daily state to history
@@ -122,6 +134,7 @@ async function handleDailyResetMiddleware(req, res, next) {
       dailyState.date = businessDate;
       dailyState.orders = {};
       dailyState.isManuallyLocked = null; // clear override; revert to time-based
+      dailyState.cutoffExtensionMinutes = 0; // clear any extra time granted yesterday
       // Retain menu, menuPublished, cutoffTime and archiveTime — the menu
       // carries over day to day until an admin changes it
       await saveDailyState(dailyState);
@@ -360,6 +373,16 @@ app.get('/api/daily', async (req, res) => {
     menu: dailyState.menu,
     menuPublished: dailyState.menuPublished,
     cutoffTime: dailyState.cutoffTime,
+    cutoffExtensionMinutes: dailyState.cutoffExtensionMinutes || 0,
+    effectiveCutoffTime: dailyState.cutoffTime
+      ? formatMinutesAsHHMM(getEffectiveCutoffDate(dailyState))
+      : dailyState.cutoffTime,
+    // Full timestamp of the cutoff for *this* business date, so the client
+    // can count down accurately even when the business date isn't the same
+    // as the client's calendar "today" (see getEffectiveCutoffDate).
+    cutoffTimestamp: dailyState.cutoffTime
+      ? getEffectiveCutoffDate(dailyState).toISOString()
+      : null,
     archiveTime: dailyState.archiveTime || DEFAULT_ARCHIVE_TIME,
     isLocked,
     myReminder,
@@ -429,8 +452,30 @@ app.post('/api/cutoff', authMiddleware, requireAdmin, async (req, res) => {
 
   const dailyState = await getDailyState();
   dailyState.cutoffTime = cutoffTime;
+  dailyState.cutoffExtensionMinutes = 0; // setting a new base cutoff clears any prior extension
   await saveDailyState(dailyState);
   res.json({ success: true, cutoffTime: dailyState.cutoffTime });
+});
+
+// Admin: Grant extra minutes past today's cutoff, e.g. once it's already
+// passed and people still need a bit more time. Additive across calls.
+app.post('/api/cutoff/extend', authMiddleware, requireAdmin, async (req, res) => {
+  const { minutes } = req.body;
+  if (!Number.isInteger(minutes) || minutes <= 0) {
+    return res.status(400).json({ error: 'minutes must be a positive whole number.' });
+  }
+
+  const dailyState = await getDailyState();
+  dailyState.cutoffExtensionMinutes = (dailyState.cutoffExtensionMinutes || 0) + minutes;
+  await saveDailyState(dailyState);
+
+  const isLocked = checkCutoff(dailyState);
+  res.json({
+    success: true,
+    cutoffExtensionMinutes: dailyState.cutoffExtensionMinutes,
+    effectiveCutoffTime: formatMinutesAsHHMM(getEffectiveCutoffDate(dailyState)),
+    isLocked
+  });
 });
 
 // Admin: Change daily archive time (when the day's orders get archived and reset for the next business day)
@@ -479,7 +524,9 @@ app.post('/api/order', authMiddleware, async (req, res) => {
 });
 
 // Admin/Abigail: Place or change an order on behalf of a team member who
-// informed a coordinator but couldn't submit it themselves (e.g. past cutoff)
+// informed a coordinator but couldn't submit it themselves. Subject to the
+// same cutoff as self-serve orders — an admin needing more room to add
+// stragglers should grant extra time via /api/cutoff/extend instead.
 app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req, res) => {
   const { userId, itemId } = req.body;
   if (!userId || !itemId) {
@@ -494,6 +541,10 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
 
   const dailyState = await getDailyState();
 
+  if (checkCutoff(dailyState)) {
+    return res.status(400).json({ error: 'The daily cutoff time has passed. Orders are locked.' });
+  }
+
   if (!dailyState.menuPublished) {
     return res.status(400).json({ error: 'Today\'s menu has not been published yet.' });
   }
@@ -502,8 +553,6 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
     return res.status(400).json({ error: 'Dish is not on today\'s menu.' });
   }
 
-  // Deliberately ignores checkCutoff — this exists specifically to let a
-  // coordinator log an order for someone after the cutoff has passed.
   dailyState.orders = dailyState.orders || {};
   dailyState.orders[userId] = {
     itemId,
@@ -541,11 +590,13 @@ app.post('/api/order/clear-all', authMiddleware, requireAdmin, async (req, res) 
   res.json({ success: true });
 });
 
-// Admin: Manually lock or unlock order acceptance for the day
+// Admin: Manually force-lock order acceptance early, or revert to
+// time-based cutoff. To give more time past cutoff, use
+// /api/cutoff/extend instead of force-opening indefinitely.
 app.post('/api/lock', authMiddleware, requireAdmin, async (req, res) => {
-  const { locked } = req.body; // true = force lock, false = force open, null = revert to time-based
-  if (locked !== true && locked !== false && locked !== null) {
-    return res.status(400).json({ error: 'locked must be true, false, or null.' });
+  const { locked } = req.body; // true = force lock, null = revert to time-based
+  if (locked !== true && locked !== null) {
+    return res.status(400).json({ error: 'locked must be true or null.' });
   }
 
   const dailyState = await getDailyState();

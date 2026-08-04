@@ -364,12 +364,15 @@
                     <span class="material-symbols-outlined">lock</span>
                     <span>Lock Now</span>
                   </button>
-                  <button class="btn btn-success btn-icon-text hidden" id="btn-force-open">
-                    <span class="material-symbols-outlined">lock_open</span>
-                    <span>Re-open</span>
-                  </button>
                   <button class="btn btn-secondary btn-sm hidden" id="btn-lock-revert">
                     <span>Reset to Auto</span>
+                  </button>
+                </div>
+                <div class="cutoff-extend-group">
+                  <input type="number" id="admin-extend-minutes" min="1" step="1" placeholder="Minutes" class="input-sm">
+                  <button class="btn btn-success btn-icon-text" id="btn-extend-cutoff">
+                    <span class="material-symbols-outlined">more_time</span>
+                    <span>Add Extra Time</span>
                   </button>
                 </div>
                 <p id="admin-lock-status" class="status-msg-inline"></p>
@@ -425,8 +428,16 @@
                   <span class="material-symbols-outlined">search</span>
                   <input type="text" id="roster-search" placeholder="Search roster...">
                 </div>
+                <button type="button" class="btn btn-secondary btn-icon-text" id="btn-roster-sort" title="Toggle name sort order">
+                  <span class="material-symbols-outlined" id="roster-sort-icon">south</span>
+                  <span id="roster-sort-label">A–Z</span>
+                </button>
+                <button type="button" class="btn btn-primary btn-icon-text" id="btn-add-roster-member">
+                  <span class="material-symbols-outlined">person_add</span>
+                  <span>Add Team Member</span>
+                </button>
               </div>
-              
+
               <div class="roster-table-container">
                 <table class="roster-table" id="roster-table">
                   <thead>
@@ -436,7 +447,6 @@
                       <th>Phone</th>
                       <th>System Role</th>
                       <th>Passcode</th>
-                      <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody id="roster-table-body">
@@ -446,62 +456,80 @@
               </div>
             </div>
 
-            <!-- Roster Form Card -->
-            <div class="panel-card" id="roster-form-card">
-              <div class="card-header">
-                <h2 id="roster-form-title">Add Team Member</h2>
-                <p>Assign contact info and dashboard permissions.</p>
+            <!-- Roster Form Modal -->
+            <div class="modal-overlay hidden" id="roster-modal-overlay">
+              <div class="panel-card modal-card" id="roster-form-card">
+                <div class="card-header modal-header">
+                  <div>
+                    <h2 id="roster-form-title">Add Team Member</h2>
+                    <p>Assign contact info and dashboard permissions.</p>
+                  </div>
+                  <button type="button" class="btn btn-icon" id="btn-roster-modal-close" title="Close">
+                    <span class="material-symbols-outlined">close</span>
+                  </button>
+                </div>
+
+                <form id="roster-form">
+                  <input type="hidden" id="roster-user-id" value="">
+
+                  <div class="form-group">
+                    <label for="roster-name">Full Name</label>
+                    <input type="text" id="roster-name" required placeholder="e.g. Abigail Vance">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="roster-email">Email Address</label>
+                    <input type="email" id="roster-email" placeholder="e.g. abigail@company.com">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="roster-phone">Phone Number (Optional)</label>
+                    <input type="tel" id="roster-phone" placeholder="e.g. +1 555-0199">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="roster-role">System Role</label>
+                    <div class="input-with-icon select-wrapper">
+                      <span class="material-symbols-outlined">manage_accounts</span>
+                      <select id="roster-role" required>
+                        <option value="Team Member">Team Member</option>
+                        <option value="Admin">Admin</option>
+                        <option value="Abigail">Vendor Coordinator (Abigail)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <!-- Passcode (required to log in) -->
+                  <div class="form-group" id="roster-passcode-group">
+                    <div class="label-with-help">
+                      <label for="roster-passcode">Access Passcode</label>
+                      <span class="help-text">For dashboard updates</span>
+                    </div>
+                    <div class="input-with-icon">
+                      <span class="material-symbols-outlined">password</span>
+                      <input type="password" id="roster-passcode" placeholder="4-digit PIN" value="1234">
+                    </div>
+                  </div>
+
+                  <div class="roster-form-actions">
+                    <button type="submit" class="btn btn-primary" id="btn-roster-submit">Save Member</button>
+                    <button type="button" class="btn btn-secondary" id="btn-roster-cancel">Cancel</button>
+                  </div>
+
+                  <div class="roster-form-actions roster-form-danger-actions hidden" id="roster-modal-existing-actions">
+                    <button type="button" class="btn btn-secondary btn-icon-text" id="btn-roster-modal-reset">
+                      <span class="material-symbols-outlined">lock_reset</span>
+                      <span>Reset Passcode</span>
+                    </button>
+                    <button type="button" class="btn btn-danger btn-icon-text" id="btn-roster-modal-delete">
+                      <span class="material-symbols-outlined">delete</span>
+                      <span>Remove Member</span>
+                    </button>
+                  </div>
+
+                  <p id="roster-form-status" class="status-msg-inline"></p>
+                </form>
               </div>
-              
-              <form id="roster-form">
-                <input type="hidden" id="roster-user-id" value="">
-                
-                <div class="form-group">
-                  <label for="roster-name">Full Name</label>
-                  <input type="text" id="roster-name" required placeholder="e.g. Abigail Vance">
-                </div>
-
-                <div class="form-group">
-                  <label for="roster-email">Email Address</label>
-                  <input type="email" id="roster-email" placeholder="e.g. abigail@company.com">
-                </div>
-
-                <div class="form-group">
-                  <label for="roster-phone">Phone Number (Optional)</label>
-                  <input type="tel" id="roster-phone" placeholder="e.g. +1 555-0199">
-                </div>
-
-                <div class="form-group">
-                  <label for="roster-role">System Role</label>
-                  <div class="input-with-icon select-wrapper">
-                    <span class="material-symbols-outlined">manage_accounts</span>
-                    <select id="roster-role" required>
-                      <option value="Team Member">Team Member</option>
-                      <option value="Admin">Admin</option>
-                      <option value="Abigail">Vendor Coordinator (Abigail)</option>
-                    </select>
-                  </div>
-                </div>
-
-                <!-- Passcode (required to log in) -->
-                <div class="form-group" id="roster-passcode-group">
-                  <div class="label-with-help">
-                    <label for="roster-passcode">Access Passcode</label>
-                    <span class="help-text">For dashboard updates</span>
-                  </div>
-                  <div class="input-with-icon">
-                    <span class="material-symbols-outlined">password</span>
-                    <input type="password" id="roster-passcode" placeholder="4-digit PIN" value="1234">
-                  </div>
-                </div>
-
-                <div class="roster-form-actions">
-                  <button type="submit" class="btn btn-primary" id="btn-roster-submit">Save Member</button>
-                  <button type="button" class="btn btn-secondary hidden" id="btn-roster-cancel">Cancel Edit</button>
-                </div>
-                
-                <p id="roster-form-status" class="status-msg-inline"></p>
-              </form>
             </div>
 
             <!-- Bulk Import Card -->

@@ -25,6 +25,14 @@ function toggleTheme() {
 
 initTheme();
 
+// --- Prevent login-screen flash ---
+// Applied immediately on load (before DOMContentLoaded), same as the theme
+// fix above: if a saved session exists, hide the login view right away
+// instead of waiting for initApp()'s async verification to finish.
+if (localStorage.getItem('lunchsync_user')) {
+  document.getElementById('login-view').classList.add('hidden');
+}
+
 // --- Global State ---
 let currentUser = null;
 let currentPasscode = '';
@@ -101,16 +109,21 @@ const btnSaveArchiveTime = document.getElementById('btn-save-archive-time');
 const adminArchiveTimeStatus = document.getElementById('admin-archive-time-status');
 // Lock toggle
 const btnForceLock = document.getElementById('btn-force-lock');
-const btnForceOpen = document.getElementById('btn-force-open');
 const btnLockRevert = document.getElementById('btn-lock-revert');
 const lockIcon = document.getElementById('lock-icon');
 const lockStatusLabel = document.getElementById('lock-status-label');
 const lockStatusDesc = document.getElementById('lock-status-desc');
 const adminLockStatus = document.getElementById('admin-lock-status');
+const adminExtendMinutes = document.getElementById('admin-extend-minutes');
+const btnExtendCutoff = document.getElementById('btn-extend-cutoff');
 
 // Roster Tab
 const rosterTableBody = document.getElementById('roster-table-body');
 const rosterSearch = document.getElementById('roster-search');
+const btnRosterSort = document.getElementById('btn-roster-sort');
+const rosterSortIcon = document.getElementById('roster-sort-icon');
+const rosterSortLabel = document.getElementById('roster-sort-label');
+let rosterSortDirection = 'asc';
 const rosterForm = document.getElementById('roster-form');
 const rosterUserId = document.getElementById('roster-user-id');
 const rosterName = document.getElementById('roster-name');
@@ -123,6 +136,12 @@ const btnRosterSubmit = document.getElementById('btn-roster-submit');
 const btnRosterCancel = document.getElementById('btn-roster-cancel');
 const rosterFormStatus = document.getElementById('roster-form-status');
 const rosterFormTitle = document.getElementById('roster-form-title');
+const btnAddRosterMember = document.getElementById('btn-add-roster-member');
+const rosterModalOverlay = document.getElementById('roster-modal-overlay');
+const btnRosterModalClose = document.getElementById('btn-roster-modal-close');
+const rosterModalExistingActions = document.getElementById('roster-modal-existing-actions');
+const btnRosterModalReset = document.getElementById('btn-roster-modal-reset');
+const btnRosterModalDelete = document.getElementById('btn-roster-modal-delete');
 
 // History Tab
 const historyDatesList = document.getElementById('history-dates-list');
@@ -453,26 +472,25 @@ function dismissReminderBanner() {
 function updateHeaderDisplay() {
   if (!dailyState) return;
   displayDate.textContent = formatDate(dailyState.date);
-  displayCutoff.textContent = formatTime12h(dailyState.cutoffTime);
+  displayCutoff.textContent = formatTime12h(dailyState.effectiveCutoffTime || dailyState.cutoffTime);
 }
 
 // Computes remaining time and updates countdown banner styling/text
 function updateCountdownBanner() {
   if (!dailyState) return;
 
+  // Use the server's cutoffTimestamp (a full datetime anchored to the actual
+  // business date) rather than reconstructing it from HH:MM against the
+  // client's local "today" — the business date can already be tomorrow
+  // relative to the client's calendar day, which would make a same-day
+  // reconstruction wildly wrong (see server.js getEffectiveCutoffDate).
   const now = new Date();
-  const [cutoffHour, cutoffMin] = dailyState.cutoffTime.split(':').map(Number);
-
-  // Calculate remaining time for today's cutoff
-  const targetDate = new Date();
-  targetDate.setHours(cutoffHour, cutoffMin, 0, 0);
-
+  const targetDate = dailyState.cutoffTimestamp ? new Date(dailyState.cutoffTimestamp) : now;
   const diffMs = targetDate - now;
 
   countdownBanner.className = 'countdown-banner';
 
-  // The server's isLocked already accounts for any admin manual override —
-  // it is the source of truth, not the raw clock-vs-cutoff comparison.
+  // The server's isLocked is the source of truth, not the raw clock comparison.
   if (dailyState.isLocked) {
     countdownBanner.classList.add('locked');
     countdownText.innerHTML = dailyState.isManuallyLocked === true
@@ -482,16 +500,7 @@ function updateCountdownBanner() {
     return;
   }
 
-  if (diffMs <= 0) {
-    // Not locked (per the server) despite the clock being past cutoff —
-    // must be a manual open override. Never show a negative countdown.
-    countdownBanner.classList.add('success');
-    countdownText.innerHTML = '<strong>OPEN</strong> — An admin has manually re-opened orders past cutoff.';
-    disableOrderForm(false);
-    return;
-  }
-
-  const totalSecs = Math.floor(diffMs / 1000);
+  const totalSecs = Math.max(0, Math.floor(diffMs / 1000));
   const hrs = Math.floor(totalSecs / 3600);
   const mins = Math.floor((totalSecs % 3600) / 60);
   const secs = totalSecs % 60;
@@ -1043,48 +1052,40 @@ function loadAdminSettings() {
   if (!dailyState) return;
   adminCutoffTime.value = dailyState.cutoffTime;
   adminArchiveTime.value = dailyState.archiveTime;
-  updateLockUI(dailyState.isManuallyLocked, dailyState.isLocked);
+  updateLockUI(dailyState.isManuallyLocked, dailyState.isLocked, dailyState.cutoffExtensionMinutes, dailyState.effectiveCutoffTime);
 }
 
 // Render lock toggle state
-function updateLockUI(isManuallyLocked, isLocked) {
+function updateLockUI(isManuallyLocked, isLocked, cutoffExtensionMinutes, effectiveCutoffTime) {
   // Reset all
   btnForceLock.classList.remove('hidden');
-  btnForceOpen.classList.add('hidden');
   btnLockRevert.classList.add('hidden');
   adminLockStatus.textContent = '';
+
+  const extensionNote = cutoffExtensionMinutes > 0
+    ? ` Extended by ${cutoffExtensionMinutes}m to ${formatTime12h(effectiveCutoffTime)}.`
+    : '';
 
   if (isManuallyLocked === true) {
     // Force-locked by admin
     lockIcon.textContent = 'lock';
     lockIcon.style.color = 'var(--status-not-coming)';
     lockStatusLabel.textContent = 'Orders: Manually Locked';
-    lockStatusDesc.textContent = 'No submissions are accepted. Click Re-open to allow again.';
+    lockStatusDesc.textContent = 'No submissions are accepted. Click Reset to Auto to revert.';
     btnForceLock.classList.add('hidden');
-    btnForceOpen.classList.remove('hidden');
-    btnLockRevert.classList.remove('hidden');
-  } else if (isManuallyLocked === false) {
-    // Force-opened by admin (overrides cutoff time)
-    lockIcon.textContent = 'lock_open';
-    lockIcon.style.color = 'var(--status-in-office)';
-    lockStatusLabel.textContent = 'Orders: Manually Held Open';
-    lockStatusDesc.textContent = 'Override active — orders stay open past cutoff time.';
-    btnForceLock.classList.remove('hidden');
     btnLockRevert.classList.remove('hidden');
   } else if (isLocked) {
     // Auto-locked by cutoff time
     lockIcon.textContent = 'alarm_off';
     lockIcon.style.color = 'var(--status-on-the-way)';
     lockStatusLabel.textContent = 'Orders: Locked by Cutoff';
-    lockStatusDesc.textContent = 'Cutoff time passed. Click Re-open to accept late orders.';
-    btnForceLock.classList.add('hidden');
-    btnForceOpen.classList.remove('hidden');
+    lockStatusDesc.textContent = `Cutoff time passed.${extensionNote || ' Add extra time below to accept late orders.'}`;
   } else {
     // Auto open (no override)
     lockIcon.textContent = 'lock_open';
     lockIcon.style.color = 'var(--text-secondary)';
     lockStatusLabel.textContent = 'Orders: Open';
-    lockStatusDesc.textContent = 'Accepting submissions until cutoff time.';
+    lockStatusDesc.textContent = `Accepting submissions until cutoff time.${extensionNote}`;
   }
 }
 
@@ -1134,15 +1135,39 @@ async function handleForceLock(locked) {
   try {
     const result = await apiCall('/api/lock', 'POST', { locked });
     await fetchDailyState();
-    updateLockUI(result.isManuallyLocked, result.isLocked);
+    updateLockUI(result.isManuallyLocked, result.isLocked, dailyState.cutoffExtensionMinutes, dailyState.effectiveCutoffTime);
     adminLockStatus.className = 'status-msg-inline success';
     adminLockStatus.style.color = 'var(--status-in-office)';
     adminLockStatus.textContent = locked === null
       ? 'Reverted to automatic time-based locking.'
-      : locked ? 'Orders are now locked.' : 'Orders are now open.';
+      : 'Orders are now locked.';
   } catch (err) {
     adminLockStatus.className = 'status-msg-inline error-text';
     adminLockStatus.textContent = err.message || 'Failed to update lock state.';
+  }
+}
+
+async function handleExtendCutoff() {
+  const minutes = parseInt(adminExtendMinutes.value, 10);
+  if (!Number.isInteger(minutes) || minutes <= 0) {
+    adminLockStatus.className = 'status-msg-inline error-text';
+    adminLockStatus.textContent = 'Enter a positive number of minutes.';
+    return;
+  }
+
+  adminLockStatus.className = 'status-msg-inline';
+  adminLockStatus.textContent = 'Updating...';
+  try {
+    const result = await apiCall('/api/cutoff/extend', 'POST', { minutes });
+    await fetchDailyState();
+    updateLockUI(dailyState.isManuallyLocked, result.isLocked, result.cutoffExtensionMinutes, result.effectiveCutoffTime);
+    adminExtendMinutes.value = '';
+    adminLockStatus.className = 'status-msg-inline success';
+    adminLockStatus.style.color = 'var(--status-in-office)';
+    adminLockStatus.textContent = `Cutoff extended by ${minutes}m — now ${formatTime12h(result.effectiveCutoffTime)}.`;
+  } catch (err) {
+    adminLockStatus.className = 'status-msg-inline error-text';
+    adminLockStatus.textContent = err.message || 'Failed to extend cutoff.';
   }
 }
 
@@ -1236,84 +1261,95 @@ function renderRosterTable() {
   rosterTableBody.innerHTML = '';
   
   const searchVal = rosterSearch.value.toLowerCase().trim();
-  const filteredRoster = roster.filter(u => u.name.toLowerCase().includes(searchVal));
+  const filteredRoster = roster
+    .filter(u => u.name.toLowerCase().includes(searchVal))
+    .sort((a, b) => {
+      const cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      return rosterSortDirection === 'asc' ? cmp : -cmp;
+    });
 
   if (filteredRoster.length === 0) {
-    rosterTableBody.innerHTML = '<tr><td colspan="6" class="no-results">No team members found</td></tr>';
+    rosterTableBody.innerHTML = '<tr><td colspan="5" class="no-results">No team members found</td></tr>';
     return;
   }
 
   filteredRoster.forEach(user => {
     const tr = document.createElement('tr');
-    
+
     const roleBadgeClass = user.role === 'Admin' ? 'admin' : user.role === 'Abigail' ? 'abigail' : 'member';
     const roleLabel = user.role === 'Admin' ? 'Admin' : user.role === 'Abigail' ? 'Abigail' : 'Team Member';
-    const displayPass = user.passcode ? '••••' : 'None';
+    const hasPasscode = !!user.passcode;
 
     tr.innerHTML = `
       <td><strong>${escapeHtml(user.name)}</strong></td>
       <td>${escapeHtml(user.email || '—')}</td>
       <td>${escapeHtml(user.phone || '—')}</td>
       <td><span class="table-role-badge ${roleBadgeClass}">${roleLabel}</span></td>
-      <td><code>${displayPass}</code></td>
-      <td class="action-buttons-cell">
-        <button class="btn btn-icon btn-edit" title="Edit Member"><span class="material-symbols-outlined">edit</span></button>
-        <button class="btn btn-icon btn-reset-passcode" title="Reset Passcode"><span class="material-symbols-outlined">lock_reset</span></button>
-        <button class="btn btn-icon btn-logout btn-delete" title="Remove Member"><span class="material-symbols-outlined">delete</span></button>
+      <td>
+        <code class="roster-passcode-value" data-passcode="${escapeHtml(user.passcode || '')}">${hasPasscode ? '••••' : 'None'}</code>
+        ${hasPasscode ? '<button type="button" class="btn btn-icon btn-toggle-passcode" title="Show/Hide Passcode"><span class="material-symbols-outlined">visibility</span></button>' : ''}
       </td>
     `;
 
-    // Edit handler
-    tr.querySelector('.btn-edit').addEventListener('click', () => {
-      populateRosterFormForEdit(user);
-    });
+    // Show/hide passcode handler (must not trigger the row's open-modal click)
+    const toggleBtn = tr.querySelector('.btn-toggle-passcode');
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const codeEl = tr.querySelector('.roster-passcode-value');
+        const icon = toggleBtn.querySelector('.material-symbols-outlined');
+        const revealed = codeEl.textContent !== '••••';
+        codeEl.textContent = revealed ? '••••' : codeEl.dataset.passcode;
+        icon.textContent = revealed ? 'visibility' : 'visibility_off';
+      });
+    }
 
-    // Reset passcode handler
-    tr.querySelector('.btn-reset-passcode').addEventListener('click', () => {
-      resetRosterMemberPasscode(user);
-    });
-
-    // Delete handler
-    tr.querySelector('.btn-delete').addEventListener('click', () => {
-      deleteRosterMember(user);
-    });
+    // Clicking anywhere else on the row opens the member's details in the modal
+    tr.addEventListener('click', () => openRosterModal(user));
 
     rosterTableBody.appendChild(tr);
   });
 }
 
-function populateRosterFormForEdit(user) {
-  rosterFormTitle.textContent = 'Edit Team Member';
-  rosterUserId.value = user.id;
-  rosterName.value = user.name;
-  rosterEmail.value = user.email;
-  rosterPhone.value = user.phone;
-  rosterRole.value = user.role;
-  rosterPasscode.value = user.passcode || '';
-  
-  toggleRosterPasscodeField(user.role);
+let currentRosterModalUser = null;
 
-  btnRosterCancel.classList.remove('hidden');
-  btnRosterSubmit.textContent = 'Update Member';
-  
-  // Scroll form into view for mobile users
-  document.getElementById('roster-form-card').scrollIntoView({ behavior: 'smooth' });
+function openRosterModal(user) {
+  currentRosterModalUser = user || null;
+
+  if (user) {
+    rosterFormTitle.textContent = 'Edit Team Member';
+    rosterUserId.value = user.id;
+    rosterName.value = user.name;
+    rosterEmail.value = user.email;
+    rosterPhone.value = user.phone;
+    rosterRole.value = user.role;
+    rosterPasscode.value = user.passcode || '';
+    btnRosterSubmit.textContent = 'Update Member';
+    rosterModalExistingActions.classList.remove('hidden');
+  } else {
+    rosterFormTitle.textContent = 'Add Team Member';
+    rosterUserId.value = '';
+    rosterName.value = '';
+    rosterEmail.value = '';
+    rosterPhone.value = '';
+    rosterRole.value = 'Team Member';
+    rosterPasscode.value = '1234';
+    btnRosterSubmit.textContent = 'Save Member';
+    rosterModalExistingActions.classList.add('hidden');
+  }
+
+  toggleRosterPasscodeField();
+  rosterFormStatus.textContent = '';
+  rosterModalOverlay.classList.remove('hidden');
+}
+
+function closeRosterModal() {
+  rosterModalOverlay.classList.add('hidden');
+  currentRosterModalUser = null;
 }
 
 function resetRosterForm() {
-  rosterFormTitle.textContent = 'Add Team Member';
-  rosterUserId.value = '';
-  rosterName.value = '';
-  rosterEmail.value = '';
-  rosterPhone.value = '';
-  rosterRole.value = 'Team Member';
-  rosterPasscode.value = '1234';
-  
-  toggleRosterPasscodeField('Team Member');
-  
-  btnRosterCancel.classList.add('hidden');
-  btnRosterSubmit.textContent = 'Save Member';
-  rosterFormStatus.textContent = '';
+  closeRosterModal();
 }
 
 function toggleRosterPasscodeField() {
@@ -1384,10 +1420,7 @@ async function deleteRosterMember(user) {
     await apiCall(`/api/roster/${user.id}`, 'DELETE');
     roster = await apiCall('/api/roster');
     renderRosterTable();
-    
-    if (rosterUserId.value === user.id) {
-      resetRosterForm();
-    }
+    closeRosterModal();
   } catch (err) {
     alert(err.message || 'Failed to remove member.');
   }
@@ -1404,6 +1437,7 @@ async function resetRosterMemberPasscode(user) {
     await apiCall(`/api/roster/${user.id}`, 'PUT', { passcode: DEFAULT_RESET_PASSCODE });
     roster = await apiCall('/api/roster');
     renderRosterTable();
+    closeRosterModal();
     alert(`${user.name}'s passcode has been reset to "${DEFAULT_RESET_PASSCODE}". Share it with them securely.`);
   } catch (err) {
     alert(err.message || 'Failed to reset passcode.');
@@ -1722,16 +1756,33 @@ function setupEventListeners() {
 
   // Manual lock toggle buttons
   btnForceLock.addEventListener('click', () => handleForceLock(true));
-  btnForceOpen.addEventListener('click', () => handleForceLock(false));
   btnLockRevert.addEventListener('click', () => handleForceLock(null));
+  btnExtendCutoff.addEventListener('click', handleExtendCutoff);
 
   // Roster buttons
   rosterSearch.addEventListener('input', renderRosterTable);
+  btnRosterSort.addEventListener('click', () => {
+    rosterSortDirection = rosterSortDirection === 'asc' ? 'desc' : 'asc';
+    rosterSortIcon.textContent = rosterSortDirection === 'asc' ? 'south' : 'north';
+    rosterSortLabel.textContent = rosterSortDirection === 'asc' ? 'A–Z' : 'Z–A';
+    renderRosterTable();
+  });
   rosterRole.addEventListener('change', (e) => {
     toggleRosterPasscodeField(e.target.value);
   });
   rosterForm.addEventListener('submit', handleRosterFormSubmit);
-  btnRosterCancel.addEventListener('click', resetRosterForm);
+  btnRosterCancel.addEventListener('click', closeRosterModal);
+  btnAddRosterMember.addEventListener('click', () => openRosterModal(null));
+  btnRosterModalClose.addEventListener('click', closeRosterModal);
+  rosterModalOverlay.addEventListener('click', (e) => {
+    if (e.target === rosterModalOverlay) closeRosterModal();
+  });
+  btnRosterModalReset.addEventListener('click', () => {
+    if (currentRosterModalUser) resetRosterMemberPasscode(currentRosterModalUser);
+  });
+  btnRosterModalDelete.addEventListener('click', () => {
+    if (currentRosterModalUser) deleteRosterMember(currentRosterModalUser);
+  });
 
   // Bulk import toggle (collapse/expand)
   document.getElementById('bulk-import-toggle').addEventListener('click', () => {
