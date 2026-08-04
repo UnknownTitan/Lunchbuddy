@@ -29,13 +29,13 @@ initTheme();
 // Applied immediately on load (before DOMContentLoaded), same as the theme
 // fix above: if a saved session exists, hide the login view right away
 // instead of waiting for initApp()'s async verification to finish.
-if (localStorage.getItem('lunchsync_user')) {
+if (localStorage.getItem('lunchsync_token')) {
   document.getElementById('login-view').classList.add('hidden');
 }
 
 // --- Global State ---
 let currentUser = null;
-let currentPasscode = '';
+let currentToken = '';
 let roster = [];
 let dailyState = null;
 let selectedLoginUserId = '';
@@ -160,8 +160,8 @@ async function apiCall(url, method = 'GET', body = null) {
   if (currentUser) {
     headers['x-user-id'] = currentUser.id;
   }
-  if (currentPasscode) {
-    headers['x-passcode'] = currentPasscode;
+  if (currentToken) {
+    headers['x-auth-token'] = currentToken;
   }
 
   const config = { method, headers };
@@ -172,6 +172,10 @@ async function apiCall(url, method = 'GET', body = null) {
   const response = await fetch(url, config);
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}));
+    if (response.status === 401 && currentToken) {
+      // Session token expired or was invalidated server-side
+      logout();
+    }
     throw new Error(errData.error || `HTTP error! status: ${response.status}`);
   }
   return response.json();
@@ -215,22 +219,20 @@ async function initApp() {
     console.error('Failed to load roster on startup:', err);
   }
 
-  // Check for saved session in localStorage
-  const savedUser = localStorage.getItem('lunchsync_user');
-  const savedPasscode = localStorage.getItem('lunchsync_passcode');
+  // Check for a saved session token in localStorage
+  const savedToken = localStorage.getItem('lunchsync_token');
 
-  if (savedUser) {
+  if (savedToken) {
     try {
-      currentUser = JSON.parse(savedUser);
-      currentPasscode = savedPasscode || '';
-      
-      // Verify login credentials with server
-      const check = await apiCall('/api/login', 'POST', { userId: currentUser.id, passcode: currentPasscode });
+      currentToken = savedToken;
+
+      // Verify the token is still valid and fetch the current user record
+      const check = await apiCall('/api/me');
       currentUser = check.user;
-      
+
       loginSuccess();
     } catch (err) {
-      console.warn('Saved session invalid, clearing credentials:', err);
+      console.warn('Saved session invalid or expired, clearing credentials:', err);
       logout();
     }
   }
@@ -293,10 +295,9 @@ async function handleLogin() {
   try {
     const result = await apiCall('/api/login', 'POST', { userId: selectedLoginUserId, passcode: pCode });
     currentUser = result.user;
-    currentPasscode = pCode;
+    currentToken = result.token;
 
-    localStorage.setItem('lunchsync_user', JSON.stringify(currentUser));
-    localStorage.setItem('lunchsync_passcode', currentPasscode);
+    localStorage.setItem('lunchsync_token', currentToken);
 
     loginSuccess();
   } catch (err) {
@@ -330,7 +331,7 @@ async function loginSuccess() {
     document.querySelectorAll('.admin-abigail-only.hidden').forEach(el => el.classList.remove('hidden'));
   }
 
-  // Reload roster with full passwords if Admin
+  // Reload roster snapshot now that we're authenticated
   try {
     roster = await apiCall('/api/roster');
   } catch (err) {
@@ -348,7 +349,7 @@ async function loginSuccess() {
 
 function logout() {
   currentUser = null;
-  currentPasscode = '';
+  currentToken = '';
   selectedLoginUserId = '';
   isEditingOrder = false;
   if (pollInterval) {
@@ -356,8 +357,7 @@ function logout() {
     pollInterval = null;
   }
 
-  localStorage.removeItem('lunchsync_user');
-  localStorage.removeItem('lunchsync_passcode');
+  localStorage.removeItem('lunchsync_token');
 
   loginUserSearch.value = '';
   loginPasscode.value = '';
@@ -1278,33 +1278,16 @@ function renderRosterTable() {
 
     const roleBadgeClass = user.role === 'Admin' ? 'admin' : user.role === 'Abigail' ? 'abigail' : 'member';
     const roleLabel = user.role === 'Admin' ? 'Admin' : user.role === 'Abigail' ? 'Abigail' : 'Team Member';
-    const hasPasscode = !!user.passcode;
 
     tr.innerHTML = `
       <td><strong>${escapeHtml(user.name)}</strong></td>
       <td>${escapeHtml(user.email || '—')}</td>
       <td>${escapeHtml(user.phone || '—')}</td>
       <td><span class="table-role-badge ${roleBadgeClass}">${roleLabel}</span></td>
-      <td>
-        <code class="roster-passcode-value" data-passcode="${escapeHtml(user.passcode || '')}">${hasPasscode ? '••••' : 'None'}</code>
-        ${hasPasscode ? '<button type="button" class="btn btn-icon btn-toggle-passcode" title="Show/Hide Passcode"><span class="material-symbols-outlined">visibility</span></button>' : ''}
-      </td>
+      <td>${user.hasPasscode ? '<code>Set</code>' : '<code class="no-passcode">None</code>'}</td>
     `;
 
-    // Show/hide passcode handler (must not trigger the row's open-modal click)
-    const toggleBtn = tr.querySelector('.btn-toggle-passcode');
-    if (toggleBtn) {
-      toggleBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const codeEl = tr.querySelector('.roster-passcode-value');
-        const icon = toggleBtn.querySelector('.material-symbols-outlined');
-        const revealed = codeEl.textContent !== '••••';
-        codeEl.textContent = revealed ? '••••' : codeEl.dataset.passcode;
-        icon.textContent = revealed ? 'visibility' : 'visibility_off';
-      });
-    }
-
-    // Clicking anywhere else on the row opens the member's details in the modal
+    // Clicking the row opens the member's details in the modal
     tr.addEventListener('click', () => openRosterModal(user));
 
     rosterTableBody.appendChild(tr);
@@ -1323,7 +1306,11 @@ function openRosterModal(user) {
     rosterEmail.value = user.email;
     rosterPhone.value = user.phone;
     rosterRole.value = user.role;
-    rosterPasscode.value = user.passcode || '';
+    // Passcodes are hashed server-side and can't be retrieved — leave blank;
+    // a value here only gets sent (and applied) if the admin types a new one.
+    rosterPasscode.value = '';
+    rosterPasscode.placeholder = 'Leave blank to keep current passcode';
+    rosterPasscode.required = false;
     btnRosterSubmit.textContent = 'Update Member';
     rosterModalExistingActions.classList.remove('hidden');
   } else {
@@ -1334,11 +1321,13 @@ function openRosterModal(user) {
     rosterPhone.value = '';
     rosterRole.value = 'Team Member';
     rosterPasscode.value = '1234';
+    rosterPasscode.placeholder = '4-digit PIN';
+    rosterPasscode.required = true;
     btnRosterSubmit.textContent = 'Save Member';
     rosterModalExistingActions.classList.add('hidden');
   }
 
-  toggleRosterPasscodeField();
+  rosterPasscodeGroup.classList.remove('hidden');
   rosterFormStatus.textContent = '';
   rosterModalOverlay.classList.remove('hidden');
 }
@@ -1350,11 +1339,6 @@ function closeRosterModal() {
 
 function resetRosterForm() {
   closeRosterModal();
-}
-
-function toggleRosterPasscodeField() {
-  rosterPasscodeGroup.classList.remove('hidden');
-  rosterPasscode.required = true;
 }
 
 // Roster Form Submit handler
@@ -1376,7 +1360,7 @@ async function handleRosterFormSubmit(e) {
     rosterForm.reportValidity();
     return;
   }
-  if (!passcode) {
+  if (!id && !passcode) {
     rosterFormStatus.className = 'status-msg-inline error-text';
     rosterFormStatus.textContent = 'Access Passcode is required.';
     rosterForm.reportValidity();
@@ -1386,7 +1370,10 @@ async function handleRosterFormSubmit(e) {
   rosterFormStatus.className = 'status-msg-inline';
   rosterFormStatus.textContent = 'Saving...';
 
-  const payload = { name, email, phone, role, passcode };
+  const payload = { name, email, phone, role };
+  // Only include the passcode when the admin actually typed one — on edit,
+  // a blank field means "keep the existing passcode" (it can't be shown).
+  if (passcode) payload.passcode = passcode;
 
   try {
     if (id) {
@@ -1766,9 +1753,6 @@ function setupEventListeners() {
     rosterSortIcon.textContent = rosterSortDirection === 'asc' ? 'south' : 'north';
     rosterSortLabel.textContent = rosterSortDirection === 'asc' ? 'A–Z' : 'Z–A';
     renderRosterTable();
-  });
-  rosterRole.addEventListener('change', (e) => {
-    toggleRosterPasscodeField(e.target.value);
   });
   rosterForm.addEventListener('submit', handleRosterFormSubmit);
   btnRosterCancel.addEventListener('click', closeRosterModal);

@@ -1327,6 +1327,9 @@ input:checked + .slider:before {
 .roster-table-container tbody tr:hover {
   background: var(--overlay-hover);
 }
+.roster-table-container .no-passcode {
+  color: var(--text-muted);
+}
 
 /* Roster add/edit modal */
 .modal-overlay {

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { MongoClient } from 'mongodb';
+import bcrypt from 'bcryptjs';
 
 const uri = process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB || 'lunchbuddy';
@@ -27,7 +28,7 @@ export async function initDb() {
       email: 'admin@company.com',
       phone: '',
       role: 'Admin',
-      passcode: 'admin123'
+      passcodeHash: await bcrypt.hash('admin123', 10)
     });
   }
 

@@ -1,6 +1,10 @@
+import 'dotenv/config';
 import express from 'express';
 import morgan from 'morgan';
 import path from 'path';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import { fileURLToPath } from 'url';
 import {
   initDb,
@@ -15,6 +19,13 @@ import {
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) {
+  throw new Error('SESSION_SECRET is not set. Add it to your .env file.');
+}
+const TOKEN_EXPIRY = '24h';
+const PASSCODE_SALT_ROUNDS = 10;
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -149,31 +160,42 @@ async function handleDailyResetMiddleware(req, res, next) {
 // Apply transition check on all API routes
 app.use('/api', handleDailyResetMiddleware);
 
-// Middleware: Authenticate request & check role permissions
-async function authMiddleware(req, res, next) {
-  const userId = req.headers['x-user-id'];
-  const passcode = req.headers['x-passcode'];
+// Helper: hash a plaintext passcode for storage
+async function hashPasscode(plain) {
+  return bcrypt.hash(plain, PASSCODE_SALT_ROUNDS);
+}
 
-  if (!userId) {
-    return res.status(401).json({ error: 'Authentication required. User ID header missing.' });
+// Helper: issue a short-lived signed session token after a verified login
+function issueToken(user) {
+  return jwt.sign({ userId: user.id }, SESSION_SECRET, { expiresIn: TOKEN_EXPIRY });
+}
+
+// Middleware: Authenticate request via signed session token & attach req.user.
+// The token is only ever issued at /api/login after a verified passcode
+// check, so a valid token is proof of identity for every role — there's no
+// separate per-request passcode check to bypass.
+async function authMiddleware(req, res, next) {
+  const token = req.headers['x-auth-token'];
+
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required. Session token missing.' });
+  }
+
+  let decoded;
+  try {
+    decoded = jwt.verify(token, SESSION_SECRET);
+  } catch (err) {
+    return res.status(401).json({ error: 'Session expired or invalid. Please log in again.' });
   }
 
   const roster = await getRoster();
-  const user = roster.find(u => u.id === userId);
+  const user = roster.find(u => u.id === decoded.userId);
 
   if (!user) {
     return res.status(401).json({ error: 'User not found in roster.' });
   }
 
   req.user = user;
-
-  // Check administrative credentials
-  if (user.role === 'Admin' || user.role === 'Abigail') {
-    if (!passcode || passcode !== user.passcode) {
-      return res.status(403).json({ error: 'Invalid passcode for administrative role.' });
-    }
-  }
-
   next();
 }
 
@@ -196,40 +218,51 @@ function requireAdminOrAbigail(req, res, next) {
 
 // --- Endpoints ---
 
-// Lightweight login verification
-app.post('/api/login', async (req, res) => {
+// Slow down brute-forcing of the (short, numeric-ish) passcode
+const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please wait a few minutes and try again.' }
+});
+
+// Login: verify passcode, issue a signed session token
+app.post('/api/login', loginRateLimiter, async (req, res) => {
   const { userId, passcode } = req.body;
-  if (!userId) {
-    return res.status(400).json({ error: 'User ID is required.' });
+  if (!userId || !passcode) {
+    return res.status(400).json({ error: 'User ID and passcode are required.' });
   }
   const roster = await getRoster();
   const user = roster.find(u => u.id === userId);
   if (!user) {
     return res.status(404).json({ error: 'User not found.' });
   }
-  if (user.passcode !== passcode) {
+  const valid = user.passcodeHash && await bcrypt.compare(passcode, user.passcodeHash);
+  if (!valid) {
     return res.status(401).json({ error: 'Incorrect passcode.' });
   }
-  // Return user without passcode
-  const { passcode: _, ...safeUser } = user;
+  const { passcodeHash: _, ...safeUser } = user;
+  const token = issueToken(user);
+  res.json({ success: true, token, user: safeUser });
+});
+
+// Verify an existing session token and return the current user (used to
+// silently restore a saved session on page load, without re-sending a
+// passcode over the wire).
+app.get('/api/me', authMiddleware, async (req, res) => {
+  const { passcodeHash: _, ...safeUser } = req.user;
   res.json({ success: true, user: safeUser });
 });
 
-// Retrieve team roster (stripped of secrets unless Admin requester is verified)
+// Retrieve team roster (never exposes passcode data, hashed or otherwise)
 app.get('/api/roster', async (req, res) => {
   const roster = await getRoster();
-  const requesterId = req.headers['x-user-id'];
-  const requesterPasscode = req.headers['x-passcode'];
-
-  const requester = roster.find(u => u.id === requesterId);
-  const isAdmin = requester && requester.role === 'Admin' && requester.passcode === requesterPasscode;
-
-  if (isAdmin) {
-    res.json(roster);
-  } else {
-    const safeRoster = roster.map(({ passcode, ...rest }) => rest);
-    res.json(safeRoster);
-  }
+  const safeRoster = roster.map(({ passcode, passcodeHash, ...rest }) => ({
+    ...rest,
+    hasPasscode: !!passcodeHash
+  }));
+  res.json(safeRoster);
 });
 
 // Admin: Add a user
@@ -250,12 +283,13 @@ app.post('/api/roster', authMiddleware, requireAdmin, async (req, res) => {
     email: email || '',
     phone: phone || '',
     role,
-    passcode: passcode || '1234'
+    passcodeHash: await hashPasscode(passcode || '1234')
   };
 
   roster.push(newUser);
   await saveRoster(roster);
-  res.status(201).json(newUser);
+  const { passcodeHash: _, ...safeUser } = newUser;
+  res.status(201).json(safeUser);
 });
 
 // Admin: Edit a user
@@ -284,12 +318,13 @@ app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
     email: email !== undefined ? email : roster[userIndex].email,
     phone: phone !== undefined ? phone : roster[userIndex].phone,
     role: role || roster[userIndex].role,
-    passcode: passcode !== undefined ? passcode : roster[userIndex].passcode
+    passcodeHash: passcode ? await hashPasscode(passcode) : roster[userIndex].passcodeHash
   };
 
   roster[userIndex] = updatedUser;
   await saveRoster(roster);
-  res.json(updatedUser);
+  const { passcodeHash: _, ...safeUser } = updatedUser;
+  res.json(safeUser);
 });
 
 // Admin: Remove a user
@@ -632,7 +667,7 @@ app.post('/api/roster/bulk', authMiddleware, requireAdmin, async (req, res) => {
       email: (m.email || '').trim(),
       phone: (m.phone || '').trim(),
       role,
-      passcode: m.passcode || '1234'
+      passcodeHash: await hashPasscode(m.passcode || '1234')
     };
     roster.push(newUser);
     added.push(newUser);
@@ -645,7 +680,7 @@ app.post('/api/roster/bulk', authMiddleware, requireAdmin, async (req, res) => {
     added: added.length,
     skipped: skipped.length,
     skippedDetails: skipped,
-    members: added
+    members: added.map(({ passcodeHash, ...rest }) => rest)
   });
 });
 
