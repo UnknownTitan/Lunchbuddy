@@ -944,14 +944,14 @@ function loadAdminMenuBuilder() {
     addDishInputRow('', '', '');
   } else {
     dailyState.menu.forEach(item => {
-      addDishInputRow(item.id, item.name, item.description, item.price);
+      addDishInputRow(item.id, item.name, item.description);
     });
   }
 
   adminPublishToggle.checked = dailyState.menuPublished;
 }
 
-function addDishInputRow(id = '', name = '', description = '', price = '') {
+function addDishInputRow(id = '', name = '', description = '') {
   const div = document.createElement('div');
   div.className = 'admin-dish-row';
   div.dataset.id = id;
@@ -959,7 +959,6 @@ function addDishInputRow(id = '', name = '', description = '', price = '') {
   div.innerHTML = `
     <input type="text" class="dish-name-input" placeholder="Dish Name (e.g. Sushi)" value="${escapeHtml(name)}" required>
     <input type="text" class="dish-desc-input" placeholder="Optional description" value="${escapeHtml(description)}">
-    <input type="text" class="dish-price-input" placeholder="Price (e.g. $12.50)" value="${escapeHtml(price)}">
     <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Delete Row">
       <span class="material-symbols-outlined">delete</span>
     </button>
@@ -989,7 +988,6 @@ async function saveAdminMenu() {
     const nameInput = row.querySelector('.dish-name-input');
     const name = nameInput.value.trim();
     const description = row.querySelector('.dish-desc-input').value.trim();
-    const price = row.querySelector('.dish-price-input').value.trim();
 
     if (!name) {
       adminMenuStatus.className = 'status-msg-inline error-text';
@@ -1001,8 +999,7 @@ async function saveAdminMenu() {
     menuItems.push({
       id: row.dataset.id || null, // Keep same ID if editing, else make new
       name,
-      description,
-      price
+      description
     });
   }
 
