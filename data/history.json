@@ -1,0 +1,414 @@
+[
+  {
+    "date": "2026-07-07",
+    "menu": [
+      {
+        "id": "dish-1783440464287-4eve",
+        "name": "Jollof and Chicken",
+        "description": "",
+        "price": ""
+      },
+      {
+        "id": "dish-1783440464287-d383",
+        "name": "Fried Rice",
+        "description": "",
+        "price": ""
+      },
+      {
+        "id": "dish-1783440464287-ujw7",
+        "name": "Waakye",
+        "description": "",
+        "price": ""
+      },
+      {
+        "id": "dish-1783440464287-v2vc",
+        "name": "Banku",
+        "description": "",
+        "price": ""
+      }
+    ],
+    "orders": {
+      "usr-admin": {
+        "status": "on-the-way",
+        "itemId": "dish-1783438555037-wvfj",
+        "timestamp": 1783438555055
+      }
+    },
+    "rosterSnapshot": {
+      "usr-admin": {
+        "name": "System Admin",
+        "role": "Admin",
+        "email": "admin@company.com",
+        "phone": ""
+      },
+      "usr-1783438515553": {
+        "name": "Jane Doe",
+        "role": "Team Member",
+        "email": "jane@company.com",
+        "phone": "555-9876"
+      },
+      "usr-1783438515556": {
+        "name": "Abigail Vance",
+        "role": "Abigail",
+        "email": "abigail@company.com",
+        "phone": "555-1234"
+      }
+    },
+    "archivedAt": "2026-07-07T16:08:06.341Z"
+  },
+  {
+    "date": "2026-08-03",
+    "menu": [
+      {
+        "id": "dish-1785772846469-ooz9",
+        "name": "Plain Rice",
+        "description": "",
+        "price": ""
+      },
+      {
+        "id": "dish-1785772846469-5vge",
+        "name": "Jollof Rice",
+        "description": "",
+        "price": ""
+      },
+      {
+        "id": "dish-1785772846469-vw1k",
+        "name": "Fried Rice",
+        "description": "",
+        "price": ""
+      },
+      {
+        "id": "dish-1785772846469-9dws",
+        "name": "Waakye",
+        "description": "",
+        "price": ""
+      },
+      {
+        "id": "dish-1785772846469-yfo5",
+        "name": "Banku and Okro",
+        "description": "",
+        "price": ""
+      },
+      {
+        "id": "dish-1785772846469-p6ek",
+        "name": "Fufu",
+        "description": "",
+        "price": ""
+      }
+    ],
+    "orders": {
+      "usr-1783438515553": {
+        "status": "in-office",
+        "itemId": "dish-1785772846469-9dws",
+        "timestamp": 1785775242300
+      },
+      "usr-admin": {
+        "itemId": "dish-1785772846469-5vge",
+        "timestamp": 1785776607012
+      }
+    },
+    "rosterSnapshot": {
+      "usr-admin": {
+        "name": "System Admin",
+        "role": "Admin",
+        "email": "admin@company.com",
+        "phone": ""
+      },
+      "usr-1783438515553": {
+        "name": "Jane Doe",
+        "role": "Team Member",
+        "email": "jane@company.com",
+        "phone": "555-9876"
+      },
+      "usr-1783438515556": {
+        "name": "Abigail Vance",
+        "role": "Abigail",
+        "email": "abigail@company.com",
+        "phone": "555-1234"
+      },
+      "usr-1785781014812-0": {
+        "name": "Daniel Adjei",
+        "role": "Team Member",
+        "email": "daniel.adjei@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-1": {
+        "name": "Guston Abagnaduko Azamo",
+        "role": "Team Member",
+        "email": "gaazamo@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-2": {
+        "name": "Edward Kuagbenu",
+        "role": "Team Member",
+        "email": "edward.kuagbenu@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-3": {
+        "name": "Owura kwaku Safo",
+        "role": "Team Member",
+        "email": "osafo@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-4": {
+        "name": "Samuel Gbedy",
+        "role": "Team Member",
+        "email": "samuel.gbedy@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-5": {
+        "name": "Kausara Kpabia",
+        "role": "Team Member",
+        "email": "kkpabia@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-6": {
+        "name": "Frank Ablorh Sowah",
+        "role": "Team Member",
+        "email": "fasowah@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-7": {
+        "name": "Isaac Fiifi Dickson",
+        "role": "Team Member",
+        "email": "idickson.dev@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-8": {
+        "name": "Daniel Mensah",
+        "role": "Team Member",
+        "email": "dmensah.dev@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-9": {
+        "name": "Kelvin Dokodi",
+        "role": "Team Member",
+        "email": "kdokodi@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-10": {
+        "name": "Vincent Adjei",
+        "role": "Team Member",
+        "email": "vincent.adjei@gslaw.edu.gh",
+        "phone": ""
+      },
+      "usr-1785781014812-11": {
+        "name": "Nathan Dzreke",
+        "role": "Team Member",
+        "email": "",
+        "phone": ""
+      },
+      "usr-1785781014812-12": {
+        "name": "Maxwell Amoako Agyapong",
+        "role": "Team Member",
+        "email": "maxwellagyapong@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-13": {
+        "name": "Prince Edinor Ackon",
+        "role": "Team Member",
+        "email": "princeedinor@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-14": {
+        "name": "Gideon Ohene Boateng Nsowah",
+        "role": "Team Member",
+        "email": "gideonohene@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-15": {
+        "name": "Dennis Boateng",
+        "role": "Team Member",
+        "email": "dennisboateng@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-16": {
+        "name": "Prince Akanya",
+        "role": "Team Member",
+        "email": "akanyaprince@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-17": {
+        "name": "Denis Kodjo Gidisu",
+        "role": "Team Member",
+        "email": "denisgidisu@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-18": {
+        "name": "Frank Kojo Dogbe",
+        "role": "Team Member",
+        "email": "frankdogbe@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-19": {
+        "name": "Richmond Nyamekye",
+        "role": "Team Member",
+        "email": "RichmondNyamekye@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-20": {
+        "name": "George Anku-Mensah",
+        "role": "Team Member",
+        "email": "georgeankumensah@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-21": {
+        "name": "Solomon Elorm Dzokoto",
+        "role": "Team Member",
+        "email": "solomondzokoto@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-22": {
+        "name": "Isaac Djardo Kweku",
+        "role": "Team Member",
+        "email": "isaacdjardo@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-23": {
+        "name": "Ali Seidu",
+        "role": "Team Member",
+        "email": "aliseidu@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-24": {
+        "name": "Kalayi Maximillan",
+        "role": "Team Member",
+        "email": "kalayimaximillan@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-25": {
+        "name": "Elvis compson",
+        "role": "Team Member",
+        "email": "elvissompson@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-26": {
+        "name": "Ayim Nelson",
+        "role": "Team Member",
+        "email": "ayimnelson@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-27": {
+        "name": "Manuel Ashong",
+        "role": "Team Member",
+        "email": "manuelkwarteng@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-28": {
+        "name": "AGYAPONG EMMANUEL NANA YEBOAH",
+        "role": "Team Member",
+        "email": "nanayeboah@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-29": {
+        "name": "Samuel Senam Dzotsi",
+        "role": "Team Member",
+        "email": "samuelsenam@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-30": {
+        "name": "Samuel Sarpong Appiah",
+        "role": "Team Member",
+        "email": "samuelsarpong@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-31": {
+        "name": "JOHN KRAH",
+        "role": "Team Member",
+        "email": "johnkrah@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-32": {
+        "name": "Stephen Nii Armah Ayitiah",
+        "role": "Team Member",
+        "email": "stephenayitah@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-33": {
+        "name": "Elisha Mensah",
+        "role": "Team Member",
+        "email": "",
+        "phone": ""
+      },
+      "usr-1785781014812-34": {
+        "name": "Kelvin Nketia",
+        "role": "Team Member",
+        "email": "",
+        "phone": ""
+      },
+      "usr-1785781014812-35": {
+        "name": "Santa Elijah Nunsuuri",
+        "role": "Team Member",
+        "email": "",
+        "phone": ""
+      },
+      "usr-1785781014812-36": {
+        "name": "Wellington Amponsah",
+        "role": "Team Member",
+        "email": "",
+        "phone": ""
+      },
+      "usr-1785781014812-37": {
+        "name": "Rex Degraft Hanson",
+        "role": "Team Member",
+        "email": "rexhanson@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-38": {
+        "name": "Samuel Nnadi",
+        "role": "Team Member",
+        "email": "samuelnnadi@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-39": {
+        "name": "Isaac Apenteng",
+        "role": "Team Member",
+        "email": "issacapenteng@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-40": {
+        "name": "Samuel Owusu-Aboagye",
+        "role": "Team Member",
+        "email": "samuelowusu@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-41": {
+        "name": "George Wiredu Ansong",
+        "role": "Team Member",
+        "email": "georgeansong7@gmail.com",
+        "phone": ""
+      },
+      "usr-1785781014812-42": {
+        "name": "Kwabena Ampem Asare",
+        "role": "Team Member",
+        "email": "devops1kwabs@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-43": {
+        "name": "Nana Mensah Kwafo",
+        "role": "Team Member",
+        "email": "nanamensah@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781014812-44": {
+        "name": "Osumanu Mohammed",
+        "role": "Team Member",
+        "email": "osumanumohammed@rfdgh.com",
+        "phone": ""
+      },
+      "usr-1785781162415": {
+        "name": "Kwame Nkansah",
+        "role": "Team Member",
+        "email": "",
+        "phone": ""
+      },
+      "usr-1785781247369": {
+        "name": "Brasswell Azu",
+        "role": "Team Member",
+        "email": "",
+        "phone": ""
+      }
+    },
+    "archivedAt": "2026-08-03T18:47:18.009Z"
+  }
+]

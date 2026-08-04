@@ -1,0 +1,46 @@
+{
+  "date": "2026-08-04",
+  "cutoffTime": "11:00",
+  "archiveTime": "14:00",
+  "menu": [
+    {
+      "id": "dish-1785772846469-ooz9",
+      "name": "Plain Rice",
+      "description": "",
+      "price": ""
+    },
+    {
+      "id": "dish-1785772846469-5vge",
+      "name": "Jollof Rice",
+      "description": "",
+      "price": ""
+    },
+    {
+      "id": "dish-1785772846469-vw1k",
+      "name": "Fried Rice",
+      "description": "",
+      "price": ""
+    },
+    {
+      "id": "dish-1785772846469-9dws",
+      "name": "Waakye",
+      "description": "",
+      "price": ""
+    },
+    {
+      "id": "dish-1785772846469-yfo5",
+      "name": "Banku and Okro",
+      "description": "",
+      "price": ""
+    },
+    {
+      "id": "dish-1785772846469-p6ek",
+      "name": "Fufu",
+      "description": "",
+      "price": ""
+    }
+  ],
+  "menuPublished": true,
+  "orders": {},
+  "isManuallyLocked": false
+}

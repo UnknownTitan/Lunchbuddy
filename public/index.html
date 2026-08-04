@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lunch Buddy — Daily Office Coordination</title>
+  <!-- Google Fonts: Outfit & Material Symbols -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="index.css">
+</head>
+<body>
+
+  <!-- App Header -->
+  <header class="app-header">
+    <div class="header-logo">
+      <span class="material-symbols-outlined logo-icon">lunch_dining</span>
+      <h1>Lunch Buddy</h1>
+    </div>
+    <div class="header-right">
+      <div class="header-info hidden" id="header-info">
+        <div class="system-time">
+          <span class="material-symbols-outlined">calendar_today</span>
+          <span id="display-date">--/--/----</span>
+        </div>
+        <div class="cutoff-badge" id="header-cutoff-badge">
+          <span class="material-symbols-outlined">schedule</span>
+          <span>Cutoff: <strong id="display-cutoff">--:--</strong></span>
+        </div>
+        <div class="user-profile">
+          <div class="avatar">
+            <span class="material-symbols-outlined">person</span>
+          </div>
+          <div class="user-details">
+            <span class="user-name" id="header-user-name">Guest</span>
+            <span class="user-role" id="header-user-role">Member</span>
+          </div>
+          <button class="btn btn-icon btn-logout" id="btn-logout" title="Log Out">
+            <span class="material-symbols-outlined">logout</span>
+          </button>
+        </div>
+      </div>
+      <button type="button" class="btn btn-icon theme-toggle" id="btn-theme-toggle" title="Toggle light/dark mode">
+        <span class="material-symbols-outlined" id="theme-toggle-icon">dark_mode</span>
+      </button>
+    </div>
+  </header>
+
+  <main class="app-container">
+
+    <!-- LOGIN VIEW -->
+    <section class="view-card login-card" id="login-view">
+      <div class="login-header">
+        <h2>Welcome to Lunch Buddy</h2>
+        <p>Please select your name from the roster to check in today.</p>
+      </div>
+      
+      <div class="form-group search-select-container">
+        <label for="login-user-search">Select Your Name</label>
+        <div class="search-select-input-wrapper">
+          <span class="material-symbols-outlined select-search-icon">search</span>
+          <input type="text" id="login-user-search" placeholder="Type to search your name..." autocomplete="off">
+        </div>
+        <!-- Roster Dropdown -->
+        <div class="search-select-dropdown hidden" id="login-roster-dropdown">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+      <!-- Passcode Field (hidden until a name is selected) -->
+      <div class="form-group hidden" id="login-passcode-group">
+        <div class="label-with-help">
+          <label for="login-passcode">Enter Passcode</label>
+          <span class="help-text">Required to log in</span>
+        </div>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">lock</span>
+          <input type="password" id="login-passcode" placeholder="••••••••" autocomplete="current-password">
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-login">
+        <span>Log In</span>
+        <span class="material-symbols-outlined">login</span>
+      </button>
+
+      <div class="login-footer">
+        <p class="error-text hidden" id="login-error"></p>
+      </div>
+    </section>
+
+    <!-- DASHBOARD VIEW -->
+    <div class="dashboard-layout hidden" id="dashboard-view">
+      
+      <!-- NAVIGATION TABS -->
+      <nav class="nav-sidebar">
+        <button class="nav-tab active" data-target="order-tab">
+          <span class="material-symbols-outlined">restaurant_menu</span>
+          <span>Order Lunch</span>
+        </button>
+        <button class="nav-tab admin-abigail-only hidden" data-target="summary-tab" id="nav-tab-summary">
+          <span class="material-symbols-outlined">bar_chart</span>
+          <span>Live Summary</span>
+        </button>
+        <button class="nav-tab admin-abigail-only hidden" data-target="distribution-tab" id="nav-tab-distribution">
+          <span class="material-symbols-outlined">checklist</span>
+          <span>Distribution</span>
+        </button>
+        <button class="nav-tab admin-only hidden" data-target="admin-tab">
+          <span class="material-symbols-outlined">settings</span>
+          <span>Admin Controls</span>
+        </button>
+        <button class="nav-tab admin-only hidden" data-target="roster-tab">
+          <span class="material-symbols-outlined">group</span>
+          <span>Roster Manager</span>
+        </button>
+        <button class="nav-tab admin-abigail-only hidden" data-target="history-tab">
+          <span class="material-symbols-outlined">history</span>
+          <span>Order History</span>
+        </button>
+        <button class="nav-tab" data-target="my-orders-tab" id="nav-tab-my-orders">
+          <span class="material-symbols-outlined">receipt_long</span>
+          <span>My Orders</span>
+        </button>
+      </nav>
+
+      <!-- VIEW PANELS -->
+      <div class="panel-container">
+
+        <!-- TAB: ORDER LUNCH -->
+        <section class="tab-panel active" id="order-tab">
+          
+          <!-- Countdown Card -->
+          <div class="countdown-banner" id="countdown-banner">
+            <span class="material-symbols-outlined animated-clock">hourglass_empty</span>
+            <span id="countdown-text">Calculating remaining time...</span>
+          </div>
+
+          <!-- Reminder Banner (shown when a coordinator sends a reminder) -->
+          <div class="notification-request-banner reminder-banner hidden" id="reminder-banner">
+            <div class="notif-banner-content">
+              <span class="material-symbols-outlined">notifications_active</span>
+              <span>Reminder: please place your lunch order before the cutoff time.</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-dismiss-reminder">Dismiss</button>
+          </div>
+
+          <!-- Browser Notifications Setup Banner -->
+          <div class="notification-request-banner hidden" id="notification-request-banner">
+            <div class="notif-banner-content">
+              <span class="material-symbols-outlined">notifications_active</span>
+              <span>Enable browser alerts to get notified 15 minutes before the daily cutoff.</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-enable-notifications">Enable Alerts</button>
+          </div>
+
+          <!-- Selection Form Card -->
+          <div class="panel-card hidden" id="order-form-card">
+            <div class="card-header">
+              <h2>Daily Order Check-in</h2>
+              <p>Choose your meal for today. You can edit this until the daily cutoff time.</p>
+            </div>
+
+            <form id="order-form">
+              <!-- Food Menu -->
+              <div class="form-section" id="food-menu-section">
+                <h3>Select Today's Dish</h3>
+                <div class="menu-status-msg" id="menu-status-msg">
+                  Today's menu hasn't been published yet. Check back soon!
+                </div>
+                <div class="menu-grid hidden" id="menu-items-grid">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary" id="btn-submit-order">
+                  <span>Submit Selection</span>
+                  <span class="material-symbols-outlined">send</span>
+                </button>
+                <div id="order-submit-status" class="status-indicator"></div>
+              </div>
+            </form>
+          </div>
+
+          <!-- Current Confirmation Status -->
+          <div class="panel-card confirmation-card hidden" id="confirmation-card">
+            <span class="material-symbols-outlined conf-icon">verified</span>
+            <div class="conf-details">
+              <h4>Your selection has been saved</h4>
+              <p id="confirmation-text">Loading...</p>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-change-order">
+              <span class="material-symbols-outlined">edit</span>
+              <span>Change Selection</span>
+            </button>
+          </div>
+        </section>
+
+        <!-- TAB: LIVE SUMMARY -->
+        <section class="tab-panel" id="summary-tab">
+          <!-- Summary Stats -->
+          <div class="stats-grid">
+            <div class="stat-card">
+              <span class="stat-num" id="stat-total">0</span>
+              <span class="stat-label">Total Roster</span>
+            </div>
+            <div class="stat-card status-in-office">
+              <span class="stat-num" id="stat-ordered">0</span>
+              <span class="stat-label">Ordered</span>
+            </div>
+            <div class="stat-card status-pending">
+              <span class="stat-num" id="stat-pending">0</span>
+              <span class="stat-label">Unconfirmed</span>
+            </div>
+          </div>
+
+          <!-- Export and Actions for Abigail / Admins -->
+          <div class="panel-card actions-card admin-abigail-only hidden">
+            <div class="card-header-compact">
+              <h3>Vendor Coordinator Tools</h3>
+              <p>Format daily summary for WhatsApp or export raw data for spreadsheet input.</p>
+            </div>
+            <div class="action-buttons-row">
+              <button class="btn btn-secondary btn-icon-text" id="btn-copy-whatsapp">
+                <span class="material-symbols-outlined">content_copy</span>
+                <span>Copy for WhatsApp</span>
+              </button>
+              <button class="btn btn-secondary btn-icon-text" id="btn-export-csv">
+                <span class="material-symbols-outlined">download</span>
+                <span>Export as CSV</span>
+              </button>
+              <button class="btn btn-primary btn-icon-text" id="btn-remind-pending">
+                <span class="material-symbols-outlined">notifications_active</span>
+                <span>Remind Pending</span>
+              </button>
+              <span id="export-feedback" class="feedback-toast hidden">Copied!</span>
+            </div>
+          </div>
+
+          <!-- Totals by Dish -->
+          <div class="panel-card">
+            <div class="card-header">
+              <h2>Dish Quantities</h2>
+              <p>Required totals for food vendor order placement.</p>
+            </div>
+            <div class="dish-totals-grid" id="summary-dish-totals">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <!-- Detailed Roster Summary -->
+          <div class="panel-card">
+            <div class="card-header-compact-row">
+              <div>
+                <h2>Roster Breakdown</h2>
+                <p>Who ordered what, grouped by dish.</p>
+              </div>
+              <button type="button" class="btn btn-danger btn-icon-text admin-only hidden" id="btn-clear-orders">
+                <span class="material-symbols-outlined">restart_alt</span>
+                <span>Clear Sheet</span>
+              </button>
+            </div>
+
+            <div class="list-search-wrapper">
+              <span class="material-symbols-outlined">search</span>
+              <input type="text" id="summary-list-search" placeholder="Search people...">
+            </div>
+
+            <div class="roster-breakdown-grid" id="summary-groups">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <!-- Unconfirmed Members -->
+          <div class="panel-card">
+            <div class="card-header">
+              <h2>Unconfirmed</h2>
+              <p id="summary-unconfirmed-count">Team members who haven't placed an order yet.</p>
+            </div>
+
+            <div class="unconfirmed-grid" id="summary-unconfirmed">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB: DISTRIBUTION CHECKLIST -->
+        <section class="tab-panel" id="distribution-tab">
+          <div class="panel-card">
+            <div class="card-header">
+              <h2>Food Distribution Checklist</h2>
+              <p>Tap a name as you hand out their dish to check it off. Grouped by dish, just like the vendor order.</p>
+            </div>
+
+            <div class="list-search-wrapper">
+              <span class="material-symbols-outlined">search</span>
+              <input type="text" id="distribution-search" placeholder="Search people...">
+            </div>
+
+            <div class="roster-breakdown-grid" id="distribution-groups">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB: ADMIN CONTROLS -->
+        <section class="tab-panel" id="admin-tab">
+          <div class="admin-grid">
+            
+            <!-- Menu Setup -->
+            <div class="panel-card admin-menu-setup">
+              <div class="card-header">
+                <h2>Today's Menu Builder</h2>
+                <p>Define the dishes team members can select from today.</p>
+              </div>
+              
+              <div id="admin-menu-list" class="admin-menu-items-list">
+                <!-- Dynamic Input list -->
+              </div>
+
+              <button class="btn btn-secondary btn-sm" id="btn-admin-add-dish">
+                <span class="material-symbols-outlined">add</span>
+                <span>Add Dish Option</span>
+              </button>
+
+              <hr class="divider">
+
+              <div class="admin-menu-actions">
+                <button class="btn btn-primary" id="btn-admin-save-menu">
+                  <span class="material-symbols-outlined">save</span>
+                  <span>Save Menu Layout</span>
+                </button>
+                <div class="menu-publish-toggle-wrapper">
+                  <label class="switch">
+                    <input type="checkbox" id="admin-publish-toggle">
+                    <span class="slider round"></span>
+                  </label>
+                  <span>Publish Menu to Roster</span>
+                </div>
+              </div>
+              <p id="admin-menu-status" class="status-msg-inline"></p>
+            </div>
+
+            <!-- Settings / Reset -->
+            <div class="panel-card admin-settings-card">
+              <div class="card-header">
+                <h2>Cutoff & Daily Controls</h2>
+                <p>Manage order locktimes and force archiving for new day cycle.</p>
+              </div>
+
+              <!-- Manual Lock Toggle -->
+              <div class="manual-lock-section">
+                <div class="manual-lock-label">
+                  <span class="material-symbols-outlined" id="lock-icon">lock_open</span>
+                  <div>
+                    <strong id="lock-status-label">Orders: Open</strong>
+                    <p class="help-text" id="lock-status-desc">Accepting submissions until cutoff time.</p>
+                  </div>
+                </div>
+                <div class="lock-toggle-actions">
+                  <button class="btn btn-danger btn-icon-text" id="btn-force-lock">
+                    <span class="material-symbols-outlined">lock</span>
+                    <span>Lock Now</span>
+                  </button>
+                  <button class="btn btn-success btn-icon-text hidden" id="btn-force-open">
+                    <span class="material-symbols-outlined">lock_open</span>
+                    <span>Re-open</span>
+                  </button>
+                  <button class="btn btn-secondary btn-sm hidden" id="btn-lock-revert">
+                    <span>Reset to Auto</span>
+                  </button>
+                </div>
+                <p id="admin-lock-status" class="status-msg-inline"></p>
+              </div>
+
+              <hr class="divider">
+              
+              <div class="form-group">
+                <label for="admin-cutoff-time">Daily Lock Cutoff Time (Local)</label>
+                <div class="input-with-icon-button">
+                  <div class="input-with-icon input-no-margin">
+                    <span class="material-symbols-outlined">alarm</span>
+                    <input type="time" id="admin-cutoff-time" value="11:30" required>
+                  </div>
+                  <button class="btn btn-primary" id="btn-save-cutoff">Save</button>
+                </div>
+                <p id="admin-cutoff-status" class="status-msg-inline"></p>
+              </div>
+
+              <div class="form-group">
+                <div class="label-with-help">
+                  <label for="admin-archive-time">Daily Archive Time (Local)</label>
+                  <span class="help-text">Today's orders are archived and the board resets for the next day at this time.</span>
+                </div>
+                <div class="input-with-icon-button">
+                  <div class="input-with-icon input-no-margin">
+                    <span class="material-symbols-outlined">archive</span>
+                    <input type="time" id="admin-archive-time" value="14:00" required>
+                  </div>
+                  <button class="btn btn-primary" id="btn-save-archive-time">Save</button>
+                </div>
+                <p id="admin-archive-time-status" class="status-msg-inline"></p>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- TAB: ROSTER MANAGER -->
+        <section class="tab-panel" id="roster-tab">
+          
+          <!-- Roster Manager Grid -->
+          <div class="roster-manager-layout">
+            
+            <!-- Roster Roster Card -->
+            <div class="panel-card">
+              <div class="card-header-compact-row">
+                <div>
+                  <h2>Roster Directory</h2>
+                  <p>Add, edit, or remove company team members.</p>
+                </div>
+                <div class="roster-search-box">
+                  <span class="material-symbols-outlined">search</span>
+                  <input type="text" id="roster-search" placeholder="Search roster...">
+                </div>
+              </div>
+              
+              <div class="roster-table-container">
+                <table class="roster-table" id="roster-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Email</th>
+                      <th>Phone</th>
+                      <th>System Role</th>
+                      <th>Passcode</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="roster-table-body">
+                    <!-- Populated by JS -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Roster Form Card -->
+            <div class="panel-card" id="roster-form-card">
+              <div class="card-header">
+                <h2 id="roster-form-title">Add Team Member</h2>
+                <p>Assign contact info and dashboard permissions.</p>
+              </div>
+              
+              <form id="roster-form">
+                <input type="hidden" id="roster-user-id" value="">
+                
+                <div class="form-group">
+                  <label for="roster-name">Full Name</label>
+                  <input type="text" id="roster-name" required placeholder="e.g. Abigail Vance">
+                </div>
+
+                <div class="form-group">
+                  <label for="roster-email">Email Address</label>
+                  <input type="email" id="roster-email" placeholder="e.g. abigail@company.com">
+                </div>
+
+                <div class="form-group">
+                  <label for="roster-phone">Phone Number (Optional)</label>
+                  <input type="tel" id="roster-phone" placeholder="e.g. +1 555-0199">
+                </div>
+
+                <div class="form-group">
+                  <label for="roster-role">System Role</label>
+                  <div class="input-with-icon select-wrapper">
+                    <span class="material-symbols-outlined">manage_accounts</span>
+                    <select id="roster-role" required>
+                      <option value="Team Member">Team Member</option>
+                      <option value="Admin">Admin</option>
+                      <option value="Abigail">Vendor Coordinator (Abigail)</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Passcode (required to log in) -->
+                <div class="form-group" id="roster-passcode-group">
+                  <div class="label-with-help">
+                    <label for="roster-passcode">Access Passcode</label>
+                    <span class="help-text">For dashboard updates</span>
+                  </div>
+                  <div class="input-with-icon">
+                    <span class="material-symbols-outlined">password</span>
+                    <input type="password" id="roster-passcode" placeholder="4-digit PIN" value="1234">
+                  </div>
+                </div>
+
+                <div class="roster-form-actions">
+                  <button type="submit" class="btn btn-primary" id="btn-roster-submit">Save Member</button>
+                  <button type="button" class="btn btn-secondary hidden" id="btn-roster-cancel">Cancel Edit</button>
+                </div>
+                
+                <p id="roster-form-status" class="status-msg-inline"></p>
+              </form>
+            </div>
+
+            <!-- Bulk Import Card -->
+            <div class="panel-card bulk-import-card">
+              <div class="bulk-import-header" id="bulk-import-toggle">
+                <div>
+                  <h2>Bulk Import Members</h2>
+                  <p>Paste a list of names to add the whole team at once.</p>
+                </div>
+                <span class="material-symbols-outlined bulk-chevron" id="bulk-chevron">expand_more</span>
+              </div>
+
+              <div class="bulk-import-body" id="bulk-import-body">
+                <div class="bulk-format-hint">
+                  <span class="material-symbols-outlined">info</span>
+                  <div>
+                    <strong>Supported formats (one per line):</strong>
+                    <code>Full Name</code>
+                    <code>Full Name, email@company.com</code>
+                    <code>Full Name, email@company.com, +1555123</code>
+                    <code>Full Name, email@company.com, , Admin</code>
+                    <span class="help-text">Columns: Name, Email, Phone, Role (defaults to Team Member)</span>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label for="bulk-import-textarea">Paste Names Below</label>
+                  <textarea
+                    id="bulk-import-textarea"
+                    class="bulk-textarea"
+                    rows="8"
+                    placeholder="Alice Johnson&#10;Bob Smith, bob@company.com&#10;Carol Davis, carol@co.com, +15551234"
+                    spellcheck="false"
+                  ></textarea>
+                </div>
+
+                <div class="bulk-import-actions">
+                  <button class="btn btn-primary btn-icon-text" id="btn-bulk-import">
+                    <span class="material-symbols-outlined">group_add</span>
+                    <span>Import Members</span>
+                  </button>
+                  <button class="btn btn-secondary btn-sm" id="btn-bulk-clear">Clear</button>
+                </div>
+
+                <div id="bulk-import-result" class="bulk-result hidden"></div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- TAB: ORDER HISTORY -->
+        <section class="tab-panel" id="history-tab">
+          <div class="panel-card">
+            <div class="card-header">
+              <h2>Archived Order Records</h2>
+              <p>Review and audit past daily selections and vendor totals.</p>
+            </div>
+          </div>
+
+          <div class="history-container">
+            <!-- Left Sidebar: Dates List -->
+            <div class="history-list panel-card" id="history-dates-list">
+              <!-- Populated by JS -->
+            </div>
+
+            <!-- Right Detail: Date Details -->
+            <div class="history-detail" id="history-detail-panel">
+              <div class="panel-card history-empty-card">
+                <div class="empty-state">
+                  <span class="material-symbols-outlined">inventory_2</span>
+                  <p>Select a date from the list to view its archived orders.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB: MY PAST ORDERS -->
+        <section class="tab-panel" id="my-orders-tab">
+          <div class="panel-card">
+            <div class="card-header">
+              <h2>My Past Orders</h2>
+              <p>A personal log of your daily meal selections.</p>
+            </div>
+            <div id="my-orders-container" class="my-orders-container">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </section>
+
+      </div>
+
+    </div>
+
+  </main>
+
+  <footer class="app-footer">
+    <p>Lunch Buddy App • Design by Antigravity • Connected</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
