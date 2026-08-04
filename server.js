@@ -5,6 +5,7 @@ import path from 'path';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'url';
 import {
   initDb,
@@ -24,8 +25,44 @@ const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET) {
   throw new Error('SESSION_SECRET is not set. Add it to your .env file.');
 }
-const TOKEN_EXPIRY = '24h';
+const TOKEN_EXPIRY = '8h';
 const PASSCODE_SALT_ROUNDS = 10;
+const LOGIN_MAX_FAILED_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+
+// Endpoints reachable even while a user is blocked pending a passcode change
+const PASSCODE_CHANGE_EXEMPT_PATHS = new Set(['/api/change-passcode', '/api/me']);
+
+// A small, deliberately-not-exhaustive blocklist of passcodes that defeat
+// the point of requiring one. Length + this list catch the common failures
+// without pretending to be a real password-strength library.
+const WEAK_PASSCODES = new Set([
+  '12345678', 'password', 'passcode', 'changeme', 'rfdfood', 'pass123', 'admin123'
+]);
+
+function generatePasscode() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous chars (0/O, 1/I/L)
+  return Array.from(crypto.randomBytes(8), b => alphabet[b % alphabet.length]).join('');
+}
+
+function validatePasscode(passcode, user = {}) {
+  if (typeof passcode !== 'string' || passcode.length < 8) {
+    return 'Passcode must be at least 8 characters.';
+  }
+  if (/^\d+$/.test(passcode)) {
+    return 'Passcode cannot be all digits.';
+  }
+  if (WEAK_PASSCODES.has(passcode.toLowerCase())) {
+    return 'Passcode is too common.';
+  }
+  const nameParts = [user.name, (user.email || '').split('@')[0]]
+    .filter(Boolean)
+    .map(s => s.toLowerCase());
+  if (nameParts.some(p => p && passcode.toLowerCase().includes(p))) {
+    return 'Passcode cannot contain your name or email.';
+  }
+  return null;
+}
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -170,6 +207,16 @@ function issueToken(user) {
   return jwt.sign({ userId: user.id }, SESSION_SECRET, { expiresIn: TOKEN_EXPIRY });
 }
 
+// Helper: patch a single roster record by id
+async function updateUser(id, patch) {
+  const roster = await getRoster();
+  const index = roster.findIndex(u => u.id === id);
+  if (index === -1) return null;
+  roster[index] = { ...roster[index], ...patch };
+  await saveRoster(roster);
+  return roster[index];
+}
+
 // Middleware: Authenticate request via signed session token & attach req.user.
 // The token is only ever issued at /api/login after a verified passcode
 // check, so a valid token is proof of identity for every role — there's no
@@ -193,6 +240,25 @@ async function authMiddleware(req, res, next) {
 
   if (!user) {
     return res.status(401).json({ error: 'User not found in roster.' });
+  }
+
+  // Reject tokens issued before the user's most recent passcode change —
+  // otherwise a passcode change/reset wouldn't actually revoke access from
+  // whoever already held a valid token for that account. JWT `iat` only has
+  // second precision, so allow a 1s grace window against the millisecond
+  // `passcodeChangedAt` timestamp to avoid rejecting the very token that
+  // gets reissued in the same instant as the change.
+  if (user.passcodeChangedAt && decoded.iat * 1000 < user.passcodeChangedAt - 1000) {
+    return res.status(401).json({ error: 'Session expired. Please log in again.' });
+  }
+
+  // A leaked/guessed shared or admin-assigned passcode should be able to do
+  // exactly one thing: set a new one. Block everything else until it's changed.
+  if (user.mustChangePasscode && !PASSCODE_CHANGE_EXEMPT_PATHS.has(req.path)) {
+    return res.status(403).json({
+      error: 'You must set a new passcode before continuing.',
+      code: 'PASSCODE_CHANGE_REQUIRED'
+    });
   }
 
   req.user = user;
@@ -221,7 +287,7 @@ function requireAdminOrAbigail(req, res, next) {
 // Slow down brute-forcing of the (short, numeric-ish) passcode
 const loginRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many login attempts. Please wait a few minutes and try again.' }
@@ -238,10 +304,28 @@ app.post('/api/login', loginRateLimiter, async (req, res) => {
   if (!user) {
     return res.status(404).json({ error: 'User not found.' });
   }
+
+  const now = Date.now();
+  if (user.lockedUntil && user.lockedUntil > now) {
+    return res.status(429).json({ error: 'Account temporarily locked due to repeated failed attempts. Try again later.' });
+  }
+
   const valid = user.passcodeHash && await bcrypt.compare(passcode, user.passcodeHash);
   if (!valid) {
+    const fails = (user.failedAttempts || 0) + 1;
+    const patch = { failedAttempts: fails };
+    if (fails >= LOGIN_MAX_FAILED_ATTEMPTS) {
+      patch.lockedUntil = now + LOGIN_LOCKOUT_MS;
+      patch.failedAttempts = 0;
+    }
+    await updateUser(user.id, patch);
     return res.status(401).json({ error: 'Incorrect passcode.' });
   }
+
+  if (user.failedAttempts || user.lockedUntil) {
+    await updateUser(user.id, { failedAttempts: 0, lockedUntil: null });
+  }
+
   const { passcodeHash: _, ...safeUser } = user;
   const token = issueToken(user);
   res.json({ success: true, token, user: safeUser });
@@ -260,8 +344,9 @@ app.get('/api/me', authMiddleware, async (req, res) => {
 // the mandatory first-login change and any later voluntary change.
 app.post('/api/change-passcode', authMiddleware, async (req, res) => {
   const { newPasscode } = req.body;
-  if (!newPasscode || newPasscode.length < 4) {
-    return res.status(400).json({ error: 'New passcode must be at least 4 characters.' });
+  const validationError = validatePasscode(newPasscode, req.user);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
   }
 
   const roster = await getRoster();
@@ -273,16 +358,30 @@ app.post('/api/change-passcode', authMiddleware, async (req, res) => {
   roster[userIndex] = {
     ...roster[userIndex],
     passcodeHash: await hashPasscode(newPasscode),
-    mustChangePasscode: false
+    mustChangePasscode: false,
+    passcodeChangedAt: Date.now()
   };
   await saveRoster(roster);
 
   const { passcodeHash: _, ...safeUser } = roster[userIndex];
-  res.json({ success: true, user: safeUser });
+  // Reissue the token: authMiddleware rejects tokens older than
+  // passcodeChangedAt, which would otherwise invalidate the very request
+  // that just changed it.
+  const token = issueToken(roster[userIndex]);
+  res.json({ success: true, token, user: safeUser });
 });
 
-// Retrieve team roster (never exposes passcode data, hashed or otherwise)
-app.get('/api/roster', async (req, res) => {
+// Public, pre-login: just enough for the login name-picker. No email, phone,
+// role, or passcode status — that's PII/recon value an unauthenticated
+// caller has no reason to see.
+app.get('/api/roster/login-list', async (req, res) => {
+  const roster = await getRoster();
+  res.json(roster.map(u => ({ id: u.id, name: u.name })));
+});
+
+// Retrieve full team roster (never exposes passcode data, hashed or
+// otherwise) — requires a verified session; this is real PII (email, phone).
+app.get('/api/roster', authMiddleware, async (req, res) => {
   const roster = await getRoster();
   const safeRoster = roster.map(({ passcode, passcodeHash, ...rest }) => ({
     ...rest,
@@ -303,13 +402,24 @@ app.post('/api/roster', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'A team member with this name already exists.' });
   }
 
+  // No shared constant default — generate a unique random passcode per
+  // person when the admin doesn't set one explicitly.
+  const initialPasscode = passcode || generatePasscode();
+  if (passcode) {
+    const validationError = validatePasscode(passcode, { name, email });
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+  }
+
   const newUser = {
     id: `usr-${Date.now()}`,
     name,
     email: email || '',
     phone: phone || '',
     role,
-    passcodeHash: await hashPasscode(passcode || '1234'),
+    passcodeHash: await hashPasscode(initialPasscode),
+    passcodeChangedAt: Date.now(),
     // An admin-assigned passcode is known to more than just this person —
     // require them to set their own the first time they log in.
     mustChangePasscode: true
@@ -318,7 +428,9 @@ app.post('/api/roster', authMiddleware, requireAdmin, async (req, res) => {
   roster.push(newUser);
   await saveRoster(roster);
   const { passcodeHash: _, ...safeUser } = newUser;
-  res.status(201).json(safeUser);
+  // Returned once so the admin can share it securely — it can't be
+  // retrieved again after this response.
+  res.status(201).json({ ...safeUser, initialPasscode });
 });
 
 // Admin: Edit a user
@@ -341,6 +453,16 @@ app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Another team member with this name already exists.' });
   }
 
+  if (passcode) {
+    const validationError = validatePasscode(passcode, {
+      name: name || roster[userIndex].name,
+      email: email !== undefined ? email : roster[userIndex].email
+    });
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+  }
+
   const updatedUser = {
     ...roster[userIndex],
     name: name || roster[userIndex].name,
@@ -348,6 +470,7 @@ app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
     phone: phone !== undefined ? phone : roster[userIndex].phone,
     role: role || roster[userIndex].role,
     passcodeHash: passcode ? await hashPasscode(passcode) : roster[userIndex].passcodeHash,
+    passcodeChangedAt: passcode ? Date.now() : roster[userIndex].passcodeChangedAt,
     // Any admin-set passcode (including a reset) is known to the admin too —
     // require the person to set their own before it's trusted as private.
     mustChangePasscode: passcode ? true : roster[userIndex].mustChangePasscode
@@ -357,6 +480,30 @@ app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
   await saveRoster(roster);
   const { passcodeHash: _, ...safeUser } = updatedUser;
   res.json(safeUser);
+});
+
+// Admin: Reset a user's passcode to a fresh random value (shown once)
+app.post('/api/roster/:id/reset-passcode', authMiddleware, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const roster = await getRoster();
+  const userIndex = roster.findIndex(u => u.id === id);
+  if (userIndex === -1) {
+    return res.status(404).json({ error: 'User not found.' });
+  }
+
+  const newPasscode = generatePasscode();
+  roster[userIndex] = {
+    ...roster[userIndex],
+    passcodeHash: await hashPasscode(newPasscode),
+    passcodeChangedAt: Date.now(),
+    mustChangePasscode: true,
+    failedAttempts: 0,
+    lockedUntil: null
+  };
+  await saveRoster(roster);
+
+  const { passcodeHash: _, ...safeUser } = roster[userIndex];
+  res.json({ success: true, user: safeUser, newPasscode });
 });
 
 // Admin: Remove a user
@@ -386,7 +533,7 @@ app.delete('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => 
 });
 
 // Get daily menu, orders, and stats summaries
-app.get('/api/daily', async (req, res) => {
+app.get('/api/daily', authMiddleware, async (req, res) => {
   const dailyState = await getDailyState();
   const roster = await getRoster();
 
@@ -426,10 +573,9 @@ app.get('/api/daily', async (req, res) => {
 
   // Surface the most recent reminder sent to the requesting user today, if any
   let myReminder = null;
-  const requesterId = req.headers['x-user-id'];
-  if (requesterId && dailyState.date) {
+  if (dailyState.date) {
     const logs = await getRemindersLog();
-    const myLogs = logs.filter(l => l.userId === requesterId && l.date === dailyState.date);
+    const myLogs = logs.filter(l => l.userId === req.user.id && l.date === dailyState.date);
     if (myLogs.length > 0) {
       myReminder = myLogs[myLogs.length - 1];
     }
@@ -692,18 +838,25 @@ app.post('/api/roster/bulk', authMiddleware, requireAdmin, async (req, res) => {
     const duplicate = roster.some(u => u.name.toLowerCase() === name.toLowerCase());
     if (duplicate) { skipped.push({ entry: m, reason: `"${name}" already exists` }); continue; }
 
+    if (m.passcode) {
+      const validationError = validatePasscode(m.passcode, { name, email: m.email });
+      if (validationError) { skipped.push({ entry: m, reason: validationError }); continue; }
+    }
+
     const role = m.role || 'Team Member';
+    const initialPasscode = m.passcode || generatePasscode();
     const newUser = {
       id: `usr-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       name,
       email: (m.email || '').trim(),
       phone: (m.phone || '').trim(),
       role,
-      passcodeHash: await hashPasscode(m.passcode || '1234'),
+      passcodeHash: await hashPasscode(initialPasscode),
+      passcodeChangedAt: Date.now(),
       mustChangePasscode: true
     };
     roster.push(newUser);
-    added.push(newUser);
+    added.push({ ...newUser, initialPasscode });
   }
 
   if (added.length > 0) await saveRoster(roster);
@@ -713,6 +866,8 @@ app.post('/api/roster/bulk', authMiddleware, requireAdmin, async (req, res) => {
     added: added.length,
     skipped: skipped.length,
     skippedDetails: skipped,
+    // Each member's one-time initialPasscode is included so the admin can
+    // share it — it can't be retrieved again after this response.
     members: added.map(({ passcodeHash, ...rest }) => rest)
   });
 });

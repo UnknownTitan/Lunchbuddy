@@ -182,6 +182,12 @@ async function apiCall(url, method = 'GET', body = null) {
       // Session token expired or was invalidated server-side
       logout();
     }
+    if (errData.code === 'PASSCODE_CHANGE_REQUIRED' && currentUser) {
+      // Server-side backstop: the UI should already be showing this gate
+      // right after login, but if some other call ever reaches here first,
+      // force it open rather than surfacing a raw 403 elsewhere.
+      showForcePasscodeView();
+    }
     throw new Error(errData.error || `HTTP error! status: ${response.status}`);
   }
   return response.json();
@@ -217,9 +223,10 @@ function formatTime12h(timeStr) {
 // --- App Initialization & Auth ---
 
 async function initApp() {
-  // Fetch initial roster for the login screen
+  // Fetch initial roster for the login screen — the minimal public
+  // id+name list, not the full authenticated roster (no PII pre-login).
   try {
-    roster = await apiCall('/api/roster');
+    roster = await apiCall('/api/roster/login-list');
     populateLoginDropdown(roster);
   } catch (err) {
     console.error('Failed to load roster on startup:', err);
@@ -262,9 +269,10 @@ function populateLoginDropdown(users) {
     const div = document.createElement('div');
     div.className = 'dropdown-item';
     div.dataset.id = user.id;
+    // Role is intentionally not shown here — the pre-login list is the
+    // minimal public endpoint (id + name only), so it isn't available.
     div.innerHTML = `
       <span class="item-name">${escapeHtml(user.name)}</span>
-      <span class="item-role">${escapeHtml(user.role)}</span>
     `;
     div.addEventListener('mousedown', (e) => {
       // Use mousedown to trigger before the search input's blur event hides the dropdown
@@ -337,8 +345,8 @@ async function handleForcePasscodeSubmit() {
   const p1 = newPasscode1.value.trim();
   const p2 = newPasscode2.value.trim();
 
-  if (p1.length < 4) {
-    forcePasscodeError.textContent = 'Passcode must be at least 4 characters.';
+  if (p1.length < 8) {
+    forcePasscodeError.textContent = 'Passcode must be at least 8 characters.';
     forcePasscodeError.classList.remove('hidden');
     return;
   }
@@ -351,6 +359,8 @@ async function handleForcePasscodeSubmit() {
   try {
     const result = await apiCall('/api/change-passcode', 'POST', { newPasscode: p1 });
     currentUser = result.user;
+    currentToken = result.token;
+    localStorage.setItem('lunchsync_token', currentToken);
     forcePasscodeView.classList.add('hidden');
     loginSuccess();
   } catch (err) {
@@ -423,7 +433,7 @@ function logout() {
   loginView.classList.remove('hidden');
 
   // Trigger Roster refetch for general logins
-  apiCall('/api/roster')
+  apiCall('/api/roster/login-list')
     .then(r => {
       roster = r;
       populateLoginDropdown(roster);
@@ -1292,6 +1302,15 @@ async function handleBulkImport() {
       html += `</ul>`;
     }
 
+    if (res.members && res.members.length > 0) {
+      html += `<p class="help-text" style="margin-top:0.75rem;">Each person got a unique temporary passcode — share these securely; they won't be shown again:</p>`;
+      html += `<ul class="bulk-skip-list">`;
+      res.members.forEach(m => {
+        html += `<li><strong>${escapeHtml(m.name)}</strong> — <code>${escapeHtml(m.initialPasscode)}</code></li>`;
+      });
+      html += `</ul>`;
+    }
+
     if (res.added > 0) {
       textarea.value = '';
     }
@@ -1374,9 +1393,12 @@ function openRosterModal(user) {
     rosterEmail.value = '';
     rosterPhone.value = '';
     rosterRole.value = 'Team Member';
-    rosterPasscode.value = '1234';
-    rosterPasscode.placeholder = '4-digit PIN';
-    rosterPasscode.required = true;
+    // Leave blank by default — the server generates a unique random
+    // passcode if none is set, shown once after saving. Admins can still
+    // type a specific one (min 8 chars, not common/all-digits).
+    rosterPasscode.value = '';
+    rosterPasscode.placeholder = 'Leave blank to auto-generate';
+    rosterPasscode.required = false;
     btnRosterSubmit.textContent = 'Save Member';
     rosterModalExistingActions.classList.add('hidden');
   }
@@ -1414,19 +1436,13 @@ async function handleRosterFormSubmit(e) {
     rosterForm.reportValidity();
     return;
   }
-  if (!id && !passcode) {
-    rosterFormStatus.className = 'status-msg-inline error-text';
-    rosterFormStatus.textContent = 'Access Passcode is required.';
-    rosterForm.reportValidity();
-    return;
-  }
-
   rosterFormStatus.className = 'status-msg-inline';
   rosterFormStatus.textContent = 'Saving...';
 
   const payload = { name, email, phone, role };
   // Only include the passcode when the admin actually typed one — on edit,
-  // a blank field means "keep the existing passcode" (it can't be shown).
+  // a blank field means "keep the existing passcode" (it can't be shown);
+  // on add, a blank field means "auto-generate one".
   if (passcode) payload.passcode = passcode;
 
   try {
@@ -1437,9 +1453,12 @@ async function handleRosterFormSubmit(e) {
       rosterFormStatus.textContent = 'Member updated successfully!';
     } else {
       // Add mode
-      await apiCall('/api/roster', 'POST', payload);
+      const created = await apiCall('/api/roster', 'POST', payload);
       rosterFormStatus.style.color = 'var(--status-in-office)';
       rosterFormStatus.textContent = 'Member added successfully!';
+      if (created.initialPasscode) {
+        alert(`${created.name}'s temporary passcode is: ${created.initialPasscode}\n\nShare it with them securely — it won't be shown again. They'll be prompted to set their own on first login.`);
+      }
     }
 
     // Refresh configurations
@@ -1467,19 +1486,17 @@ async function deleteRosterMember(user) {
   }
 }
 
-const DEFAULT_RESET_PASSCODE = 'pass123';
-
 async function resetRosterMemberPasscode(user) {
-  if (!confirm(`Reset ${user.name}'s passcode to the default ("${DEFAULT_RESET_PASSCODE}")?`)) {
+  if (!confirm(`Reset ${user.name}'s passcode to a new random value? They'll be asked to set their own on next login.`)) {
     return;
   }
 
   try {
-    await apiCall(`/api/roster/${user.id}`, 'PUT', { passcode: DEFAULT_RESET_PASSCODE });
+    const result = await apiCall(`/api/roster/${user.id}/reset-passcode`, 'POST');
     roster = await apiCall('/api/roster');
     renderRosterTable();
     closeRosterModal();
-    alert(`${user.name}'s passcode has been reset to "${DEFAULT_RESET_PASSCODE}". Share it with them securely.`);
+    alert(`${user.name}'s new temporary passcode is: ${result.newPasscode}\n\nShare it with them securely — it won't be shown again. They'll be prompted to set their own passcode on next login.`);
   } catch (err) {
     alert(err.message || 'Failed to reset passcode.');
   }
