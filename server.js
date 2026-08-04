@@ -255,6 +255,32 @@ app.get('/api/me', authMiddleware, async (req, res) => {
   res.json({ success: true, user: safeUser });
 });
 
+// Self-service: set a new passcode. A valid session token is proof enough
+// of identity (no need to re-verify the current passcode). Used both for
+// the mandatory first-login change and any later voluntary change.
+app.post('/api/change-passcode', authMiddleware, async (req, res) => {
+  const { newPasscode } = req.body;
+  if (!newPasscode || newPasscode.length < 4) {
+    return res.status(400).json({ error: 'New passcode must be at least 4 characters.' });
+  }
+
+  const roster = await getRoster();
+  const userIndex = roster.findIndex(u => u.id === req.user.id);
+  if (userIndex === -1) {
+    return res.status(404).json({ error: 'User not found.' });
+  }
+
+  roster[userIndex] = {
+    ...roster[userIndex],
+    passcodeHash: await hashPasscode(newPasscode),
+    mustChangePasscode: false
+  };
+  await saveRoster(roster);
+
+  const { passcodeHash: _, ...safeUser } = roster[userIndex];
+  res.json({ success: true, user: safeUser });
+});
+
 // Retrieve team roster (never exposes passcode data, hashed or otherwise)
 app.get('/api/roster', async (req, res) => {
   const roster = await getRoster();
@@ -283,7 +309,10 @@ app.post('/api/roster', authMiddleware, requireAdmin, async (req, res) => {
     email: email || '',
     phone: phone || '',
     role,
-    passcodeHash: await hashPasscode(passcode || '1234')
+    passcodeHash: await hashPasscode(passcode || '1234'),
+    // An admin-assigned passcode is known to more than just this person —
+    // require them to set their own the first time they log in.
+    mustChangePasscode: true
   };
 
   roster.push(newUser);
@@ -318,7 +347,10 @@ app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
     email: email !== undefined ? email : roster[userIndex].email,
     phone: phone !== undefined ? phone : roster[userIndex].phone,
     role: role || roster[userIndex].role,
-    passcodeHash: passcode ? await hashPasscode(passcode) : roster[userIndex].passcodeHash
+    passcodeHash: passcode ? await hashPasscode(passcode) : roster[userIndex].passcodeHash,
+    // Any admin-set passcode (including a reset) is known to the admin too —
+    // require the person to set their own before it's trusted as private.
+    mustChangePasscode: passcode ? true : roster[userIndex].mustChangePasscode
   };
 
   roster[userIndex] = updatedUser;
@@ -667,7 +699,8 @@ app.post('/api/roster/bulk', authMiddleware, requireAdmin, async (req, res) => {
       email: (m.email || '').trim(),
       phone: (m.phone || '').trim(),
       role,
-      passcodeHash: await hashPasscode(m.passcode || '1234')
+      passcodeHash: await hashPasscode(m.passcode || '1234'),
+      mustChangePasscode: true
     };
     roster.push(newUser);
     added.push(newUser);

@@ -60,6 +60,12 @@ const loginPasscode = document.getElementById('login-passcode');
 const btnLogin = document.getElementById('btn-login');
 const loginError = document.getElementById('login-error');
 
+const forcePasscodeView = document.getElementById('force-passcode-view');
+const newPasscode1 = document.getElementById('new-passcode-1');
+const newPasscode2 = document.getElementById('new-passcode-2');
+const btnSubmitNewPasscode = document.getElementById('btn-submit-new-passcode');
+const forcePasscodeError = document.getElementById('force-passcode-error');
+
 const dashboardView = document.getElementById('dashboard-view');
 const navTabs = document.querySelectorAll('.nav-tab');
 const tabPanels = document.querySelectorAll('.tab-panel');
@@ -230,7 +236,11 @@ async function initApp() {
       const check = await apiCall('/api/me');
       currentUser = check.user;
 
-      loginSuccess();
+      if (currentUser.mustChangePasscode) {
+        showForcePasscodeView();
+      } else {
+        loginSuccess();
+      }
     } catch (err) {
       console.warn('Saved session invalid or expired, clearing credentials:', err);
       logout();
@@ -299,10 +309,53 @@ async function handleLogin() {
 
     localStorage.setItem('lunchsync_token', currentToken);
 
-    loginSuccess();
+    if (currentUser.mustChangePasscode) {
+      showForcePasscodeView();
+    } else {
+      loginSuccess();
+    }
   } catch (err) {
     loginError.textContent = err.message || 'Login failed. Please check your passcode.';
     loginError.classList.remove('hidden');
+  }
+}
+
+// Blocks access behind a mandatory "set your own passcode" screen
+function showForcePasscodeView() {
+  loginView.classList.add('hidden');
+  dashboardView.classList.add('hidden');
+  forcePasscodeError.classList.add('hidden');
+  newPasscode1.value = '';
+  newPasscode2.value = '';
+  forcePasscodeView.classList.remove('hidden');
+  newPasscode1.focus();
+}
+
+async function handleForcePasscodeSubmit() {
+  forcePasscodeError.classList.add('hidden');
+
+  const p1 = newPasscode1.value.trim();
+  const p2 = newPasscode2.value.trim();
+
+  if (p1.length < 4) {
+    forcePasscodeError.textContent = 'Passcode must be at least 4 characters.';
+    forcePasscodeError.classList.remove('hidden');
+    return;
+  }
+  if (p1 !== p2) {
+    forcePasscodeError.textContent = 'Passcodes do not match.';
+    forcePasscodeError.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    const result = await apiCall('/api/change-passcode', 'POST', { newPasscode: p1 });
+    currentUser = result.user;
+    forcePasscodeView.classList.add('hidden');
+    loginSuccess();
+  } catch (err) {
+    forcePasscodeError.textContent = err.message || 'Failed to set new passcode.';
+    forcePasscodeError.classList.remove('hidden');
   }
 }
 
@@ -366,6 +419,7 @@ function logout() {
 
   headerInfo.classList.add('hidden');
   dashboardView.classList.add('hidden');
+  forcePasscodeView.classList.add('hidden');
   loginView.classList.remove('hidden');
 
   // Trigger Roster refetch for general logins
@@ -1698,6 +1752,7 @@ function setupEventListeners() {
   });
 
   btnLogin.addEventListener('click', handleLogin);
+  btnSubmitNewPasscode.addEventListener('click', handleForcePasscodeSubmit);
   loginPasscode.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') handleLogin();
   });

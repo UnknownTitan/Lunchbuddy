@@ -90,6 +90,41 @@
       </div>
     </section>
 
+    <!-- FORCE PASSCODE CHANGE VIEW -->
+    <!-- Shown after logging in with a shared/admin-assigned passcode; blocks
+         access until the person sets one only they know. -->
+    <section class="view-card login-card hidden" id="force-passcode-view">
+      <div class="login-header">
+        <h2>Set a Private Passcode</h2>
+        <p>You logged in with a shared passcode. Choose one only you know before continuing.</p>
+      </div>
+
+      <div class="form-group">
+        <label for="new-passcode-1">New Passcode</label>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">lock</span>
+          <input type="password" id="new-passcode-1" placeholder="At least 4 characters" autocomplete="new-password">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="new-passcode-2">Confirm New Passcode</label>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">lock</span>
+          <input type="password" id="new-passcode-2" placeholder="Re-enter your new passcode" autocomplete="new-password">
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-submit-new-passcode">
+        <span>Set Passcode &amp; Continue</span>
+        <span class="material-symbols-outlined">check</span>
+      </button>
+
+      <div class="login-footer">
+        <p class="error-text hidden" id="force-passcode-error"></p>
+      </div>
+    </section>
+
     <!-- DASHBOARD VIEW -->
     <div class="dashboard-layout hidden" id="dashboard-view">
       
