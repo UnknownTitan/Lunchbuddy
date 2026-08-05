@@ -111,6 +111,8 @@ const confirmationCard = document.getElementById('confirmation-card');
 const confirmationText = document.getElementById('confirmation-text');
 const btnChangeOrder = document.getElementById('btn-change-order');
 const btnCancelOrder = document.getElementById('btn-cancel-order');
+const confThumbImg = document.querySelector('.confirmation-card .conf-thumb img');
+const orderHeroArtImg = document.querySelector('.order-hero-art img');
 
 // Live Summary Tab
 const statTotal = document.getElementById('stat-total');
@@ -947,8 +949,13 @@ function renderFoodOrderForm() {
     confirmationText.innerHTML = `Selected dish: <strong>${escapeHtml(userOrder.itemName)}</strong>${noteText}`;
     btnChangeOrder.classList.toggle('hidden', showForm || dailyState.isLocked);
     btnCancelOrder.classList.toggle('hidden', showForm || dailyState.isLocked || userOrder.served);
+
+    const dishImage = getDishImage(userOrder.itemName);
+    if (confThumbImg) confThumbImg.src = dishImage;
+    if (orderHeroArtImg) orderHeroArtImg.src = dishImage;
   } else {
     confirmationCard.classList.add('hidden');
+    if (orderHeroArtImg) orderHeroArtImg.src = DEFAULT_DISH_IMAGE;
   }
 
   if (!showForm) return;
@@ -984,21 +991,28 @@ function renderFoodOrderForm() {
     card.innerHTML = `
       <input type="radio" name="lunch-selection" value="${item.id}" ${isChecked ? 'checked' : ''} required>
       <div class="menu-card-inner">
-        <div class="menu-card-header">
-          <span class="menu-card-title">${escapeHtml(item.name)}</span>
-          ${item.price ? `<span class="menu-card-price">${escapeHtml(item.price)}</span>` : ''}
+        <div class="menu-card-image-wrap">
+          <img src="${getDishImage(item.name)}" class="menu-card-image" alt="" loading="lazy">
         </div>
-        <p class="menu-card-desc">${escapeHtml(item.description)}</p>
+        <div class="menu-card-body">
+          <div class="menu-card-header">
+            <span class="menu-card-title">${escapeHtml(item.name)}</span>
+            ${item.price ? `<span class="menu-card-price">${escapeHtml(item.price)}</span>` : ''}
+          </div>
+          <p class="menu-card-desc">${escapeHtml(item.description)}</p>
+        </div>
       </div>
     `;
     if (isChecked) card.classList.add('selected');
 
-    // Click handler to select and add highlight class
+    // Click handler to select, add highlight class, and preview the dish
+    // photo in the hero panel even before the selection is submitted.
     card.addEventListener('click', () => {
       if (!dailyState.isLocked) {
         orderFormDirty = true;
         document.querySelectorAll('.menu-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
+        if (orderHeroArtImg) orderHeroArtImg.src = getDishImage(item.name);
       }
     });
 
@@ -2478,6 +2492,25 @@ function getInitials(name) {
   const first = parts[0]?.[0] || '';
   const last = parts.length > 1 ? parts[parts.length - 1][0] : '';
   return (first + last).toUpperCase();
+}
+
+// Maps known dish names to a photo. Matched by normalized name so admin-side
+// renaming/casing doesn't break it; anything unrecognized falls back to a
+// generic hero shot rather than showing a broken image.
+const DISH_IMAGES = {
+  'plain rice': 'assets/dishes/plain-rice.webp',
+  'jollof rice': 'assets/dishes/jollof-rice.webp',
+  'fried rice': 'assets/dishes/fried-rice.webp',
+  'waakye': 'assets/dishes/waakye.webp',
+  'banku and okro': 'assets/dishes/banku-okro.webp',
+  'fufu': 'assets/dishes/fufu.webp',
+  'banku and pepper': 'assets/dishes/banku-pepper.webp'
+};
+const DEFAULT_DISH_IMAGE = 'assets/jollof-hero.webp';
+
+function getDishImage(name) {
+  const key = (name || '').trim().toLowerCase();
+  return DISH_IMAGES[key] || DEFAULT_DISH_IMAGE;
 }
 
 function escapeHtml(str) {
