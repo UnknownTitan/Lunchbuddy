@@ -1122,6 +1122,7 @@ app.post('/api/push/subscribe', authMiddleware, async (req, res) => {
   roster[userIndex].pushSubscriptions = [...withoutDupe, subscription];
   await saveRoster(roster);
 
+  console.log(`Push subscription saved for ${roster[userIndex].name} (now ${roster[userIndex].pushSubscriptions.length} device(s)).`);
   res.json({ success: true });
 });
 
@@ -1145,11 +1146,17 @@ app.post('/api/push/unsubscribe', authMiddleware, async (req, res) => {
 // Dead subscriptions (expired/revoked — 404 or 410 from the push service)
 // are dropped so they stop being retried forever.
 async function sendPushToAllUsers(payload) {
-  if (!pushEnabled) return;
+  if (!pushEnabled) {
+    console.warn('sendPushToAllUsers: push is disabled (missing VAPID keys) — nothing sent.');
+    return;
+  }
 
   const roster = await getRoster();
   const body = JSON.stringify(payload);
   let changed = false;
+  let attempted = 0;
+  let sent = 0;
+  let dropped = 0;
 
   for (const user of roster) {
     const subs = user.pushSubscriptions || [];
@@ -1157,20 +1164,25 @@ async function sendPushToAllUsers(payload) {
 
     const survivors = [];
     for (const sub of subs) {
+      attempted++;
       try {
         await webpush.sendNotification(sub, body);
+        sent++;
         survivors.push(sub);
       } catch (err) {
         if (err.statusCode === 404 || err.statusCode === 410) {
           changed = true; // subscription is dead, drop it
+          dropped++;
         } else {
-          console.error(`Push failed for ${user.name}:`, err.message);
+          console.error(`Push failed for ${user.name}:`, err.statusCode, err.message);
           survivors.push(sub); // transient failure — keep it, don't drop on a fluke
         }
       }
     }
     user.pushSubscriptions = survivors;
   }
+
+  console.log(`Push broadcast: ${sent}/${attempted} device(s) sent successfully, ${dropped} dead subscription(s) dropped.`);
 
   if (changed) await saveRoster(roster);
 }
