@@ -2180,6 +2180,68 @@ input:checked + .slider:before {
   .panel-card {
     padding: 1.25rem;
   }
+
+  /* Order Lunch: collapse the hero row (greeting/countdown + food photo)
+     into a single column and shrink the photo instead of letting it
+     squeeze the text into a one-word-per-line column. */
+  .order-hero-row {
+    flex-direction: column;
+  }
+  .order-hero-art {
+    width: 100%;
+    max-width: 220px;
+    margin: 0 auto 1.25rem;
+  }
+  .order-greeting h2 {
+    font-size: 1.9rem;
+  }
+  .greeting-wave {
+    width: 1.9rem;
+    height: 1.9rem;
+  }
+
+  .countdown-banner {
+    flex-wrap: wrap;
+    padding: 1.1rem 1.25rem;
+  }
+  .countdown-banner::after {
+    display: none;
+  }
+  .countdown-line2 strong {
+    font-size: 1.5rem;
+  }
+
+  .confirmation-card {
+    flex-wrap: wrap;
+    padding: 1.5rem;
+  }
+  .confirmation-card .conf-details {
+    flex-basis: 100%;
+    order: 1;
+  }
+  .confirmation-card .conf-thumb {
+    order: 2;
+  }
+  .confirmation-actions {
+    order: 3;
+    flex-basis: 100%;
+    margin-top: 0.5rem;
+  }
+
+  .menu-promo-banner {
+    flex-wrap: wrap;
+    padding: 1.25rem 1.5rem;
+  }
+  .menu-promo-text {
+    flex-basis: 100%;
+    padding-right: 0;
+    order: 1;
+    margin-top: 0.75rem;
+  }
+  .menu-promo-lettuce {
+    display: none;
+  }
+
   .menu-grid {
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   }
@@ -2201,10 +2263,11 @@ input:checked + .slider:before {
     width: 100%;
   }
   .roster-header-actions {
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: stretch;
   }
   .roster-header-actions .btn {
-    flex: 1;
+    width: 100%;
   }
 
   /* Roster Directory table -> stacked cards. Each <td> shows its column

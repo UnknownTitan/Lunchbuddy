@@ -60,6 +60,7 @@ const userProfileDropdown = document.getElementById('user-profile-dropdown');
 const btnLogout = document.getElementById('btn-logout');
 const btnThemeToggle = document.getElementById('btn-theme-toggle');
 const headerRight = document.querySelector('.header-right');
+const notificationBellWrap = document.getElementById('notification-bell-wrap');
 const btnNotificationBell = document.getElementById('btn-notification-bell');
 const notificationBadge = document.getElementById('notification-badge');
 const notificationDropdown = document.getElementById('notification-dropdown');
@@ -471,6 +472,7 @@ async function loginSuccess() {
   loginView.classList.add('hidden');
   dashboardView.classList.remove('hidden');
   headerInfo.classList.remove('hidden');
+  notificationBellWrap.classList.remove('hidden');
   btnMobileMenuToggle.classList.remove('hidden');
 
   headerUserName.textContent = currentUser.name;
@@ -530,6 +532,7 @@ function logout() {
   loginError.classList.add('hidden');
 
   headerInfo.classList.add('hidden');
+  notificationBellWrap.classList.add('hidden');
   btnMobileMenuToggle.classList.add('hidden');
   closeMobileNav();
   dashboardView.classList.add('hidden');
