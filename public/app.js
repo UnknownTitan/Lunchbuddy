@@ -42,6 +42,11 @@ let selectedLoginUserId = '';
 let activeTab = 'order-tab';
 let pollInterval = null;
 let isEditingOrder = false;
+// True once the user has clicked a dish or typed a note that hasn't been
+// submitted yet. The order form re-renders on every ~10s poll; without this,
+// an in-progress selection gets silently wiped out by the next poll landing
+// before the user hits Submit.
+let orderFormDirty = false;
 
 // --- DOM Elements ---
 const headerInfo = document.getElementById('header-info');
@@ -51,6 +56,10 @@ const headerUserName = document.getElementById('header-user-name');
 const headerUserRole = document.getElementById('header-user-role');
 const btnLogout = document.getElementById('btn-logout');
 const btnThemeToggle = document.getElementById('btn-theme-toggle');
+const headerRight = document.querySelector('.header-right');
+const btnMobileMenuToggle = document.getElementById('btn-mobile-menu-toggle');
+const navSidebar = document.getElementById('nav-sidebar');
+const sidebarOverlay = document.getElementById('sidebar-overlay');
 
 const loginView = document.getElementById('login-view');
 const loginUserSearch = document.getElementById('login-user-search');
@@ -80,9 +89,11 @@ const orderForm = document.getElementById('order-form');
 const menuStatusMsg = document.getElementById('menu-status-msg');
 const menuItemsGrid = document.getElementById('menu-items-grid');
 const orderSubmitStatus = document.getElementById('order-submit-status');
+const orderNoteInput = document.getElementById('order-note');
 const confirmationCard = document.getElementById('confirmation-card');
 const confirmationText = document.getElementById('confirmation-text');
 const btnChangeOrder = document.getElementById('btn-change-order');
+const btnCancelOrder = document.getElementById('btn-cancel-order');
 
 // Live Summary Tab
 const statTotal = document.getElementById('stat-total');
@@ -123,6 +134,14 @@ const adminLockStatus = document.getElementById('admin-lock-status');
 const adminExtendMinutes = document.getElementById('admin-extend-minutes');
 const btnExtendCutoff = document.getElementById('btn-extend-cutoff');
 
+// Login Security Settings
+const securityMaxFailedAttempts = document.getElementById('security-max-failed-attempts');
+const securityLockoutMinutes = document.getElementById('security-lockout-minutes');
+const securityRateLimitMax = document.getElementById('security-rate-limit-max');
+const securityRateLimitWindow = document.getElementById('security-rate-limit-window');
+const btnSaveSecuritySettings = document.getElementById('btn-save-security-settings');
+const securitySettingsStatus = document.getElementById('security-settings-status');
+
 // Roster Tab
 const rosterTableBody = document.getElementById('roster-table-body');
 const rosterSearch = document.getElementById('roster-search');
@@ -156,7 +175,71 @@ const historyDetailPanel = document.getElementById('history-detail-panel');
 // My Orders Tab
 const myOrdersContainer = document.getElementById('my-orders-container');
 
+// Generic app modal (replaces window.alert()/confirm())
+const appModalOverlay = document.getElementById('app-modal-overlay');
+const appModalTitle = document.getElementById('app-modal-title');
+const appModalMessage = document.getElementById('app-modal-message');
+const appModalCodeBlock = document.getElementById('app-modal-code-block');
+const appModalCodeText = document.getElementById('app-modal-code-text');
+const appModalCopyBtn = document.getElementById('app-modal-copy-btn');
+const appModalConfirmBtn = document.getElementById('app-modal-confirm-btn');
+const appModalCancelBtn = document.getElementById('app-modal-cancel-btn');
+const appModalOkBtn = document.getElementById('app-modal-ok-btn');
+
 // --- Helper Functions ---
+
+// Core modal renderer. `type` is 'alert' (single OK button) or 'confirm'
+// (Confirm/Cancel, resolves true/false). `code` optionally shows a
+// highlighted, copyable value below the message (e.g. a generated passcode).
+function showAppModal({ title, message, type = 'alert', danger = false, code = null }) {
+  return new Promise((resolve) => {
+    appModalTitle.textContent = title || (type === 'confirm' ? 'Please confirm' : 'Notice');
+    appModalMessage.textContent = message;
+
+    appModalCodeBlock.classList.toggle('hidden', !code);
+    if (code) appModalCodeText.textContent = code;
+
+    const isConfirm = type === 'confirm';
+    appModalConfirmBtn.className = `btn ${danger ? 'btn-danger' : 'btn-primary'}`;
+    appModalConfirmBtn.classList.toggle('hidden', !isConfirm);
+    appModalCancelBtn.classList.toggle('hidden', !isConfirm);
+    appModalOkBtn.classList.toggle('hidden', isConfirm);
+
+    const cleanup = (result) => {
+      appModalOverlay.classList.add('hidden');
+      appModalConfirmBtn.removeEventListener('click', onConfirm);
+      appModalCancelBtn.removeEventListener('click', onCancel);
+      appModalOkBtn.removeEventListener('click', onOk);
+      appModalCopyBtn.removeEventListener('click', onCopy);
+      resolve(result);
+    };
+    const onConfirm = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onOk = () => cleanup(true);
+    const onCopy = () => {
+      navigator.clipboard.writeText(appModalCodeText.textContent).catch(() => {});
+      appModalCopyBtn.querySelector('.material-symbols-outlined').textContent = 'check';
+      setTimeout(() => {
+        appModalCopyBtn.querySelector('.material-symbols-outlined').textContent = 'content_copy';
+      }, 1500);
+    };
+
+    appModalConfirmBtn.addEventListener('click', onConfirm);
+    appModalCancelBtn.addEventListener('click', onCancel);
+    appModalOkBtn.addEventListener('click', onOk);
+    appModalCopyBtn.addEventListener('click', onCopy);
+
+    appModalOverlay.classList.remove('hidden');
+  });
+}
+
+function showAlert(message, opts = {}) {
+  return showAppModal({ message, type: 'alert', ...opts });
+}
+
+function confirmDialog(message, opts = {}) {
+  return showAppModal({ message, type: 'confirm', ...opts });
+}
 
 // Unified API Caller with headers
 async function apiCall(url, method = 'GET', body = null) {
@@ -374,6 +457,7 @@ async function loginSuccess() {
   loginView.classList.add('hidden');
   dashboardView.classList.remove('hidden');
   headerInfo.classList.remove('hidden');
+  btnMobileMenuToggle.classList.remove('hidden');
 
   headerUserName.textContent = currentUser.name;
   headerUserRole.textContent = currentUser.role;
@@ -415,6 +499,7 @@ function logout() {
   currentToken = '';
   selectedLoginUserId = '';
   isEditingOrder = false;
+  orderFormDirty = false;
   if (pollInterval) {
     clearInterval(pollInterval);
     pollInterval = null;
@@ -428,6 +513,8 @@ function logout() {
   loginError.classList.add('hidden');
 
   headerInfo.classList.add('hidden');
+  btnMobileMenuToggle.classList.add('hidden');
+  closeMobileNav();
   dashboardView.classList.add('hidden');
   forcePasscodeView.classList.add('hidden');
   loginView.classList.remove('hidden');
@@ -461,12 +548,56 @@ function switchTab(tabId) {
       panel.classList.remove('active');
     }
   });
+
+  closeMobileNav();
 }
+
+// --- Mobile off-canvas sidebar ---
+// Below the 1024px breakpoint the sidebar becomes a hamburger-triggered
+// drawer. The header's date/cutoff/profile block physically moves into the
+// drawer at that width (it doesn't fit the compact mobile header) and moves
+// back into the header once the viewport is wide enough for the full row.
+const mobileNavQuery = window.matchMedia('(max-width: 1024px)');
+
+function relocateHeaderInfo(isMobile) {
+  if (isMobile) {
+    if (headerInfo.parentElement !== navSidebar) {
+      navSidebar.insertBefore(headerInfo, navSidebar.firstChild);
+    }
+  } else {
+    if (headerInfo.parentElement !== headerRight) {
+      headerRight.insertBefore(headerInfo, btnThemeToggle);
+    }
+    closeMobileNav();
+  }
+}
+
+function openMobileNav() {
+  navSidebar.classList.add('open');
+  sidebarOverlay.classList.remove('hidden');
+}
+
+function closeMobileNav() {
+  navSidebar.classList.remove('open');
+  sidebarOverlay.classList.add('hidden');
+}
+
+function toggleMobileNav() {
+  if (navSidebar.classList.contains('open')) {
+    closeMobileNav();
+  } else {
+    openMobileNav();
+  }
+}
+
+relocateHeaderInfo(mobileNavQuery.matches);
+mobileNavQuery.addEventListener('change', (e) => relocateHeaderInfo(e.matches));
 
 function onTabLoad(tabId) {
   if (tabId === 'admin-tab') {
     loadAdminMenuBuilder();
     loadAdminSettings();
+    loadSecuritySettings();
   } else if (tabId === 'roster-tab') {
     renderRosterTable();
     resetRosterForm();
@@ -617,13 +748,25 @@ function renderFoodOrderForm() {
 
   if (userOrder) {
     confirmationCard.classList.remove('hidden');
-    confirmationText.innerHTML = `Selected dish: <strong>${escapeHtml(userOrder.itemName)}</strong>`;
+    const noteText = userOrder.note
+      ? `<br><span class="text-muted">Note: ${escapeHtml(userOrder.note)}</span>`
+      : '';
+    confirmationText.innerHTML = `Selected dish: <strong>${escapeHtml(userOrder.itemName)}</strong>${noteText}`;
     btnChangeOrder.classList.toggle('hidden', showForm || dailyState.isLocked);
+    btnCancelOrder.classList.toggle('hidden', showForm || dailyState.isLocked || userOrder.served);
   } else {
     confirmationCard.classList.add('hidden');
   }
 
   if (!showForm) return;
+
+  // This form re-renders on every poll (~10s). If the user has already
+  // clicked a dish or started typing a note, treat that as source of truth
+  // instead of clobbering it with the last-saved server state.
+  const preservedSelection = orderFormDirty
+    ? orderForm.querySelector('input[name="lunch-selection"]:checked')?.value
+    : null;
+  orderNoteInput.value = orderFormDirty ? orderNoteInput.value : (userOrder?.note || '');
 
   // Check if menu is published
   if (!dailyState.menuPublished) {
@@ -640,8 +783,10 @@ function renderFoodOrderForm() {
   dailyState.menu.forEach(item => {
     const card = document.createElement('label');
     card.className = 'menu-card';
-    
-    const isChecked = userOrder && userOrder.itemId === item.id;
+
+    const isChecked = preservedSelection
+      ? item.id === preservedSelection
+      : (userOrder && userOrder.itemId === item.id);
 
     card.innerHTML = `
       <input type="radio" name="lunch-selection" value="${item.id}" ${isChecked ? 'checked' : ''} required>
@@ -653,10 +798,12 @@ function renderFoodOrderForm() {
         <p class="menu-card-desc">${escapeHtml(item.description)}</p>
       </div>
     `;
+    if (isChecked) card.classList.add('selected');
 
     // Click handler to select and add highlight class
     card.addEventListener('click', () => {
       if (!dailyState.isLocked) {
+        orderFormDirty = true;
         document.querySelectorAll('.menu-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
       }
@@ -681,16 +828,28 @@ async function handleOrderSubmit(e) {
   }
 
   try {
-    await apiCall('/api/order', 'POST', { itemId: dish });
+    await apiCall('/api/order', 'POST', { itemId: dish, note: orderNoteInput.value.trim() });
     orderSubmitStatus.className = 'status-indicator success';
     orderSubmitStatus.textContent = 'Selection submitted!';
     isEditingOrder = false;
+    orderFormDirty = false;
 
     // Refresh state and UI
     await fetchDailyState();
   } catch (err) {
     orderSubmitStatus.className = 'status-indicator error';
     orderSubmitStatus.textContent = err.message || 'Failed to submit selection.';
+  }
+}
+
+async function handleCancelOrder() {
+  if (!(await confirmDialog('Cancel your lunch order for today?', { danger: true }))) return;
+
+  try {
+    await apiCall('/api/order', 'DELETE');
+    await fetchDailyState();
+  } catch (err) {
+    showAlert(err.message || 'Failed to cancel order.');
   }
 }
 
@@ -761,7 +920,20 @@ function renderDetailedBreakdownList() {
         const assignedTag = member.assignedBy
           ? `<span class="text-muted"> (added by ${escapeHtml(member.assignedBy)})</span>`
           : '';
-        return `<div class="summary-member-row">${escapeHtml(member.name)}${assignedTag}</div>`;
+        const noteRow = member.note
+          ? `<div class="member-row-note">${escapeHtml(member.note)}</div>`
+          : '';
+        return `
+          <div class="summary-member-row">
+            <div class="member-row-main">
+              <span>${escapeHtml(member.name)}${assignedTag}</span>
+              <button type="button" class="btn btn-icon btn-remove-order" data-user-id="${member.userId}" data-user-name="${escapeHtml(member.name)}" title="Remove this order">
+                <span class="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            ${noteRow}
+          </div>
+        `;
       }).join('') || '<div class="no-results">—</div>';
 
       return `
@@ -771,6 +943,12 @@ function renderDetailedBreakdownList() {
         </div>
       `;
     }).join('');
+
+    summaryGroups.querySelectorAll('.btn-remove-order').forEach(btn => {
+      btn.addEventListener('click', () => {
+        removeMemberOrder(btn.dataset.userId, btn.dataset.userName);
+      });
+    });
   }
 
   // Unconfirmed members get their own grid, separate from the dish columns —
@@ -816,7 +994,20 @@ async function assignDishToMember(userId, itemId) {
     showExportFeedback('Order assigned!');
     await fetchDailyState();
   } catch (err) {
-    alert(err.message || 'Failed to assign order.');
+    showAlert(err.message || 'Failed to assign order.');
+  }
+}
+
+// Admin/Abigail: remove a specific person's order (e.g. a mistaken selection)
+async function removeMemberOrder(userId, userName) {
+  if (!(await confirmDialog(`Remove ${userName}'s order? They'll go back to unconfirmed.`, { danger: true }))) return;
+
+  try {
+    await apiCall(`/api/order/${userId}`, 'DELETE');
+    showExportFeedback('Order removed.');
+    await fetchDailyState();
+  } catch (err) {
+    showAlert(err.message || 'Failed to remove order.');
   }
 }
 
@@ -877,7 +1068,7 @@ async function toggleServed(userId, served) {
     await apiCall('/api/order/serve', 'POST', { userId, served });
     await fetchDailyState();
   } catch (err) {
-    alert(err.message || 'Failed to update.');
+    showAlert(err.message || 'Failed to update.');
   }
 }
 
@@ -903,11 +1094,32 @@ function copyWhatsAppSummary() {
   text += `\n*OVERVIEW:*\n`;
   text += `• Ordered: ${dailyState.stats.ordered} of ${dailyState.stats.total}\n`;
 
+  // Per-person breakdown, grouped by dish, including any notes (protein
+  // choice, allergies, etc.) — this is what actually gets forwarded to
+  // the vendor, so notes have to survive the copy.
+  const orderedList = dailyState.orders.ordered || [];
+  if (orderedList.length > 0) {
+    const byDish = new Map();
+    orderedList.forEach(item => {
+      if (!byDish.has(item.itemName)) byDish.set(item.itemName, []);
+      byDish.get(item.itemName).push(item);
+    });
+
+    text += `\n*DETAILS:*\n`;
+    byDish.forEach((members, dishName) => {
+      text += `\n*${dishName}:*\n`;
+      members.forEach(m => {
+        const note = m.note ? ` (${m.note})` : '';
+        text += `- ${m.name}${note}\n`;
+      });
+    });
+  }
+
   navigator.clipboard.writeText(text)
     .then(() => showExportFeedback('Summary copied!'))
     .catch(err => {
       console.error('Failed to copy text:', err);
-      alert('Could not copy automatically. You can copy it manually from the screen.');
+      showAlert('Could not copy automatically. You can copy it manually from the screen.');
     });
 }
 
@@ -920,7 +1132,7 @@ async function remindPendingMembers() {
     return;
   }
 
-  if (!confirm(`Send a reminder to ${dailyState.stats.pending} member(s) who haven't ordered yet?`)) {
+  if (!(await confirmDialog(`Send a reminder to ${dailyState.stats.pending} member(s) who haven't ordered yet?`))) {
     return;
   }
 
@@ -930,7 +1142,7 @@ async function remindPendingMembers() {
     const result = await apiCall('/api/reminders/send', 'POST', { bulk: true });
     showExportFeedback(result.message || 'Reminders sent!');
   } catch (err) {
-    alert(err.message || 'Failed to send reminders.');
+    showAlert(err.message || 'Failed to send reminders.');
   } finally {
     btnRemindPending.disabled = false;
   }
@@ -940,8 +1152,9 @@ async function remindPendingMembers() {
 async function clearAllOrders() {
   if (!dailyState) return;
 
-  const confirmed = confirm(
-    `Clear ALL ${dailyState.stats.ordered} order(s) placed today? This cannot be undone — team members will need to select their dish again.`
+  const confirmed = await confirmDialog(
+    `Clear ALL ${dailyState.stats.ordered} order(s) placed today? This cannot be undone — team members will need to select their dish again.`,
+    { danger: true }
   );
   if (!confirmed) return;
 
@@ -952,7 +1165,7 @@ async function clearAllOrders() {
     showExportFeedback('Sheet cleared!');
     await fetchDailyState();
   } catch (err) {
-    alert(err.message || 'Failed to clear orders.');
+    showAlert(err.message || 'Failed to clear orders.');
   } finally {
     btnClearOrders.disabled = false;
   }
@@ -1117,6 +1330,41 @@ function loadAdminSettings() {
   adminCutoffTime.value = dailyState.cutoffTime;
   adminArchiveTime.value = dailyState.archiveTime;
   updateLockUI(dailyState.isManuallyLocked, dailyState.isLocked, dailyState.cutoffExtensionMinutes, dailyState.effectiveCutoffTime);
+}
+
+async function loadSecuritySettings() {
+  try {
+    const settings = await apiCall('/api/settings/security');
+    securityMaxFailedAttempts.value = settings.loginMaxFailedAttempts;
+    securityLockoutMinutes.value = settings.loginLockoutMinutes;
+    securityRateLimitMax.value = settings.loginRateLimitMax;
+    securityRateLimitWindow.value = settings.loginRateLimitWindowMinutes;
+  } catch (err) {
+    securitySettingsStatus.className = 'status-msg-inline error-text';
+    securitySettingsStatus.textContent = err.message || 'Failed to load login security settings.';
+  }
+}
+
+async function saveSecuritySettings() {
+  securitySettingsStatus.className = 'status-msg-inline';
+  securitySettingsStatus.textContent = 'Saving...';
+
+  const payload = {
+    loginMaxFailedAttempts: parseInt(securityMaxFailedAttempts.value, 10),
+    loginLockoutMinutes: parseInt(securityLockoutMinutes.value, 10),
+    loginRateLimitMax: parseInt(securityRateLimitMax.value, 10),
+    loginRateLimitWindowMinutes: parseInt(securityRateLimitWindow.value, 10)
+  };
+
+  try {
+    await apiCall('/api/settings/security', 'PUT', payload);
+    securitySettingsStatus.className = 'status-msg-inline success';
+    securitySettingsStatus.style.color = 'var(--status-in-office)';
+    securitySettingsStatus.textContent = 'Login security settings updated!';
+  } catch (err) {
+    securitySettingsStatus.className = 'status-msg-inline error-text';
+    securitySettingsStatus.textContent = err.message || 'Failed to save login security settings.';
+  }
 }
 
 // Render lock toggle state
@@ -1353,11 +1601,11 @@ function renderRosterTable() {
     const roleLabel = user.role === 'Admin' ? 'Admin' : user.role === 'Abigail' ? 'Abigail' : 'Team Member';
 
     tr.innerHTML = `
-      <td><strong>${escapeHtml(user.name)}</strong></td>
-      <td>${escapeHtml(user.email || '—')}</td>
-      <td>${escapeHtml(user.phone || '—')}</td>
-      <td><span class="table-role-badge ${roleBadgeClass}">${roleLabel}</span></td>
-      <td>${user.hasPasscode ? '<code>Set</code>' : '<code class="no-passcode">None</code>'}</td>
+      <td data-label="Name"><strong>${escapeHtml(user.name)}</strong></td>
+      <td data-label="Email">${escapeHtml(user.email || '—')}</td>
+      <td data-label="Phone">${escapeHtml(user.phone || '—')}</td>
+      <td data-label="System Role"><span class="table-role-badge ${roleBadgeClass}">${roleLabel}</span></td>
+      <td data-label="Passcode">${user.hasPasscode ? '<code>Set</code>' : '<code class="no-passcode">None</code>'}</td>
     `;
 
     // Clicking the row opens the member's details in the modal
@@ -1457,7 +1705,11 @@ async function handleRosterFormSubmit(e) {
       rosterFormStatus.style.color = 'var(--status-in-office)';
       rosterFormStatus.textContent = 'Member added successfully!';
       if (created.initialPasscode) {
-        alert(`${created.name}'s temporary passcode is: ${created.initialPasscode}\n\nShare it with them securely — it won't be shown again. They'll be prompted to set their own on first login.`);
+        await showAppModal({
+          title: `${created.name}'s temporary passcode`,
+          message: `Share it with them securely — it won't be shown again. They'll be prompted to set their own on first login.`,
+          code: created.initialPasscode
+        });
       }
     }
 
@@ -1472,7 +1724,7 @@ async function handleRosterFormSubmit(e) {
 }
 
 async function deleteRosterMember(user) {
-  if (!confirm(`Are you sure you want to delete ${user.name} from the team roster? This will clear their today's orders.`)) {
+  if (!(await confirmDialog(`Are you sure you want to delete ${user.name} from the team roster? This will clear their today's orders.`, { danger: true }))) {
     return;
   }
 
@@ -1482,12 +1734,12 @@ async function deleteRosterMember(user) {
     renderRosterTable();
     closeRosterModal();
   } catch (err) {
-    alert(err.message || 'Failed to remove member.');
+    showAlert(err.message || 'Failed to remove member.');
   }
 }
 
 async function resetRosterMemberPasscode(user) {
-  if (!confirm(`Reset ${user.name}'s passcode to a new random value? They'll be asked to set their own on next login.`)) {
+  if (!(await confirmDialog(`Reset ${user.name}'s passcode to a new random value? They'll be asked to set their own on next login.`, { danger: true }))) {
     return;
   }
 
@@ -1496,9 +1748,13 @@ async function resetRosterMemberPasscode(user) {
     roster = await apiCall('/api/roster');
     renderRosterTable();
     closeRosterModal();
-    alert(`${user.name}'s new temporary passcode is: ${result.newPasscode}\n\nShare it with them securely — it won't be shown again. They'll be prompted to set their own passcode on next login.`);
+    await showAppModal({
+      title: `${user.name}'s new temporary passcode`,
+      message: `Share it with them securely — it won't be shown again. They'll be prompted to set their own passcode on next login.`,
+      code: result.newPasscode
+    });
   } catch (err) {
-    alert(err.message || 'Failed to reset passcode.');
+    showAlert(err.message || 'Failed to reset passcode.');
   }
 }
 
@@ -1750,6 +2006,17 @@ function renderMyOrders(records) {
 // --- Event Listeners ---
 
 function setupEventListeners() {
+  // Show/hide toggles for every passcode field
+  document.querySelectorAll('.toggle-passcode-visibility').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById(btn.dataset.target);
+      const icon = btn.querySelector('.material-symbols-outlined');
+      const showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      icon.textContent = showing ? 'visibility' : 'visibility_off';
+    });
+  });
+
   // Login Inputs
   loginUserSearch.addEventListener('focus', () => {
     loginRosterDropdown.classList.remove('hidden');
@@ -1776,6 +2043,8 @@ function setupEventListeners() {
 
   btnLogout.addEventListener('click', logout);
   btnThemeToggle.addEventListener('click', toggleTheme);
+  btnMobileMenuToggle.addEventListener('click', toggleMobileNav);
+  sidebarOverlay.addEventListener('click', closeMobileNav);
 
   // Tab Buttons Switching
   navTabs.forEach(tab => {
@@ -1786,12 +2055,15 @@ function setupEventListeners() {
 
   // Order Submit Action
   orderForm.addEventListener('submit', handleOrderSubmit);
+  orderNoteInput.addEventListener('input', () => { orderFormDirty = true; });
 
   // Change Selection Action
   btnChangeOrder.addEventListener('click', () => {
     isEditingOrder = true;
+    orderFormDirty = false;
     renderFoodOrderForm();
   });
+  btnCancelOrder.addEventListener('click', handleCancelOrder);
 
   // Live Summary Search
   summaryListSearch.addEventListener('input', renderDetailedBreakdownList);
@@ -1817,6 +2089,7 @@ function setupEventListeners() {
   btnForceLock.addEventListener('click', () => handleForceLock(true));
   btnLockRevert.addEventListener('click', () => handleForceLock(null));
   btnExtendCutoff.addEventListener('click', handleExtendCutoff);
+  btnSaveSecuritySettings.addEventListener('click', saveSecuritySettings);
 
   // Roster buttons
   rosterSearch.addEventListener('input', renderRosterTable);

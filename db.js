@@ -12,9 +12,10 @@ if (!uri) {
 const client = new MongoClient(uri);
 let db;
 
-// Singleton doc IDs for the two settings-style collections
+// Singleton doc IDs for the settings-style collections
 const DAILY_STATE_ID = 'current';
 const REMINDERS_LOG_ID = 'log';
+const SECURITY_SETTINGS_ID = 'current';
 
 export async function initDb() {
   await client.connect();
@@ -48,6 +49,20 @@ export async function initDb() {
   const remindersLog = await db.collection('remindersLog').findOne({ _id: REMINDERS_LOG_ID });
   if (!remindersLog) {
     await db.collection('remindersLog').insertOne({ _id: REMINDERS_LOG_ID, entries: [] });
+  }
+
+  const securitySettings = await db.collection('securitySettings').findOne({ _id: SECURITY_SETTINGS_ID });
+  if (!securitySettings) {
+    // Seed from whatever env vars were previously set (if any), so
+    // existing deployments keep their configured values; from here on,
+    // these live in the DB and are editable from the admin UI.
+    await db.collection('securitySettings').insertOne({
+      _id: SECURITY_SETTINGS_ID,
+      loginMaxFailedAttempts: Number(process.env.LOGIN_MAX_FAILED_ATTEMPTS) || 5,
+      loginLockoutMinutes: Number(process.env.LOGIN_LOCKOUT_MINUTES) || 15,
+      loginRateLimitMax: Number(process.env.LOGIN_RATE_LIMIT_MAX) || 5,
+      loginRateLimitWindowMinutes: Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MINUTES) || 15
+    });
   }
 }
 
@@ -104,6 +119,21 @@ export async function saveRemindersLog(logs) {
   await db.collection('remindersLog').replaceOne(
     { _id: REMINDERS_LOG_ID },
     { _id: REMINDERS_LOG_ID, entries: logs },
+    { upsert: true }
+  );
+}
+
+export async function getSecuritySettings() {
+  const doc = await db.collection('securitySettings').findOne({ _id: SECURITY_SETTINGS_ID });
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+export async function saveSecuritySettings(settings) {
+  await db.collection('securitySettings').replaceOne(
+    { _id: SECURITY_SETTINGS_ID },
+    { _id: SECURITY_SETTINGS_ID, ...settings },
     { upsert: true }
   );
 }

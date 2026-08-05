@@ -14,9 +14,14 @@
 
   <!-- App Header -->
   <header class="app-header">
-    <div class="header-logo">
-      <span class="material-symbols-outlined logo-icon">lunch_dining</span>
-      <h1>Lunch Buddy</h1>
+    <div class="header-left">
+      <button type="button" class="btn btn-icon mobile-menu-toggle hidden" id="btn-mobile-menu-toggle" title="Menu">
+        <span class="material-symbols-outlined">menu</span>
+      </button>
+      <div class="header-logo">
+        <span class="material-symbols-outlined logo-icon">lunch_dining</span>
+        <h1>Lunch Buddy</h1>
+      </div>
     </div>
     <div class="header-right">
       <div class="header-info hidden" id="header-info">
@@ -77,6 +82,9 @@
         <div class="input-with-icon">
           <span class="material-symbols-outlined">lock</span>
           <input type="password" id="login-passcode" placeholder="••••••••" autocomplete="current-password">
+          <button type="button" class="btn btn-icon toggle-passcode-visibility" data-target="login-passcode" title="Show/hide passcode">
+            <span class="material-symbols-outlined">visibility</span>
+          </button>
         </div>
       </div>
 
@@ -104,6 +112,9 @@
         <div class="input-with-icon">
           <span class="material-symbols-outlined">lock</span>
           <input type="password" id="new-passcode-1" placeholder="At least 8 characters" autocomplete="new-password">
+          <button type="button" class="btn btn-icon toggle-passcode-visibility" data-target="new-passcode-1" title="Show/hide passcode">
+            <span class="material-symbols-outlined">visibility</span>
+          </button>
         </div>
       </div>
 
@@ -112,6 +123,9 @@
         <div class="input-with-icon">
           <span class="material-symbols-outlined">lock</span>
           <input type="password" id="new-passcode-2" placeholder="Re-enter your new passcode" autocomplete="new-password">
+          <button type="button" class="btn btn-icon toggle-passcode-visibility" data-target="new-passcode-2" title="Show/hide passcode">
+            <span class="material-symbols-outlined">visibility</span>
+          </button>
         </div>
       </div>
 
@@ -127,9 +141,12 @@
 
     <!-- DASHBOARD VIEW -->
     <div class="dashboard-layout hidden" id="dashboard-view">
-      
+
+      <!-- Backdrop for the mobile off-canvas sidebar; closes it on tap -->
+      <div class="sidebar-overlay hidden" id="sidebar-overlay"></div>
+
       <!-- NAVIGATION TABS -->
-      <nav class="nav-sidebar">
+      <nav class="nav-sidebar" id="nav-sidebar">
         <button class="nav-tab active" data-target="order-tab">
           <span class="material-symbols-outlined">restaurant_menu</span>
           <span>Order Lunch</span>
@@ -209,6 +226,14 @@
                 </div>
               </div>
 
+              <div class="form-group" id="order-note-section">
+                <div class="label-with-help">
+                  <label for="order-note">Add a note (optional)</label>
+                  <span class="help-text">e.g. protein choice, no onions, allergies</span>
+                </div>
+                <input type="text" id="order-note" maxlength="140" placeholder="e.g. Chicken, extra spicy">
+              </div>
+
               <div class="form-actions">
                 <button type="submit" class="btn btn-primary" id="btn-submit-order">
                   <span>Submit Selection</span>
@@ -226,10 +251,16 @@
               <h4>Your selection has been saved</h4>
               <p id="confirmation-text">Loading...</p>
             </div>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-change-order">
-              <span class="material-symbols-outlined">edit</span>
-              <span>Change Selection</span>
-            </button>
+            <div class="confirmation-actions">
+              <button type="button" class="btn btn-secondary btn-sm" id="btn-change-order">
+                <span class="material-symbols-outlined">edit</span>
+                <span>Change Selection</span>
+              </button>
+              <button type="button" class="btn btn-danger btn-sm" id="btn-cancel-order">
+                <span class="material-symbols-outlined">close</span>
+                <span>Cancel Order</span>
+              </button>
+            </div>
           </div>
         </section>
 
@@ -443,6 +474,43 @@
               </div>
             </div>
 
+            <!-- Login Security Settings -->
+            <div class="panel-card admin-settings-card">
+              <div class="card-header">
+                <h2>Login Security</h2>
+                <p>Configure how login attempts are throttled and locked out.</p>
+              </div>
+
+              <div class="form-group">
+                <label for="security-max-failed-attempts">Failed attempts before lockout</label>
+                <input type="number" id="security-max-failed-attempts" min="1" max="20" step="1">
+              </div>
+
+              <div class="form-group">
+                <label for="security-lockout-minutes">Lockout duration (minutes)</label>
+                <input type="number" id="security-lockout-minutes" min="1" max="1440" step="1">
+              </div>
+
+              <div class="form-group">
+                <label for="security-rate-limit-max">Login attempts allowed per window</label>
+                <input type="number" id="security-rate-limit-max" min="1" max="100" step="1">
+              </div>
+
+              <div class="form-group">
+                <div class="label-with-help">
+                  <label for="security-rate-limit-window">Rate limit window (minutes)</label>
+                  <span class="help-text">Applies per account, not per IP — one person's attempts never affect anyone else.</span>
+                </div>
+                <input type="number" id="security-rate-limit-window" min="1" max="1440" step="1">
+              </div>
+
+              <button class="btn btn-primary" id="btn-save-security-settings">
+                <span class="material-symbols-outlined">save</span>
+                <span>Save Login Security Settings</span>
+              </button>
+              <p id="security-settings-status" class="status-msg-inline"></p>
+            </div>
+
           </div>
         </section>
 
@@ -463,14 +531,16 @@
                   <span class="material-symbols-outlined">search</span>
                   <input type="text" id="roster-search" placeholder="Search roster...">
                 </div>
-                <button type="button" class="btn btn-secondary btn-icon-text" id="btn-roster-sort" title="Toggle name sort order">
-                  <span class="material-symbols-outlined" id="roster-sort-icon">south</span>
-                  <span id="roster-sort-label">A–Z</span>
-                </button>
-                <button type="button" class="btn btn-primary btn-icon-text" id="btn-add-roster-member">
-                  <span class="material-symbols-outlined">person_add</span>
-                  <span>Add Team Member</span>
-                </button>
+                <div class="roster-header-actions">
+                  <button type="button" class="btn btn-secondary btn-icon-text" id="btn-roster-sort" title="Toggle name sort order">
+                    <span class="material-symbols-outlined" id="roster-sort-icon">south</span>
+                    <span id="roster-sort-label">A–Z</span>
+                  </button>
+                  <button type="button" class="btn btn-primary btn-icon-text" id="btn-add-roster-member">
+                    <span class="material-symbols-outlined">person_add</span>
+                    <span>Add Team Member</span>
+                  </button>
+                </div>
               </div>
 
               <div class="roster-table-container">
@@ -543,6 +613,9 @@
                     <div class="input-with-icon">
                       <span class="material-symbols-outlined">password</span>
                       <input type="password" id="roster-passcode" placeholder="4-digit PIN" value="1234">
+                      <button type="button" class="btn btn-icon toggle-passcode-visibility" data-target="roster-passcode" title="Show/hide passcode">
+                        <span class="material-symbols-outlined">visibility</span>
+                      </button>
                     </div>
                   </div>
 
@@ -661,6 +734,30 @@
     </div>
 
   </main>
+
+  <!-- Generic app modal: replaces window.alert()/confirm() with an in-app
+       card matching the rest of the UI. Reused by showAlert()/confirmDialog(). -->
+  <div class="modal-overlay hidden" id="app-modal-overlay">
+    <div class="panel-card modal-card app-modal-card">
+      <div class="card-header modal-header">
+        <div>
+          <h2 id="app-modal-title">Notice</h2>
+        </div>
+      </div>
+      <p id="app-modal-message" class="app-modal-message"></p>
+      <div class="app-modal-code-block hidden" id="app-modal-code-block">
+        <code id="app-modal-code-text"></code>
+        <button type="button" class="btn btn-icon" id="app-modal-copy-btn" title="Copy to clipboard">
+          <span class="material-symbols-outlined">content_copy</span>
+        </button>
+      </div>
+      <div class="roster-form-actions">
+        <button type="button" class="btn btn-primary hidden" id="app-modal-confirm-btn">Confirm</button>
+        <button type="button" class="btn btn-secondary" id="app-modal-cancel-btn">Cancel</button>
+        <button type="button" class="btn btn-primary hidden" id="app-modal-ok-btn">OK</button>
+      </div>
+    </div>
+  </div>
 
   <footer class="app-footer">
     <p>Lunch Buddy App • Design by Antigravity • Connected</p>

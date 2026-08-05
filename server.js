@@ -16,7 +16,9 @@ import {
   getHistory,
   saveHistory,
   getRemindersLog,
-  saveRemindersLog
+  saveRemindersLog,
+  getSecuritySettings,
+  saveSecuritySettings
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -27,11 +29,34 @@ if (!SESSION_SECRET) {
 }
 const TOKEN_EXPIRY = '8h';
 const PASSCODE_SALT_ROUNDS = 10;
-const LOGIN_MAX_FAILED_ATTEMPTS = 5;
-const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+
+// Bounds accepted when an admin edits login-throttling settings
+const SECURITY_SETTINGS_BOUNDS = {
+  loginMaxFailedAttempts: { min: 1, max: 20 },
+  loginLockoutMinutes: { min: 1, max: 1440 },
+  loginRateLimitMax: { min: 1, max: 100 },
+  loginRateLimitWindowMinutes: { min: 1, max: 1440 }
+};
+
+// Helper: turn a millisecond duration into "Xm Ys" / "Ys" for user-facing messages
+function formatDuration(ms) {
+  const totalSecs = Math.max(1, Math.ceil(ms / 1000));
+  const mins = Math.floor(totalSecs / 60);
+  const secs = totalSecs % 60;
+  if (mins === 0) return `${secs}s`;
+  return secs === 0 ? `${mins}m` : `${mins}m ${secs}s`;
+}
 
 // Endpoints reachable even while a user is blocked pending a passcode change
 const PASSCODE_CHANGE_EXEMPT_PATHS = new Set(['/api/change-passcode', '/api/me']);
+
+const MAX_ORDER_NOTE_LENGTH = 140;
+
+// Helper: trim and cap a free-text order note (e.g. protein choice, allergies)
+function sanitizeOrderNote(note) {
+  if (typeof note !== 'string') return '';
+  return note.trim().slice(0, MAX_ORDER_NOTE_LENGTH);
+}
 
 // A small, deliberately-not-exhaustive blocklist of passcodes that defeat
 // the point of requiring one. Length + this list catch the common failures
@@ -73,6 +98,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Initialize database files
 await initDb();
+
+// Login-throttling settings, admin-editable at runtime via
+// GET/PUT /api/settings/security — initDb() seeds a DB doc on first run.
+let securitySettings = await getSecuritySettings();
 
 // Helper: Format a Date as YYYY-MM-DD (local time)
 function formatDateString(d) {
@@ -284,23 +313,39 @@ function requireAdminOrAbigail(req, res, next) {
 
 // --- Endpoints ---
 
-// Slow down brute-forcing of the (short, numeric-ish) passcode
-const loginRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Key by the account being logged into, not the caller's IP — this app
-  // runs behind a shared office IP, so an IP-keyed limit means one
-  // person's failed attempts lock out everyone else trying to log in.
-  // The per-account lockout below is the real brute-force defense; this
-  // is just a lighter-weight first line against rapid automated attempts.
-  keyGenerator: (req) => req.body?.userId || req.ip,
-  message: { error: 'Too many login attempts. Please wait a few minutes and try again.' }
-});
+// Slow down brute-forcing of the (short, numeric-ish) passcode. windowMs
+// can't be changed on an existing express-rate-limit instance, so an admin
+// edit to these settings rebuilds the instance — the route below calls
+// through a wrapper so that swap takes effect without re-registering routes.
+function buildLoginRateLimiter(settings) {
+  const windowMs = settings.loginRateLimitWindowMinutes * 60 * 1000;
+  return rateLimit({
+    windowMs,
+    max: settings.loginRateLimitMax,
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Key by the account being logged into, not the caller's IP — this app
+    // runs behind a shared office IP, so an IP-keyed limit means one
+    // person's failed attempts lock out everyone else trying to log in.
+    // The per-account lockout below is the real brute-force defense; this
+    // is just a lighter-weight first line against rapid automated attempts.
+    keyGenerator: (req) => req.body?.userId || req.ip,
+    handler: (req, res) => {
+      const remainingMs = req.rateLimit?.resetTime
+        ? req.rateLimit.resetTime.getTime() - Date.now()
+        : windowMs;
+      res.status(429).json({
+        error: `Too many login attempts. Try again in ${formatDuration(remainingMs)}.`,
+        retryAfterMs: Math.max(0, remainingMs)
+      });
+    }
+  });
+}
+
+let loginRateLimiterInstance = buildLoginRateLimiter(securitySettings);
 
 // Login: verify passcode, issue a signed session token
-app.post('/api/login', loginRateLimiter, async (req, res) => {
+app.post('/api/login', (req, res, next) => loginRateLimiterInstance(req, res, next), async (req, res) => {
   const { userId, passcode } = req.body;
   if (!userId || !passcode) {
     return res.status(400).json({ error: 'User ID and passcode are required.' });
@@ -313,19 +358,31 @@ app.post('/api/login', loginRateLimiter, async (req, res) => {
 
   const now = Date.now();
   if (user.lockedUntil && user.lockedUntil > now) {
-    return res.status(429).json({ error: 'Account temporarily locked due to repeated failed attempts. Try again later.' });
+    return res.status(429).json({
+      error: `Account temporarily locked due to repeated failed attempts. Try again in ${formatDuration(user.lockedUntil - now)}.`,
+      retryAfterMs: user.lockedUntil - now
+    });
   }
 
   const valid = user.passcodeHash && await bcrypt.compare(passcode, user.passcodeHash);
   if (!valid) {
+    const loginLockoutMs = securitySettings.loginLockoutMinutes * 60 * 1000;
     const fails = (user.failedAttempts || 0) + 1;
     const patch = { failedAttempts: fails };
-    if (fails >= LOGIN_MAX_FAILED_ATTEMPTS) {
-      patch.lockedUntil = now + LOGIN_LOCKOUT_MS;
+    if (fails >= securitySettings.loginMaxFailedAttempts) {
+      patch.lockedUntil = now + loginLockoutMs;
       patch.failedAttempts = 0;
+      await updateUser(user.id, patch);
+      return res.status(429).json({
+        error: `Too many failed attempts. Account locked for ${formatDuration(loginLockoutMs)}.`,
+        retryAfterMs: loginLockoutMs
+      });
     }
     await updateUser(user.id, patch);
-    return res.status(401).json({ error: 'Incorrect passcode.' });
+    const remaining = securitySettings.loginMaxFailedAttempts - fails;
+    return res.status(401).json({
+      error: `Incorrect passcode. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining before your account is locked.`
+    });
   }
 
   if (user.failedAttempts || user.lockedUntil) {
@@ -562,7 +619,8 @@ app.get('/api/daily', authMiddleware, async (req, res) => {
         itemName: dailyState.menu.find(m => m.id === userOrder.itemId)?.name || 'None',
         timestamp: userOrder.timestamp,
         assignedBy: userOrder.assignedBy || null,
-        served: !!userOrder.served
+        served: !!userOrder.served,
+        note: userOrder.note || ''
       });
       if (userOrder.itemId) {
         dishTotals[userOrder.itemId] = (dishTotals[userOrder.itemId] || 0) + 1;
@@ -662,6 +720,33 @@ app.post('/api/publish-menu', authMiddleware, requireAdmin, async (req, res) => 
   res.json({ success: true, menuPublished: dailyState.menuPublished });
 });
 
+// Admin: View current login-throttling settings
+app.get('/api/settings/security', authMiddleware, requireAdmin, async (req, res) => {
+  res.json(securitySettings);
+});
+
+// Admin: Update login-throttling settings (account lockout + rate limiting)
+app.put('/api/settings/security', authMiddleware, requireAdmin, async (req, res) => {
+  const updated = { ...securitySettings };
+
+  for (const [key, bounds] of Object.entries(SECURITY_SETTINGS_BOUNDS)) {
+    if (req.body[key] === undefined) continue;
+    const value = Number(req.body[key]);
+    if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
+      return res.status(400).json({
+        error: `${key} must be a whole number between ${bounds.min} and ${bounds.max}.`
+      });
+    }
+    updated[key] = value;
+  }
+
+  await saveSecuritySettings(updated);
+  securitySettings = updated;
+  loginRateLimiterInstance = buildLoginRateLimiter(securitySettings);
+
+  res.json(securitySettings);
+});
+
 // Admin: Change daily cutoff time
 app.post('/api/cutoff', authMiddleware, requireAdmin, async (req, res) => {
   const { cutoffTime } = req.body;
@@ -712,7 +797,7 @@ app.post('/api/archive-time', authMiddleware, requireAdmin, async (req, res) => 
 
 // Team Member: Place daily dish order
 app.post('/api/order', authMiddleware, async (req, res) => {
-  const { itemId } = req.body;
+  const { itemId, note } = req.body;
   const userId = req.user.id;
 
   const dailyState = await getDailyState();
@@ -735,11 +820,34 @@ app.post('/api/order', authMiddleware, async (req, res) => {
   dailyState.orders = dailyState.orders || {};
   dailyState.orders[userId] = {
     itemId,
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    note: sanitizeOrderNote(note)
   };
 
   await saveDailyState(dailyState);
   res.json({ success: true, order: dailyState.orders[userId] });
+});
+
+// Team Member: Cancel today's own order (opt out entirely, not just change dish)
+app.delete('/api/order', authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  const dailyState = await getDailyState();
+
+  if (checkCutoff(dailyState)) {
+    return res.status(400).json({ error: 'The daily cutoff time has passed. Orders are locked.' });
+  }
+
+  const existingOrder = dailyState.orders?.[userId];
+  if (!existingOrder) {
+    return res.status(404).json({ error: 'You don\'t have an order to cancel.' });
+  }
+  if (existingOrder.served) {
+    return res.status(400).json({ error: 'This order has already been served and can\'t be cancelled. Contact an admin.' });
+  }
+
+  delete dailyState.orders[userId];
+  await saveDailyState(dailyState);
+  res.json({ success: true });
 });
 
 // Admin/Abigail: Place or change an order on behalf of a team member who
@@ -747,7 +855,7 @@ app.post('/api/order', authMiddleware, async (req, res) => {
 // same cutoff as self-serve orders — an admin needing more room to add
 // stragglers should grant extra time via /api/cutoff/extend instead.
 app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req, res) => {
-  const { userId, itemId } = req.body;
+  const { userId, itemId, note } = req.body;
   if (!userId || !itemId) {
     return res.status(400).json({ error: 'userId and itemId are required.' });
   }
@@ -776,7 +884,8 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
   dailyState.orders[userId] = {
     itemId,
     timestamp: Date.now(),
-    assignedBy: req.user.name
+    assignedBy: req.user.name,
+    note: sanitizeOrderNote(note)
   };
 
   await saveDailyState(dailyState);
@@ -799,6 +908,26 @@ app.post('/api/order/serve', authMiddleware, requireAdminOrAbigail, async (req, 
   order.served = served;
   await saveDailyState(dailyState);
   res.json({ success: true, order });
+});
+
+// Admin/Abigail: Remove a specific person's order from today's board (e.g.
+// to fix a mistaken selection). Blocked once cutoff passes — at that point
+// the list is treated as submitted to the vendor and shouldn't change.
+app.delete('/api/order/:userId', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const { userId } = req.params;
+  const dailyState = await getDailyState();
+
+  if (checkCutoff(dailyState)) {
+    return res.status(400).json({ error: 'The daily cutoff time has passed. The order list is locked.' });
+  }
+
+  if (!dailyState.orders?.[userId]) {
+    return res.status(404).json({ error: 'This person has not placed an order.' });
+  }
+
+  delete dailyState.orders[userId];
+  await saveDailyState(dailyState);
+  res.json({ success: true });
 });
 
 // Admin: Clear every order placed today so the roster can make fresh selections

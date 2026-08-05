@@ -166,10 +166,20 @@ body {
   height: 70px;
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .header-logo {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+button.mobile-menu-toggle {
+  display: none;
 }
 
 .logo-icon {
@@ -480,7 +490,7 @@ select:focus {
   position: relative;
 }
 
-.input-with-icon span {
+.input-with-icon > span {
   position: absolute;
   left: 1rem;
   top: 50%;
@@ -492,6 +502,24 @@ select:focus {
 .input-with-icon input,
 .input-with-icon select {
   padding-left: 2.8rem;
+}
+
+.toggle-passcode-visibility {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0.4rem;
+  color: var(--text-muted);
+}
+.toggle-passcode-visibility:hover {
+  color: var(--text-primary);
+}
+.toggle-passcode-visibility .material-symbols-outlined {
+  font-size: 1.2rem;
+}
+.input-with-icon:has(.toggle-passcode-visibility) input {
+  padding-right: 2.6rem;
 }
 
 .select-wrapper {
@@ -636,6 +664,10 @@ select {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+}
+
+.sidebar-overlay {
+  display: none;
 }
 
 .nav-tab {
@@ -928,7 +960,9 @@ select {
   min-width: 0;
 }
 
-.confirmation-card #btn-change-order {
+.confirmation-actions {
+  display: flex;
+  gap: 0.6rem;
   flex-shrink: 0;
 }
 
@@ -1143,12 +1177,48 @@ select {
   background: var(--bg-secondary);
   border: 1px solid var(--card-border);
   border-radius: var(--border-radius-sm);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-size: 0.9rem;
   font-weight: 500;
   box-shadow: var(--shadow-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.member-row-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.member-row-main > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.member-row-note {
+  font-size: 0.75rem;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+
+.summary-member-row .btn-remove-order {
+  flex-shrink: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  color: var(--text-muted);
+}
+.summary-member-row .btn-remove-order:hover {
+  color: var(--status-not-coming);
+}
+.summary-member-row .btn-remove-order .material-symbols-outlined {
+  font-size: 1.1rem;
 }
 
 .unconfirmed-grid {
@@ -1178,6 +1248,7 @@ select {
 
 .distribution-row {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 0.5rem;
   width: 100%;
@@ -1364,6 +1435,42 @@ input:checked + .slider:before {
   margin-top: 0.5rem;
 }
 
+#app-modal-overlay {
+  z-index: 1100; /* sits above the roster add/edit modal, e.g. its own confirm dialogs */
+}
+
+.app-modal-message {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  white-space: pre-line;
+  line-height: 1.5;
+}
+
+.app-modal-code-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.9rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-sm);
+}
+
+.app-modal-code-block code {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-primary);
+}
+
+.roster-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
 .roster-search-box {
   position: relative;
 }
@@ -1527,16 +1634,64 @@ input:checked + .slider:before {
   .dashboard-layout {
     grid-template-columns: 1fr;
   }
+
+  button.mobile-menu-toggle {
+    display: inline-flex;
+  }
+
+  /* Off-canvas sidebar drawer, replacing the horizontal-scroll tab strip */
   .nav-sidebar {
-    flex-direction: row;
-    overflow-x: auto;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid var(--card-border);
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100dvh;
+    width: min(280px, 80vw);
+    background: var(--bg-primary);
+    border-right: 1px solid var(--card-border);
+    padding: 1.25rem 1rem;
+    z-index: 210;
+    overflow-y: auto;
+    transform: translateX(-100%);
+    transition: transform 0.28s ease;
+    box-shadow: 0 0 32px rgba(0, 0, 0, 0.25);
+  }
+  .nav-sidebar.open {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 205;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.28s ease;
+  }
+  .sidebar-overlay:not(.hidden) {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* The header-info block (date/cutoff/profile/logout) is moved here by JS
+     on mobile, so it needs its own full-width, stacked presentation instead
+     of the compact inline row it uses in the header. */
+  .nav-sidebar .header-info {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.6rem;
+    width: 100%;
+    padding-bottom: 1rem;
     margin-bottom: 1rem;
+    border-bottom: 1px solid var(--card-border);
   }
-  .nav-tab {
-    white-space: nowrap;
+  .nav-sidebar .user-profile {
+    border-left: none;
+    padding-left: 0;
   }
+
   .admin-grid {
     grid-template-columns: 1fr;
   }
@@ -1550,26 +1705,10 @@ input:checked + .slider:before {
     font-size: 14px;
   }
   .app-header {
-    padding: 1rem;
-    flex-direction: column;
-    height: auto;
-    gap: 1rem;
+    padding: 0.85rem 1rem;
   }
-  .header-right {
-    width: 100%;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 0.75rem;
-  }
-  .header-info {
-    width: 100%;
-    justify-content: space-between;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-  .user-profile {
-    border-left: none;
-    padding-left: 0;
+  .header-logo h1 {
+    font-size: 1.25rem;
   }
   .app-container {
     padding: 1rem;
@@ -1589,6 +1728,73 @@ input:checked + .slider:before {
   .roster-form-actions,
   .action-buttons-row {
     flex-wrap: wrap;
+  }
+
+  /* Roster Directory: stack the search/sort/add controls instead of
+     squeezing them into one row */
+  .card-header-compact-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .roster-search-box input {
+    width: 100%;
+  }
+  .roster-header-actions {
+    flex-wrap: wrap;
+  }
+  .roster-header-actions .btn {
+    flex: 1;
+  }
+
+  /* Roster Directory table -> stacked cards. Each <td> shows its column
+     label (from data-label, set in renderRosterTable) above its value,
+     since a wide table just forces awkward horizontal scrolling here. */
+  .roster-table-container {
+    overflow-x: visible;
+    border: none;
+  }
+  .roster-table thead {
+    display: none;
+  }
+  .roster-table, .roster-table tbody, .roster-table tr {
+    display: block;
+    width: 100%;
+  }
+  .roster-table tbody tr {
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--border-radius-sm);
+    padding: 0.5rem 0.9rem;
+  }
+  .roster-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--card-border);
+    text-align: right;
+  }
+  .roster-table td:last-child {
+    border-bottom: none;
+  }
+  .roster-table td::before {
+    content: attr(data-label);
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-align: left;
+  }
+  .roster-table td[data-label="Name"] {
+    justify-content: flex-start;
+  }
+  .roster-table td[data-label="Name"]::before {
+    display: none;
+  }
+  .roster-table .no-results {
+    display: block;
+    text-align: center;
+    padding: 1.5rem 0;
   }
   .stats-grid {
     grid-template-columns: repeat(3, 1fr);
