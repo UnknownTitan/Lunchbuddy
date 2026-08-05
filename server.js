@@ -290,6 +290,12 @@ const loginRateLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  // Key by the account being logged into, not the caller's IP — this app
+  // runs behind a shared office IP, so an IP-keyed limit means one
+  // person's failed attempts lock out everyone else trying to log in.
+  // The per-account lockout below is the real brute-force defense; this
+  // is just a lighter-weight first line against rapid automated attempts.
+  keyGenerator: (req) => req.body?.userId || req.ip,
   message: { error: 'Too many login attempts. Please wait a few minutes and try again.' }
 });
 
