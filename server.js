@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import crypto from 'node:crypto';
+import webpush from 'web-push';
 import { fileURLToPath } from 'url';
 import {
   initDb,
@@ -29,6 +30,19 @@ if (!SESSION_SECRET) {
 }
 const TOKEN_EXPIRY = '8h';
 const PASSCODE_SALT_ROUNDS = 10;
+
+// Web Push (browser notifications) — optional. If unset, /api/push/* still
+// respond, they just can't actually deliver anything; nothing else in the
+// app depends on this being configured.
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@example.com';
+const pushEnabled = !!(VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY);
+if (pushEnabled) {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+} else {
+  console.warn('VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY not set — push notifications are disabled.');
+}
 
 // Bounds accepted when an admin edits login-throttling settings
 const SECURITY_SETTINGS_BOUNDS = {
@@ -195,8 +209,16 @@ async function archiveCurrentDay(dailyState) {
 }
 
 // Middleware: Check and handle daily transition/reset
+// Serializes the check-archive-save sequence below across concurrent
+// requests. Without this, two requests landing close together right as the
+// business date rolls over can both read the same stale dailyState.date,
+// both decide "this needs archiving," and both write a duplicate history
+// entry — chaining onto this promise instead of a boolean flag closes the
+// race regardless of how many requests arrive in the same tick.
+let dailyRolloverChain = Promise.resolve();
+
 async function handleDailyResetMiddleware(req, res, next) {
-  try {
+  const run = dailyRolloverChain.then(async () => {
     const dailyState = await getDailyState();
     const businessDate = getBusinessDateString(dailyState.archiveTime);
 
@@ -212,10 +234,16 @@ async function handleDailyResetMiddleware(req, res, next) {
       dailyState.orders = {};
       dailyState.isManuallyLocked = null; // clear override; revert to time-based
       dailyState.cutoffExtensionMinutes = 0; // clear any extra time granted yesterday
+      dailyState.foodArrival = null; // clear yesterday's "food's in" broadcast
       // Retain menu, menuPublished, cutoffTime and archiveTime — the menu
       // carries over day to day until an admin changes it
       await saveDailyState(dailyState);
     }
+  });
+  dailyRolloverChain = run.catch(() => {}); // keep the chain alive even if this run throws
+
+  try {
+    await run;
     next();
   } catch (err) {
     console.error('Error in handleDailyResetMiddleware:', err);
@@ -446,7 +474,7 @@ app.get('/api/roster/login-list', async (req, res) => {
 // otherwise) — requires a verified session; this is real PII (email, phone).
 app.get('/api/roster', authMiddleware, async (req, res) => {
   const roster = await getRoster();
-  const safeRoster = roster.map(({ passcode, passcodeHash, ...rest }) => ({
+  const safeRoster = roster.map(({ passcode, passcodeHash, pushSubscriptions, ...rest }) => ({
     ...rest,
     hasPasscode: !!passcodeHash
   }));
@@ -663,6 +691,7 @@ app.get('/api/daily', authMiddleware, async (req, res) => {
     archiveTime: dailyState.archiveTime || DEFAULT_ARCHIVE_TIME,
     isLocked,
     myReminder,
+    foodArrival: dailyState.foodArrival || null,
     orders: {
       ordered,
       pending
@@ -1037,6 +1066,129 @@ app.get('/api/my-orders', authMiddleware, async (req, res) => {
 app.get('/api/history', authMiddleware, requireAdminOrAbigail, async (req, res) => {
   const history = await getHistory();
   res.json(history.slice().reverse()); // Newest first
+});
+
+// Admin/Abigail: mark an archived day's order as served/unserved. Needed
+// because the daily archive rolls over at archiveTime regardless of
+// whether food has actually been handed out yet — a late vendor delivery
+// can easily arrive after that point, so distribution tracking has to stay
+// editable on past days, not just the live board.
+app.post('/api/history/:date/order-serve', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const { date } = req.params;
+  const { userId, served } = req.body;
+  if (!userId || typeof served !== 'boolean') {
+    return res.status(400).json({ error: 'userId and a boolean served flag are required.' });
+  }
+
+  const history = await getHistory();
+  const entry = history.find(h => h.date === date);
+  if (!entry) {
+    return res.status(404).json({ error: 'No archived record for this date.' });
+  }
+  const order = entry.orders?.[userId];
+  if (!order) {
+    return res.status(404).json({ error: 'This person has no order on that date.' });
+  }
+
+  order.served = served;
+  await saveHistory(history);
+  res.json({ success: true, order });
+});
+
+// --- Push Notifications ---
+
+// Public: the client needs this to call pushManager.subscribe()
+app.get('/api/push/vapid-public-key', (req, res) => {
+  res.json({ publicKey: pushEnabled ? VAPID_PUBLIC_KEY : null });
+});
+
+// Save a browser push subscription against the logged-in user. A person can
+// have more than one (phone + laptop), keyed by the subscription's unique
+// endpoint URL so re-subscribing the same device just updates it in place.
+app.post('/api/push/subscribe', authMiddleware, async (req, res) => {
+  const { subscription } = req.body;
+  if (!subscription?.endpoint || !subscription?.keys) {
+    return res.status(400).json({ error: 'A valid push subscription is required.' });
+  }
+
+  const roster = await getRoster();
+  const userIndex = roster.findIndex(u => u.id === req.user.id);
+  if (userIndex === -1) {
+    return res.status(404).json({ error: 'User not found.' });
+  }
+
+  const subs = roster[userIndex].pushSubscriptions || [];
+  const withoutDupe = subs.filter(s => s.endpoint !== subscription.endpoint);
+  roster[userIndex].pushSubscriptions = [...withoutDupe, subscription];
+  await saveRoster(roster);
+
+  res.json({ success: true });
+});
+
+// Remove a push subscription (e.g. the user turned notifications off)
+app.post('/api/push/unsubscribe', authMiddleware, async (req, res) => {
+  const { endpoint } = req.body;
+  const roster = await getRoster();
+  const userIndex = roster.findIndex(u => u.id === req.user.id);
+  if (userIndex === -1) {
+    return res.status(404).json({ error: 'User not found.' });
+  }
+
+  roster[userIndex].pushSubscriptions = (roster[userIndex].pushSubscriptions || [])
+    .filter(s => s.endpoint !== endpoint);
+  await saveRoster(roster);
+
+  res.json({ success: true });
+});
+
+// Sends a push payload to every subscribed device across the whole roster.
+// Dead subscriptions (expired/revoked — 404 or 410 from the push service)
+// are dropped so they stop being retried forever.
+async function sendPushToAllUsers(payload) {
+  if (!pushEnabled) return;
+
+  const roster = await getRoster();
+  const body = JSON.stringify(payload);
+  let changed = false;
+
+  for (const user of roster) {
+    const subs = user.pushSubscriptions || [];
+    if (subs.length === 0) continue;
+
+    const survivors = [];
+    for (const sub of subs) {
+      try {
+        await webpush.sendNotification(sub, body);
+        survivors.push(sub);
+      } catch (err) {
+        if (err.statusCode === 404 || err.statusCode === 410) {
+          changed = true; // subscription is dead, drop it
+        } else {
+          console.error(`Push failed for ${user.name}:`, err.message);
+          survivors.push(sub); // transient failure — keep it, don't drop on a fluke
+        }
+      }
+    }
+    user.pushSubscriptions = survivors;
+  }
+
+  if (changed) await saveRoster(roster);
+}
+
+// Admin/Abigail: broadcast "the food has arrived" — shows an in-app banner
+// to everyone currently on the page, and sends a real push notification to
+// anyone who has notifications enabled (reaches them even with the tab closed).
+app.post('/api/food-arrived', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const dailyState = await getDailyState();
+  dailyState.foodArrival = { at: Date.now(), by: req.user.name };
+  await saveDailyState(dailyState);
+
+  sendPushToAllUsers({
+    title: '🍽️ Lunch has arrived!',
+    body: `${req.user.name} says today's food is here — come get it.`
+  }).catch(err => console.error('Error broadcasting push notifications:', err));
+
+  res.json({ success: true, foodArrival: dailyState.foodArrival });
 });
 
 // --- Reminders Endpoints ---

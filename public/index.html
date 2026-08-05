@@ -19,7 +19,7 @@
         <span class="material-symbols-outlined">menu</span>
       </button>
       <div class="header-logo">
-        <span class="material-symbols-outlined logo-icon">lunch_dining</span>
+        <img src="assets/burger-logo.png" class="logo-icon-img" alt="">
         <h1>Lunch Buddy</h1>
       </div>
     </div>
@@ -33,17 +33,31 @@
           <span class="material-symbols-outlined">schedule</span>
           <span>Cutoff: <strong id="display-cutoff">--:--</strong></span>
         </div>
-        <div class="user-profile">
-          <div class="avatar">
-            <span class="material-symbols-outlined">person</span>
-          </div>
+        <div class="user-profile" id="user-profile-toggle">
+          <div class="avatar" id="header-avatar-initials">SA</div>
           <div class="user-details">
             <span class="user-name" id="header-user-name">Guest</span>
             <span class="user-role" id="header-user-role">Member</span>
           </div>
-          <button class="btn btn-icon btn-logout" id="btn-logout" title="Log Out">
+          <span class="material-symbols-outlined user-profile-chevron">expand_more</span>
+        </div>
+        <div class="user-profile-dropdown hidden" id="user-profile-dropdown">
+          <button class="btn btn-logout" id="btn-logout" title="Log Out">
             <span class="material-symbols-outlined">logout</span>
+            <span>Log Out</span>
           </button>
+        </div>
+      </div>
+      <div class="notification-bell-wrap">
+        <button type="button" class="btn btn-icon notification-bell" id="btn-notification-bell" title="Notifications">
+          <span class="material-symbols-outlined">notifications</span>
+          <span class="notification-badge hidden" id="notification-badge">0</span>
+        </button>
+        <div class="notification-dropdown hidden" id="notification-dropdown">
+          <div class="notification-dropdown-header">Notifications</div>
+          <div class="notification-dropdown-list" id="notification-dropdown-list">
+            <p class="notification-empty">No new notifications</p>
+          </div>
         </div>
       </div>
       <button type="button" class="btn btn-icon theme-toggle" id="btn-theme-toggle" title="Toggle light/dark mode">
@@ -155,10 +169,6 @@
           <span class="material-symbols-outlined">bar_chart</span>
           <span>Live Summary</span>
         </button>
-        <button class="nav-tab admin-abigail-only hidden" data-target="distribution-tab" id="nav-tab-distribution">
-          <span class="material-symbols-outlined">checklist</span>
-          <span>Distribution</span>
-        </button>
         <button class="nav-tab admin-only hidden" data-target="admin-tab">
           <span class="material-symbols-outlined">settings</span>
           <span>Admin Controls</span>
@@ -168,13 +178,19 @@
           <span>Roster Manager</span>
         </button>
         <button class="nav-tab admin-abigail-only hidden" data-target="history-tab">
-          <span class="material-symbols-outlined">history</span>
-          <span>Order History</span>
+          <span class="material-symbols-outlined">checklist</span>
+          <span>Distribution &amp; History</span>
         </button>
         <button class="nav-tab" data-target="my-orders-tab" id="nav-tab-my-orders">
           <span class="material-symbols-outlined">receipt_long</span>
           <span>My Orders</span>
         </button>
+
+        <div class="sidebar-promo-card">
+          <img src="assets/lunch-bag.png" class="sidebar-promo-icon" alt="">
+          <h4>Good food, great vibe</h4>
+          <p>Fuel your day, the Lunch Buddy way.</p>
+        </div>
       </nav>
 
       <!-- VIEW PANELS -->
@@ -182,11 +198,27 @@
 
         <!-- TAB: ORDER LUNCH -->
         <section class="tab-panel active" id="order-tab">
-          
-          <!-- Countdown Card -->
-          <div class="countdown-banner" id="countdown-banner">
-            <span class="material-symbols-outlined animated-clock">hourglass_empty</span>
-            <span id="countdown-text">Calculating remaining time...</span>
+
+          <div class="order-hero-row">
+            <div class="order-hero-main">
+              <!-- Greeting -->
+              <div class="order-greeting">
+                <div class="greeting-title-row">
+                  <img src="assets/wave-emoji.png" class="greeting-wave" alt="">
+                  <h2 id="order-greeting-text">Welcome back</h2>
+                </div>
+                <p id="order-greeting-subtext">Let's get your lunch sorted for today.</p>
+              </div>
+
+              <!-- Countdown Card -->
+              <div class="countdown-banner" id="countdown-banner">
+                <span class="animated-clock"><img src="assets/hourglass.png" alt=""></span>
+                <span id="countdown-text">Calculating remaining time...</span>
+              </div>
+            </div>
+            <div class="order-hero-art" aria-hidden="true">
+              <img src="assets/jollof-hero.png" alt="">
+            </div>
           </div>
 
           <!-- Reminder Banner (shown when a coordinator sends a reminder) -->
@@ -198,13 +230,22 @@
             <button type="button" class="btn btn-secondary btn-sm" id="btn-dismiss-reminder">Dismiss</button>
           </div>
 
+          <!-- Food Arrived Banner (shown when an admin broadcasts "food's in") -->
+          <div class="notification-request-banner food-arrived-banner hidden" id="food-arrived-banner">
+            <div class="notif-banner-content">
+              <span class="material-symbols-outlined">restaurant</span>
+              <span id="food-arrived-text">Lunch has arrived!</span>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-dismiss-food-arrived">Dismiss</button>
+          </div>
+
           <!-- Browser Notifications Setup Banner -->
           <div class="notification-request-banner hidden" id="notification-request-banner">
             <div class="notif-banner-content">
               <span class="material-symbols-outlined">notifications_active</span>
-              <span>Enable browser alerts to get notified 15 minutes before the daily cutoff.</span>
+              <span>Enable browser notifications to get alerted the moment food arrives, even if you're not on this page.</span>
             </div>
-            <button type="button" class="btn btn-secondary btn-sm" id="btn-enable-notifications">Enable Alerts</button>
+            <button type="button" class="btn btn-secondary btn-sm" id="btn-enable-notifications">Enable Notifications</button>
           </div>
 
           <!-- Selection Form Card -->
@@ -251,6 +292,7 @@
               <h4>Your selection has been saved</h4>
               <p id="confirmation-text">Loading...</p>
             </div>
+            <span class="conf-thumb"><img src="assets/jollof-hero.png" alt=""></span>
             <div class="confirmation-actions">
               <button type="button" class="btn btn-secondary btn-sm" id="btn-change-order">
                 <span class="material-symbols-outlined">edit</span>
@@ -261,6 +303,20 @@
                 <span>Cancel Order</span>
               </button>
             </div>
+          </div>
+
+          <!-- Menu Promo Banner -->
+          <div class="menu-promo-banner">
+            <div class="menu-promo-filmstrip" aria-hidden="true">
+              <img src="assets/salad-bowl.png" alt="">
+              <img src="assets/soup-bowl-1.png" alt="">
+              <img src="assets/smoothie.png" alt="">
+            </div>
+            <div class="menu-promo-text">
+              <h4>Fresh picks, every day</h4>
+              <p>A new menu is lined up for you each morning.</p>
+            </div>
+            <img src="assets/lettuce.png" class="menu-promo-lettuce" alt="" aria-hidden="true">
           </div>
         </section>
 
@@ -352,25 +408,6 @@
           </div>
         </section>
 
-        <!-- TAB: DISTRIBUTION CHECKLIST -->
-        <section class="tab-panel" id="distribution-tab">
-          <div class="panel-card">
-            <div class="card-header">
-              <h2>Food Distribution Checklist</h2>
-              <p>Tap a name as you hand out their dish to check it off. Grouped by dish, just like the vendor order.</p>
-            </div>
-
-            <div class="list-search-wrapper">
-              <span class="material-symbols-outlined">search</span>
-              <input type="text" id="distribution-search" placeholder="Search people...">
-            </div>
-
-            <div class="roster-breakdown-grid" id="distribution-groups">
-              <!-- Populated by JS -->
-            </div>
-          </div>
-        </section>
-
         <!-- TAB: ADMIN CONTROLS -->
         <section class="tab-panel" id="admin-tab">
           <div class="admin-grid">
@@ -407,6 +444,19 @@
                 </div>
               </div>
               <p id="admin-menu-status" class="status-msg-inline"></p>
+            </div>
+
+            <!-- Food Arrival Broadcast -->
+            <div class="panel-card food-arrival-card">
+              <div class="card-header">
+                <h2>Food Arrival</h2>
+                <p>Let the whole team know lunch is here — shows a banner in the app and sends a push notification to anyone who's enabled them.</p>
+              </div>
+              <button type="button" class="btn btn-primary btn-block btn-icon-text" id="btn-food-arrived">
+                <span class="material-symbols-outlined">restaurant</span>
+                <span>Food's In — Notify Everyone</span>
+              </button>
+              <p id="food-arrived-status" class="status-msg-inline"></p>
             </div>
 
             <!-- Settings / Reset -->
@@ -693,8 +743,8 @@
         <section class="tab-panel" id="history-tab">
           <div class="panel-card">
             <div class="card-header">
-              <h2>Archived Order Records</h2>
-              <p>Review and audit past daily selections and vendor totals.</p>
+              <h2>Distribution &amp; Order History</h2>
+              <p>Check off today's handout as you go, or review and correct a past day's records.</p>
             </div>
           </div>
 
@@ -709,7 +759,7 @@
               <div class="panel-card history-empty-card">
                 <div class="empty-state">
                   <span class="material-symbols-outlined">inventory_2</span>
-                  <p>Select a date from the list to view its archived orders.</p>
+                  <p>Loading today's checklist...</p>
                 </div>
               </div>
             </div>
@@ -760,7 +810,7 @@
   </div>
 
   <footer class="app-footer">
-    <p>Lunch Buddy App • Design by Antigravity • Connected</p>
+    <p>Lunch Buddy App</p>
   </footer>
 
   <script src="app.js"></script>

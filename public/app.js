@@ -54,9 +54,16 @@ const displayDate = document.getElementById('display-date');
 const displayCutoff = document.getElementById('display-cutoff');
 const headerUserName = document.getElementById('header-user-name');
 const headerUserRole = document.getElementById('header-user-role');
+const headerAvatarInitials = document.getElementById('header-avatar-initials');
+const userProfileToggle = document.getElementById('user-profile-toggle');
+const userProfileDropdown = document.getElementById('user-profile-dropdown');
 const btnLogout = document.getElementById('btn-logout');
 const btnThemeToggle = document.getElementById('btn-theme-toggle');
 const headerRight = document.querySelector('.header-right');
+const btnNotificationBell = document.getElementById('btn-notification-bell');
+const notificationBadge = document.getElementById('notification-badge');
+const notificationDropdown = document.getElementById('notification-dropdown');
+const notificationDropdownList = document.getElementById('notification-dropdown-list');
 const btnMobileMenuToggle = document.getElementById('btn-mobile-menu-toggle');
 const navSidebar = document.getElementById('nav-sidebar');
 const sidebarOverlay = document.getElementById('sidebar-overlay');
@@ -80,9 +87,18 @@ const navTabs = document.querySelectorAll('.nav-tab');
 const tabPanels = document.querySelectorAll('.tab-panel');
 
 // Order Tab
+const orderGreetingText = document.getElementById('order-greeting-text');
+const orderGreetingSubtext = document.getElementById('order-greeting-subtext');
 const countdownBanner = document.getElementById('countdown-banner');
 const reminderBanner = document.getElementById('reminder-banner');
 const btnDismissReminder = document.getElementById('btn-dismiss-reminder');
+const foodArrivedBanner = document.getElementById('food-arrived-banner');
+const foodArrivedText = document.getElementById('food-arrived-text');
+const btnDismissFoodArrived = document.getElementById('btn-dismiss-food-arrived');
+const notificationRequestBanner = document.getElementById('notification-request-banner');
+const btnEnableNotifications = document.getElementById('btn-enable-notifications');
+const btnFoodArrived = document.getElementById('btn-food-arrived');
+const foodArrivedStatus = document.getElementById('food-arrived-status');
 const countdownText = document.getElementById('countdown-text');
 const orderFormCard = document.getElementById('order-form-card');
 const orderForm = document.getElementById('order-form');
@@ -104,8 +120,6 @@ const summaryListSearch = document.getElementById('summary-list-search');
 const summaryGroups = document.getElementById('summary-groups');
 const summaryUnconfirmed = document.getElementById('summary-unconfirmed');
 const summaryUnconfirmedCount = document.getElementById('summary-unconfirmed-count');
-const distributionSearch = document.getElementById('distribution-search');
-const distributionGroups = document.getElementById('distribution-groups');
 const btnCopyWhatsapp = document.getElementById('btn-copy-whatsapp');
 const btnExportCsv = document.getElementById('btn-export-csv');
 const btnRemindPending = document.getElementById('btn-remind-pending');
@@ -461,6 +475,9 @@ async function loginSuccess() {
 
   headerUserName.textContent = currentUser.name;
   headerUserRole.textContent = currentUser.role;
+  headerAvatarInitials.textContent = getInitials(currentUser.name);
+
+  updateNotificationRequestBanner();
 
   // Render proper tabs based on roles
   document.querySelectorAll('.admin-only').forEach(el => el.classList.add('hidden'));
@@ -605,8 +622,6 @@ function onTabLoad(tabId) {
     loadHistoryDates();
   } else if (tabId === 'summary-tab') {
     renderSummaryView();
-  } else if (tabId === 'distribution-tab') {
-    renderDistributionView();
   } else if (tabId === 'my-orders-tab') {
     loadMyOrders();
   }
@@ -620,13 +635,14 @@ async function fetchDailyState() {
     updateHeaderDisplay();
     updateCountdownBanner();
     updateReminderBanner();
+    updateFoodArrivedBanner();
+    updateNotificationBell();
 
     if (activeTab === 'order-tab') {
+      updateOrderGreeting();
       renderFoodOrderForm();
     } else if (activeTab === 'summary-tab') {
       renderSummaryView();
-    } else if (activeTab === 'distribution-tab') {
-      renderDistributionView();
     }
   } catch (err) {
     console.error('Error fetching daily state:', err);
@@ -662,6 +678,160 @@ function dismissReminderBanner() {
     localStorage.setItem(`lunchsync_dismissed_reminder_${currentUser.id}`, dailyState.myReminder.sentAt);
   }
   reminderBanner.classList.add('hidden');
+  updateNotificationBell();
+}
+
+// Shows a banner if an admin has broadcast "food's in" today and this user
+// hasn't dismissed that specific broadcast yet (keyed by its timestamp, so
+// a second broadcast the same day — e.g. next-day rollover — reappears).
+function updateFoodArrivedBanner() {
+  if (!dailyState || !dailyState.foodArrival || !currentUser) {
+    foodArrivedBanner.classList.add('hidden');
+    return;
+  }
+
+  const dismissedKey = `lunchsync_dismissed_food_${currentUser.id}`;
+  const dismissedAt = localStorage.getItem(dismissedKey);
+  if (dismissedAt === String(dailyState.foodArrival.at)) {
+    foodArrivedBanner.classList.add('hidden');
+    return;
+  }
+
+  foodArrivedText.textContent = `${dailyState.foodArrival.by} says lunch has arrived — come get it!`;
+  foodArrivedBanner.classList.remove('hidden');
+}
+
+function dismissFoodArrivedBanner() {
+  if (dailyState && dailyState.foodArrival && currentUser) {
+    localStorage.setItem(`lunchsync_dismissed_food_${currentUser.id}`, String(dailyState.foodArrival.at));
+  }
+  foodArrivedBanner.classList.add('hidden');
+  updateNotificationBell();
+}
+
+// Mirrors the reminder/food-arrived banners into the header bell dropdown,
+// since both already track their own dismissed-state in localStorage.
+function updateNotificationBell() {
+  if (!btnNotificationBell) return;
+  const items = [];
+  if (reminderBanner && !reminderBanner.classList.contains('hidden')) {
+    items.push({ icon: 'notifications_active', text: 'Reminder: please place your lunch order before the cutoff time.' });
+  }
+  if (foodArrivedBanner && !foodArrivedBanner.classList.contains('hidden')) {
+    items.push({ icon: 'restaurant', text: foodArrivedText.textContent });
+  }
+
+  notificationBadge.textContent = String(items.length);
+  notificationBadge.classList.toggle('hidden', items.length === 0);
+
+  notificationDropdownList.innerHTML = items.length
+    ? items.map(item => `
+        <div class="notification-dropdown-item">
+          <span class="material-symbols-outlined">${item.icon}</span>
+          <span>${escapeHtml(item.text)}</span>
+        </div>
+      `).join('')
+    : '<p class="notification-empty">No new notifications</p>';
+}
+
+function toggleNotificationDropdown() {
+  notificationDropdown.classList.toggle('hidden');
+  userProfileDropdown.classList.add('hidden');
+}
+
+function toggleUserProfileDropdown() {
+  userProfileDropdown.classList.toggle('hidden');
+  notificationDropdown.classList.add('hidden');
+}
+
+// --- Push Notifications ---
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && typeof Notification !== 'undefined';
+}
+
+function base64UrlToUint8Array(base64Url) {
+  const padding = '='.repeat((4 - base64Url.length % 4) % 4);
+  const base64 = (base64Url + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+async function registerServiceWorker() {
+  if (!pushSupported()) return null;
+  try {
+    return await navigator.serviceWorker.register('/sw.js');
+  } catch (err) {
+    console.error('Service worker registration failed:', err);
+    return null;
+  }
+}
+
+async function enablePushNotifications() {
+  if (!pushSupported()) {
+    showAlert('Push notifications are not supported in this browser.');
+    return;
+  }
+
+  try {
+    const permission = await Notification.requestPermission();
+    updateNotificationRequestBanner();
+    if (permission !== 'granted') return;
+
+    const registration = await registerServiceWorker();
+    if (!registration) throw new Error('Service worker unavailable.');
+
+    const { publicKey } = await apiCall('/api/push/vapid-public-key');
+    if (!publicKey) {
+      showAlert('Push notifications are not configured on the server yet.');
+      return;
+    }
+
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: base64UrlToUint8Array(publicKey)
+    });
+
+    await apiCall('/api/push/subscribe', 'POST', { subscription: subscription.toJSON() });
+    showExportFeedback('Notifications enabled!');
+  } catch (err) {
+    showAlert(err.message || 'Failed to enable notifications.');
+  }
+}
+
+// Shows the "enable notifications" banner only while push is supported and
+// the browser hasn't already been asked (permission is still the default
+// undecided state) — once granted or denied, Notification.permission
+// reflects that permanently and the banner stays hidden from then on.
+function updateNotificationRequestBanner() {
+  if (!notificationRequestBanner) return;
+  if (!pushSupported() || Notification.permission !== 'default') {
+    notificationRequestBanner.classList.add('hidden');
+    return;
+  }
+  notificationRequestBanner.classList.remove('hidden');
+}
+
+// Admin/Abigail: broadcast that lunch has arrived
+async function handleFoodArrived() {
+  const confirmed = await confirmDialog(
+    "Notify everyone that lunch has arrived? This shows an in-app banner to anyone on the page and sends a push notification to anyone who's enabled them."
+  );
+  if (!confirmed) return;
+
+  foodArrivedStatus.className = 'status-msg-inline';
+  foodArrivedStatus.textContent = 'Notifying everyone...';
+
+  try {
+    await apiCall('/api/food-arrived', 'POST');
+    foodArrivedStatus.className = 'status-msg-inline success';
+    foodArrivedStatus.style.color = 'var(--status-in-office)';
+    foodArrivedStatus.textContent = 'Everyone has been notified!';
+    await fetchDailyState();
+  } catch (err) {
+    foodArrivedStatus.className = 'status-msg-inline error-text';
+    foodArrivedStatus.textContent = err.message || 'Failed to notify the team.';
+  }
 }
 
 function updateHeaderDisplay() {
@@ -709,7 +879,7 @@ function updateCountdownBanner() {
     countdownText.innerHTML = `<strong>CLOSING SOON</strong> — Orders lock in <strong>${timeString}</strong>!`;
   } else {
     countdownBanner.classList.add('success');
-    countdownText.innerHTML = `Orders are currently open. Time remaining until cutoff: <strong>${timeString}</strong>`;
+    countdownText.innerHTML = `<span class="countdown-line1">Orders are currently open.</span><span class="countdown-line2">Time remaining until cutoff:<strong>${timeString}</strong></span>`;
   }
 
   disableOrderForm(false);
@@ -732,6 +902,26 @@ function disableOrderForm(disable) {
 }
 
 // --- Tab: Order View ---
+
+// A friendly, time-of-day-aware greeting for the Order Lunch page — mirrors
+// the "Good afternoon, Name" pattern from Claude's own web app.
+function updateOrderGreeting() {
+  if (!currentUser) return;
+
+  const hour = new Date().getHours();
+  const timeGreeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  const firstName = currentUser.name.split(' ')[0];
+  orderGreetingText.textContent = `${timeGreeting}, ${firstName}`;
+
+  const userOrder = dailyState?.orders?.ordered?.find(o => o.userId === currentUser.id);
+  if (dailyState?.isLocked && !userOrder) {
+    orderGreetingSubtext.textContent = "Cutoff's passed and you didn't get an order in today.";
+  } else if (userOrder) {
+    orderGreetingSubtext.textContent = `You're set for today — ${userOrder.itemName}.`;
+  } else {
+    orderGreetingSubtext.textContent = "Let's get your lunch sorted for today.";
+  }
+}
 
 function renderFoodOrderForm() {
   if (!dailyState) return;
@@ -1008,67 +1198,6 @@ async function removeMemberOrder(userId, userName) {
     await fetchDailyState();
   } catch (err) {
     showAlert(err.message || 'Failed to remove order.');
-  }
-}
-
-// --- Tab: Distribution Checklist ---
-
-function renderDistributionView() {
-  if (!dailyState) return;
-  distributionGroups.innerHTML = '';
-
-  const searchVal = distributionSearch.value.toLowerCase().trim();
-
-  const orderedList = (dailyState.orders.ordered || [])
-    .filter(item => item.name.toLowerCase().includes(searchVal));
-
-  const byDish = new Map();
-  orderedList.forEach(item => {
-    if (!byDish.has(item.itemName)) byDish.set(item.itemName, []);
-    byDish.get(item.itemName).push(item);
-  });
-
-  const columns = dailyState.dishTotals
-    .map(dish => ({ title: dish.name, members: byDish.get(dish.name) || [] }))
-    .filter(col => col.members.length > 0);
-
-  if (columns.length === 0) {
-    distributionGroups.innerHTML = '<div class="no-results">No orders to hand out yet.</div>';
-    return;
-  }
-
-  distributionGroups.innerHTML = columns.map(col => {
-    const doneInCol = col.members.filter(m => m.served).length;
-    const rows = col.members.map(member => `
-      <button type="button" class="summary-member-row distribution-row ${member.served ? 'served' : ''}" data-user-id="${member.userId}">
-        <span class="material-symbols-outlined">${member.served ? 'check_box' : 'check_box_outline_blank'}</span>
-        <span>${escapeHtml(member.name)}</span>
-      </button>
-    `).join('');
-
-    return `
-      <div class="breakdown-column">
-        <div class="breakdown-column-title">${escapeHtml(col.title)} (${doneInCol}/${col.members.length})</div>
-        <div class="breakdown-column-list">${rows}</div>
-      </div>
-    `;
-  }).join('');
-
-  distributionGroups.querySelectorAll('.distribution-row').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const userId = btn.dataset.userId;
-      const currentlyServed = btn.classList.contains('served');
-      toggleServed(userId, !currentlyServed);
-    });
-  });
-}
-
-async function toggleServed(userId, served) {
-  try {
-    await apiCall('/api/order/serve', 'POST', { userId, served });
-    await fetchDailyState();
-  } catch (err) {
-    showAlert(err.message || 'Failed to update.');
   }
 }
 
@@ -1758,32 +1887,49 @@ async function resetRosterMemberPasscode(user) {
   }
 }
 
-// --- Tab: Order History ---
+// --- Tab: Distribution & Order History ---
+// Unified checklist: "Today" is the live board (same tap-to-serve UX the old
+// standalone Distribution tab had); past dates are archived history, kept
+// editable so a late vendor delivery arriving after archive rollover can
+// still be checked off (see /api/history/:date/order-serve).
 
 async function loadHistoryDates() {
-  historyDatesList.innerHTML = '<div class="no-results">Loading history...</div>';
+  historyDatesList.innerHTML = '<div class="no-results">Loading...</div>';
   historyDetailPanel.innerHTML = `
     <div class="panel-card history-empty-card">
       <div class="empty-state">
         <span class="material-symbols-outlined">inventory_2</span>
-        <p>Select a date from the list to view its archived orders.</p>
+        <p>Loading today's checklist...</p>
       </div>
     </div>
   `;
 
   try {
-    const history = await apiCall('/api/history');
+    const [today, history] = await Promise.all([
+      apiCall('/api/daily'),
+      apiCall('/api/history')
+    ]);
     historyDatesList.innerHTML = '';
 
-    if (history.length === 0) {
-      historyDatesList.innerHTML = '<div class="no-results">No archived daily records found.</div>';
-      return;
-    }
+    const todayItem = document.createElement('div');
+    todayItem.className = 'history-date-item history-date-item-today active';
+    todayItem.innerHTML = `
+      <div>
+        <div class="history-date-title">Today <span class="live-badge">LIVE</span></div>
+        <div class="history-date-meta">${today.stats.ordered} order${today.stats.ordered !== 1 ? 's' : ''} so far</div>
+      </div>
+      <span class="material-symbols-outlined text-muted" style="font-size:1.1rem">arrow_forward_ios</span>
+    `;
+    todayItem.addEventListener('click', () => {
+      document.querySelectorAll('.history-date-item').forEach(el => el.classList.remove('active'));
+      todayItem.classList.add('active');
+      renderHistoryDetail(buildChecklistData(today, true));
+    });
+    historyDatesList.appendChild(todayItem);
 
-    history.forEach((archive, index) => {
+    history.forEach(archive => {
       const div = document.createElement('div');
       div.className = 'history-date-item';
-      div.dataset.index = index;
 
       const orderCount = Object.keys(archive.orders).length;
 
@@ -1798,54 +1944,128 @@ async function loadHistoryDates() {
       div.addEventListener('click', () => {
         document.querySelectorAll('.history-date-item').forEach(el => el.classList.remove('active'));
         div.classList.add('active');
-        renderHistoryDetail(archive);
+        renderHistoryDetail(buildChecklistData(archive, false));
       });
 
       historyDatesList.appendChild(div);
     });
+
+    // Land on today's live checklist immediately, same as the old
+    // Distribution tab did, rather than an empty "pick a date" state.
+    renderHistoryDetail(buildChecklistData(today, true));
   } catch (err) {
     historyDatesList.innerHTML = '<div class="no-results error-text">Failed to fetch history</div>';
     console.error('Error loading history:', err);
   }
 }
 
-function renderHistoryDetail(archive) {
-  const orders = archive.orders || {};
-  const rosterSnapshot = archive.rosterSnapshot || {};
+// Normalizes either the live daily state or an archived history entry into
+// one shape, so the rest of the checklist UI doesn't need to know which.
+function buildChecklistData(source, isLive) {
+  if (isLive) {
+    const ordered = source.orders.ordered || [];
+    const pending = source.orders.pending || [];
 
+    const byDish = new Map();
+    ordered.forEach(o => {
+      if (!byDish.has(o.itemName)) byDish.set(o.itemName, []);
+      byDish.get(o.itemName).push({ userId: o.userId, name: o.name, served: !!o.served, note: o.note || '' });
+    });
+    const columns = source.menu
+      .map(d => ({ title: d.name, members: byDish.get(d.name) || [] }))
+      .filter(c => c.members.length > 0);
+
+    const rosterRows = [
+      ...ordered.map(o => ({ name: o.name, status: 'Ordered', dish: o.itemName })),
+      ...pending.map(p => ({ name: p.name, status: 'Unconfirmed', dish: '—' }))
+    ];
+
+    return {
+      date: source.date,
+      isLive: true,
+      menu: source.menu,
+      dishTotals: source.dishTotals,
+      columns,
+      rosterRows,
+      totalRoster: source.stats.total,
+      orderedCount: source.stats.ordered,
+      servedCount: ordered.filter(o => o.served).length
+    };
+  }
+
+  const archive = source;
   const dishTotals = {};
   archive.menu.forEach(d => { dishTotals[d.id] = 0; });
+  const rosterSnapshot = archive.rosterSnapshot || {};
+  const orders = archive.orders || {};
 
-  const rows = Object.values(rosterSnapshot).map(userSnapshot => {
-    const id = Object.keys(rosterSnapshot).find(k => rosterSnapshot[k] === userSnapshot);
-    const userOrder = orders[id];
-    if (userOrder) {
-      if (userOrder.itemId) dishTotals[userOrder.itemId] = (dishTotals[userOrder.itemId] || 0) + 1;
-      return {
-        name: userSnapshot.name,
-        status: 'Ordered',
-        dish: archive.menu.find(m => m.id === userOrder.itemId)?.name || 'Unknown Dish'
-      };
+  const byDish = new Map();
+  const rosterRows = [];
+  let orderedCount = 0;
+  let servedCount = 0;
+
+  Object.entries(rosterSnapshot).forEach(([userId, u]) => {
+    const o = orders[userId];
+    if (o) {
+      orderedCount++;
+      if (o.served) servedCount++;
+      if (o.itemId) dishTotals[o.itemId] = (dishTotals[o.itemId] || 0) + 1;
+      const dishName = archive.menu.find(m => m.id === o.itemId)?.name || 'Unknown Dish';
+      if (!byDish.has(dishName)) byDish.set(dishName, []);
+      byDish.get(dishName).push({ userId, name: u.name, served: !!o.served });
+      rosterRows.push({ name: u.name, status: 'Ordered', dish: dishName });
+    } else {
+      rosterRows.push({ name: u.name, status: 'Unconfirmed', dish: '—' });
     }
-    return { name: userSnapshot.name, status: 'Unconfirmed', dish: '—' };
-  }).sort((a, b) => a.name.localeCompare(b.name));
+  });
 
-  const orderedCount = rows.filter(r => r.status === 'Ordered').length;
+  const columns = archive.menu
+    .map(d => ({ title: d.name, members: byDish.get(d.name) || [] }))
+    .filter(c => c.members.length > 0);
+
+  return {
+    date: archive.date,
+    isLive: false,
+    menu: archive.menu,
+    dishTotals: archive.menu.map(d => ({ itemId: d.id, name: d.name, count: dishTotals[d.id] || 0 })),
+    columns,
+    rosterRows,
+    totalRoster: Object.keys(rosterSnapshot).length,
+    orderedCount,
+    servedCount
+  };
+}
+
+// Currently displayed checklist data (today or a past date) — kept around
+// so search-filtering and optimistic serve-toggles don't need a re-fetch.
+let currentChecklistData = null;
+
+function renderHistoryDetail(data) {
+  currentChecklistData = data;
+  const unservedCount = data.orderedCount - data.servedCount;
 
   historyDetailPanel.innerHTML = `
     <!-- Stat Cards -->
     <div class="stats-grid">
       <div class="stat-card">
-        <span class="stat-num">${rows.length}</span>
+        <span class="stat-num">${data.totalRoster}</span>
         <span class="stat-label">Total Roster</span>
       </div>
       <div class="stat-card status-in-office">
-        <span class="stat-num">${orderedCount}</span>
+        <span class="stat-num">${data.orderedCount}</span>
         <span class="stat-label">Ordered</span>
       </div>
       <div class="stat-card status-pending">
-        <span class="stat-num">${rows.length - orderedCount}</span>
+        <span class="stat-num">${data.totalRoster - data.orderedCount}</span>
         <span class="stat-label">Unconfirmed</span>
+      </div>
+      <div class="stat-card status-in-office">
+        <span class="stat-num" id="history-stat-served">${data.servedCount}</span>
+        <span class="stat-label">Served</span>
+      </div>
+      <div class="stat-card status-not-coming">
+        <span class="stat-num" id="history-stat-unserved">${unservedCount}</span>
+        <span class="stat-label">Not Served</span>
       </div>
     </div>
 
@@ -1853,8 +2073,8 @@ function renderHistoryDetail(archive) {
     <div class="panel-card">
       <div class="card-header-compact-row">
         <div>
-          <h2>Lunch Records for ${formatDate(archive.date)}</h2>
-          <p>Required totals for food vendor order placement that day.</p>
+          <h2>${data.isLive ? "Today's Lunch Records" : `Lunch Records for ${formatDate(data.date)}`}</h2>
+          <p>Required totals for food vendor order placement.</p>
         </div>
         <button type="button" class="btn btn-secondary btn-icon-text" id="btn-export-history-csv">
           <span class="material-symbols-outlined">download</span>
@@ -1862,52 +2082,150 @@ function renderHistoryDetail(archive) {
         </button>
       </div>
       <div class="dish-totals-grid">
-        ${archive.menu.map(dish => `
+        ${data.dishTotals.filter(d => d.count > 0).map(dish => `
           <div class="dish-total-card">
             <span class="material-symbols-outlined">restaurant</span>
-            <span class="dish-total-count">${dishTotals[dish.id] || 0}</span>
+            <span class="dish-total-count">${dish.count}</span>
             <span class="dish-total-name">${escapeHtml(dish.name)}</span>
           </div>
-        `).join('') || '<div class="no-results">No menu published.</div>'}
+        `).join('') || '<div class="no-results">No orders placed yet.</div>'}
       </div>
     </div>
 
-    <!-- Roster Table -->
+    <!-- Distribution Checklist -->
     <div class="panel-card">
       <div class="card-header">
-        <h2>Roster Selections</h2>
-        <p>Individual dish selections archived for this day.</p>
+        <h2>${data.isLive ? 'Handout Checklist' : 'Handout Record'}</h2>
+        <p>${data.isLive ? "Tap a name as you hand out their dish to check it off." : "Correct this day's serve status if it wasn't checked off before archiving."}</p>
       </div>
-      <div class="roster-table-container">
-        <table class="roster-table">
-          <thead><tr><th>Name</th><th>Status</th><th>Dish Selection</th></tr></thead>
-          <tbody>
-            ${rows.map(r => `
-              <tr>
-                <td><strong>${escapeHtml(r.name)}</strong></td>
-                <td>${r.status}</td>
-                <td>${escapeHtml(r.dish)}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
+
+      <div class="list-search-wrapper">
+        <span class="material-symbols-outlined">search</span>
+        <input type="text" id="history-checklist-search" placeholder="Search people...">
+      </div>
+
+      <div class="roster-breakdown-grid" id="history-checklist-groups">
+        <!-- Populated by renderHistoryChecklistGrid -->
       </div>
     </div>
   `;
 
   document.getElementById('btn-export-history-csv').addEventListener('click', () => {
-    exportHistoryCsv(archive, archive.menu.map(dish => ({ name: dish.name, count: dishTotals[dish.id] || 0 })), rows);
+    exportHistoryCsv(data);
+  });
+  document.getElementById('history-checklist-search').addEventListener('input', renderHistoryChecklistGrid);
+
+  renderHistoryChecklistGrid();
+}
+
+function renderHistoryChecklistGrid() {
+  const data = currentChecklistData;
+  const container = document.getElementById('history-checklist-groups');
+  if (!data || !container) return;
+
+  const searchVal = (document.getElementById('history-checklist-search')?.value || '').toLowerCase().trim();
+
+  const columns = data.columns
+    .map(col => ({ ...col, members: col.members.filter(m => m.name.toLowerCase().includes(searchVal)) }))
+    .filter(col => col.members.length > 0);
+
+  if (columns.length === 0) {
+    container.innerHTML = `<div class="no-results">${data.orderedCount === 0 ? 'No orders to hand out yet.' : 'No matches.'}</div>`;
+    return;
+  }
+
+  container.innerHTML = columns.map(col => {
+    const doneInCol = col.members.filter(m => m.served).length;
+    const rows = col.members.map(member => `
+      <button type="button" class="summary-member-row distribution-row ${member.served ? 'served' : ''}" data-user-id="${member.userId}">
+        <span class="material-symbols-outlined">${member.served ? 'check_box' : 'check_box_outline_blank'}</span>
+        <span>${escapeHtml(member.name)}${member.note ? `<span class="text-muted"> — ${escapeHtml(member.note)}</span>` : ''}</span>
+      </button>
+    `).join('');
+
+    return `
+      <div class="breakdown-column" data-dish-title="${escapeHtml(col.title)}">
+        <div class="breakdown-column-title">${escapeHtml(col.title)} (${doneInCol}/${col.members.length})</div>
+        <div class="breakdown-column-list">${rows}</div>
+      </div>
+    `;
+  }).join('');
+
+  container.querySelectorAll('.distribution-row').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const userId = btn.dataset.userId;
+      const nowServed = !btn.classList.contains('served');
+      // Optimistic update — flip the UI immediately instead of waiting on a
+      // full network round-trip, which felt laggy.
+      applyChecklistServedState(userId, nowServed, btn);
+      saveChecklistServed(userId, nowServed, btn);
+    });
   });
 }
 
-// Download a CSV of an archived day — mirrors the Live Summary export
-function exportHistoryCsv(archive, dishTotalsList, rows) {
+// Updates the in-memory checklist data, the row's checkbox, its column
+// count, and the overall stat totals together — computed from the cached
+// data rather than the visible DOM, so totals stay correct even mid-search.
+function applyChecklistServedState(userId, served, btn) {
+  const data = currentChecklistData;
+  if (!data) return;
+
+  for (const col of data.columns) {
+    const member = col.members.find(m => m.userId === userId);
+    if (member) { member.served = served; break; }
+  }
+  data.servedCount = data.columns.reduce(
+    (sum, col) => sum + col.members.filter(m => m.served).length, 0
+  );
+
+  if (btn) {
+    btn.classList.toggle('served', served);
+    btn.querySelector('.material-symbols-outlined').textContent = served ? 'check_box' : 'check_box_outline_blank';
+
+    const column = btn.closest('.breakdown-column');
+    if (column) {
+      const title = column.querySelector('.breakdown-column-title');
+      const total = column.querySelectorAll('.distribution-row').length;
+      const done = column.querySelectorAll('.distribution-row.served').length;
+      title.textContent = `${column.dataset.dishTitle} (${done}/${total})`;
+    }
+  }
+
+  const statServed = document.getElementById('history-stat-served');
+  const statUnserved = document.getElementById('history-stat-unserved');
+  if (statServed) statServed.textContent = data.servedCount;
+  if (statUnserved) statUnserved.textContent = data.orderedCount - data.servedCount;
+
+  // Keep the live poll's copy of dailyState in sync too, so switching to
+  // Live Summary/My Orders right after doesn't show stale served status.
+  if (data.isLive) {
+    const order = dailyState?.orders?.ordered?.find(o => o.userId === userId);
+    if (order) order.served = served;
+  }
+}
+
+async function saveChecklistServed(userId, served, btn) {
+  const data = currentChecklistData;
+  try {
+    if (data.isLive) {
+      await apiCall('/api/order/serve', 'POST', { userId, served });
+    } else {
+      await apiCall(`/api/history/${data.date}/order-serve`, 'POST', { userId, served });
+    }
+  } catch (err) {
+    applyChecklistServedState(userId, !served, btn);
+    showAlert(err.message || 'Failed to update served status.');
+  }
+}
+
+// Download a CSV of the currently displayed day (today or archived)
+function exportHistoryCsv(data) {
   const csvRows = [
     ['Dish', 'Quantity'],
-    ...dishTotalsList.map(d => [d.name, String(d.count)]),
+    ...data.dishTotals.filter(d => d.count > 0).map(d => [d.name, String(d.count)]),
     [],
     ['Name', 'Status', 'Dish Selection'],
-    ...rows.map(r => [r.name, r.status, r.dish])
+    ...data.rosterRows.map(r => [r.name, r.status, r.dish])
   ];
 
   const csvContent = "data:text/csv;charset=utf-8,"
@@ -1916,7 +2234,7 @@ function exportHistoryCsv(archive, dishTotalsList, rows) {
   const encodedUri = encodeURI(csvContent);
   const link = document.createElement("a");
   link.setAttribute("href", encodedUri);
-  link.setAttribute("download", `LunchBuddy_History_${archive.date}.csv`);
+  link.setAttribute("download", `LunchBuddy_${data.date}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -2067,7 +2385,6 @@ function setupEventListeners() {
 
   // Live Summary Search
   summaryListSearch.addEventListener('input', renderDetailedBreakdownList);
-  distributionSearch.addEventListener('input', renderDistributionView);
 
   // Live Summary Export actions
   btnCopyWhatsapp.addEventListener('click', copyWhatsAppSummary);
@@ -2075,6 +2392,25 @@ function setupEventListeners() {
   btnRemindPending.addEventListener('click', remindPendingMembers);
   btnClearOrders.addEventListener('click', clearAllOrders);
   btnDismissReminder.addEventListener('click', dismissReminderBanner);
+  btnDismissFoodArrived.addEventListener('click', dismissFoodArrivedBanner);
+  btnEnableNotifications.addEventListener('click', enablePushNotifications);
+  btnFoodArrived.addEventListener('click', handleFoodArrived);
+
+  // Header: notification bell + user profile dropdowns
+  btnNotificationBell.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleNotificationDropdown();
+  });
+  userProfileToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleUserProfileDropdown();
+  });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.notification-bell-wrap')) notificationDropdown.classList.add('hidden');
+    if (!e.target.closest('.user-profile') && !e.target.closest('.user-profile-dropdown')) {
+      userProfileDropdown.classList.add('hidden');
+    }
+  });
 
   // Admin Setup Menu buttons
   btnAdminAddDish.addEventListener('click', () => addDishInputRow('', '', ''));
@@ -2132,6 +2468,14 @@ function setupEventListeners() {
 }
 
 // --- Utility Functions ---
+
+function getInitials(name) {
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  const first = parts[0]?.[0] || '';
+  const last = parts.length > 1 ? parts[parts.length - 1][0] : '';
+  return (first + last).toUpperCase();
+}
 
 function escapeHtml(str) {
   if (typeof str !== 'string') return '';
