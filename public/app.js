@@ -48,6 +48,14 @@ let isEditingOrder = false;
 // before the user hits Submit.
 let orderFormDirty = false;
 
+// "today" or "week" — which view the Order Lunch tab shows. Persisted so a
+// reload doesn't dump someone back into today-mode mid-planning.
+let orderMode = localStorage.getItem('lunchsync_order_mode') === 'week' ? 'week' : 'today';
+let weekPlan = null;
+// Dates (YYYY-MM-DD) with an in-flight edit — mirrors orderFormDirty's role
+// but per-card, since the weekly grid re-renders on every poll too.
+const weekPlanDirtyDates = new Set();
+
 // --- DOM Elements ---
 const headerInfo = document.getElementById('header-info');
 const displayDate = document.getElementById('display-date');
@@ -113,6 +121,11 @@ const btnChangeOrder = document.getElementById('btn-change-order');
 const btnCancelOrder = document.getElementById('btn-cancel-order');
 const confThumbImg = document.querySelector('.confirmation-card .conf-thumb img');
 const orderHeroArtImg = document.querySelector('.order-hero-art img');
+const orderModeToggle = document.getElementById('order-mode-toggle');
+const weeklyPlanCard = document.getElementById('weekly-plan-card');
+const weeklyMenuStatusMsg = document.getElementById('weekly-menu-status-msg');
+const weekGrid = document.getElementById('week-grid');
+const weeklyPlanStatus = document.getElementById('weekly-plan-status');
 
 // Live Summary Tab
 const statTotal = document.getElementById('stat-total');
@@ -512,6 +525,14 @@ async function loginSuccess() {
     console.error('Error updating roster snapshot:', err);
   }
 
+  // Sync the today/week toggle buttons to the persisted mode before the
+  // first fetch, so fetchDailyState's orderMode check is already correct.
+  orderModeToggle.querySelectorAll('.order-mode-btn').forEach(btn => {
+    const active = btn.dataset.mode === orderMode;
+    btn.classList.toggle('selected', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+
   // Fetch initial state and start polling
   await fetchDailyState();
   if (pollInterval) clearInterval(pollInterval);
@@ -652,6 +673,13 @@ async function fetchDailyState() {
     if (activeTab === 'order-tab') {
       updateOrderGreeting();
       renderFoodOrderForm();
+      // Apply mode visibility BEFORE the network await below — otherwise
+      // today-mode elements (shown a moment ago by renderFoodOrderForm/
+      // updateReminderBanner/etc, which don't know about orderMode) stay
+      // visible on-screen for the whole round-trip and only get hidden once
+      // fetchWeekPlan resolves, producing a visible flash every ~10s poll.
+      applyOrderModeVisibility();
+      if (orderMode === 'week') await fetchWeekPlan();
     } else if (activeTab === 'summary-tab') {
       renderSummaryView();
     }
@@ -870,6 +898,176 @@ function applyClosedDayState() {
     menuPromoBanner.classList.remove('hidden');
   }
   return closed;
+}
+
+// --- Order mode: "Order for today" vs. "Plan my week" ---
+
+function setOrderMode(mode) {
+  orderMode = mode === 'week' ? 'week' : 'today';
+  localStorage.setItem('lunchsync_order_mode', orderMode);
+  orderModeToggle.querySelectorAll('.order-mode-btn').forEach(btn => {
+    const active = btn.dataset.mode === orderMode;
+    btn.classList.toggle('selected', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+  applyOrderModeVisibility();
+  if (orderMode === 'week') fetchWeekPlan();
+}
+
+// Single source of truth for which of the today-mode panels vs. the weekly
+// planner card are visible. Must run after renderFoodOrderForm() and
+// applyClosedDayState(), since both of those also toggle these same
+// elements — week mode simply wins and hides all of it, showing the planner
+// instead (today's own status is already visible as a card within the week
+// grid, so there's no need to also show the closed/countdown banners).
+function applyOrderModeVisibility() {
+  const week = orderMode === 'week';
+  weeklyPlanCard.classList.toggle('hidden', !week);
+  if (week) {
+    closedDayPanel.classList.add('hidden');
+    countdownBanner.classList.add('hidden');
+    orderFormCard.classList.add('hidden');
+    confirmationCard.classList.add('hidden');
+    reminderBanner.classList.add('hidden');
+    foodArrivedBanner.classList.add('hidden');
+    menuPromoBanner.classList.add('hidden');
+  }
+}
+
+async function fetchWeekPlan() {
+  try {
+    weekPlan = await apiCall('/api/week-plan');
+    weeklyPlanStatus.textContent = '';
+    weeklyPlanStatus.className = 'status-msg-inline';
+    renderWeeklyPlan();
+  } catch (err) {
+    weeklyPlanStatus.className = 'status-msg-inline error-text';
+    weeklyPlanStatus.textContent = err.message || 'Failed to load your weekly plan.';
+  }
+}
+
+function renderWeeklyPlan() {
+  if (!weekPlan) return;
+
+  if (!weekPlan.menuPublished) {
+    weeklyMenuStatusMsg.classList.remove('hidden');
+    weekGrid.classList.add('hidden');
+    return;
+  }
+  weeklyMenuStatusMsg.classList.add('hidden');
+  weekGrid.classList.remove('hidden');
+
+  weekPlan.days.forEach(day => {
+    if (weekPlanDirtyDates.has(day.date)) return; // in-flight edit — leave it alone
+
+    let card = weekGrid.querySelector(`.week-day-card[data-date="${day.date}"]`);
+    const isNew = !card;
+    if (isNew) {
+      card = document.createElement('div');
+      card.className = 'week-day-card';
+      card.dataset.date = day.date;
+      weekGrid.appendChild(card);
+    }
+
+    card.className = 'week-day-card' +
+      (day.isToday ? ' today' : '') +
+      (day.isLocked ? ' locked' : '') +
+      (!day.isOperational ? ' closed' : '') +
+      (!day.dishName ? ' skipped' : '');
+
+    const shortDate = new Date(day.date + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    const badge = day.isLocked ? (day.isPast ? 'Past' : 'Locked') : (!day.isOperational ? 'Closed' : (day.isToday ? 'Today' : ''));
+    const disabled = !day.editable ? 'disabled' : '';
+    const warning = day.dishStillOnMenu === false
+      ? '<p class="week-day-warning">This dish may no longer be on the menu that day.</p>'
+      : '';
+
+    const optionsHtml = ['<option value="">Skipped</option>']
+      .concat((weekPlan.menu || []).map(item =>
+        `<option value="${escapeHtml(item.name)}" ${item.name === day.dishName ? 'selected' : ''}>${escapeHtml(item.name)}</option>`
+      )).join('');
+
+    card.innerHTML = `
+      <div class="week-day-head">
+        <span class="week-day-name">${escapeHtml(day.dayName)}</span>
+        <span class="week-day-date">${escapeHtml(shortDate)}</span>
+        ${badge ? `<span class="week-day-badge">${escapeHtml(badge)}</span>` : ''}
+      </div>
+      <div class="week-day-thumb"><img src="${getDishImage(day.dishName)}" alt="" loading="lazy"></div>
+      <select class="week-day-select" aria-label="Dish for ${escapeHtml(day.dayName)}" ${disabled}>${optionsHtml}</select>
+      ${warning}
+      <input type="text" class="week-day-note" maxlength="140" placeholder="Note (optional)" value="${escapeHtml(day.note || '')}" ${disabled}>
+      ${(day.editable && day.dishName) ? `
+        <button type="button" class="btn btn-secondary btn-sm week-day-repeat">
+          <span class="material-symbols-outlined">repeat</span>
+          <span>Use for rest of week</span>
+        </button>
+      ` : ''}
+    `;
+  });
+}
+
+async function handleWeekDishChange(date, dishName) {
+  weekPlanDirtyDates.add(date);
+  try {
+    const res = dishName
+      ? await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName })
+      : await apiCall(`/api/week-plan/${date}`, 'DELETE');
+    patchWeekDay(res.day);
+    weeklyPlanStatus.className = 'status-msg-inline success';
+    weeklyPlanStatus.textContent = 'Saved!';
+    if (date === weekPlan?.businessDate) await fetchDailyState();
+  } catch (err) {
+    weekPlanDirtyDates.delete(date);
+    weeklyPlanStatus.className = 'status-msg-inline error-text';
+    weeklyPlanStatus.textContent = err.message || 'Failed to save.';
+    renderWeeklyPlan(); // revert the select back to the last known-good state
+  }
+}
+
+async function handleWeekNoteCommit(date, note) {
+  const day = weekPlan?.days.find(d => d.date === date);
+  if (!day || !day.dishName) { weekPlanDirtyDates.delete(date); return; } // nothing to attach a note to
+  try {
+    const res = await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName: day.dishName, note });
+    patchWeekDay(res.day);
+    if (date === weekPlan?.businessDate) await fetchDailyState();
+  } catch (err) {
+    weekPlanDirtyDates.delete(date);
+    weeklyPlanStatus.className = 'status-msg-inline error-text';
+    weeklyPlanStatus.textContent = err.message || 'Failed to save note.';
+    renderWeeklyPlan();
+  }
+}
+
+async function handleRepeatRestOfWeek(date, dishName) {
+  if (!(await confirmDialog(`Use ${dishName} for the rest of the week?`))) return;
+  try {
+    const result = await apiCall('/api/week-plan/repeat', 'POST', { dishName, fromDate: date });
+    await fetchWeekPlan();
+    await fetchDailyState();
+    const parts = [];
+    if (result.appliedDates?.length) parts.push(`${dishName} set for ${result.appliedDates.length} day(s).`);
+    if (result.skippedDates?.length) {
+      const reasons = result.skippedDates.map(s => `${s.date} (${s.reason})`).join(', ');
+      parts.push(`Skipped: ${reasons}.`);
+    }
+    weeklyPlanStatus.className = 'status-msg-inline success';
+    weeklyPlanStatus.textContent = parts.join(' ') || 'Done.';
+  } catch (err) {
+    weeklyPlanStatus.className = 'status-msg-inline error-text';
+    weeklyPlanStatus.textContent = err.message || 'Failed to repeat selection.';
+  }
+}
+
+// Merges a single updated day (returned by PUT/DELETE) into the cached
+// weekPlan and re-renders just that card, avoiding a full refetch/flicker.
+function patchWeekDay(day) {
+  if (!weekPlan || !day) return;
+  weekPlanDirtyDates.delete(day.date);
+  const idx = weekPlan.days.findIndex(d => d.date === day.date);
+  if (idx !== -1) weekPlan.days[idx] = { ...weekPlan.days[idx], ...day };
+  renderWeeklyPlan();
 }
 
 function updateCountdownBanner() {
@@ -2462,6 +2660,43 @@ function setupEventListeners() {
     renderFoodOrderForm();
   });
   btnCancelOrder.addEventListener('click', handleCancelOrder);
+
+  // Order mode toggle: "Order for today" / "Plan my week"
+  orderModeToggle.addEventListener('click', (e) => {
+    const btn = e.target.closest('.order-mode-btn');
+    if (btn) setOrderMode(btn.dataset.mode);
+  });
+
+  // Weekly plan grid — delegated since #week-grid is rebuilt on every render
+  weekGrid.addEventListener('change', (e) => {
+    const card = e.target.closest('.week-day-card');
+    if (!card) return;
+    const date = card.dataset.date;
+    if (e.target.classList.contains('week-day-select')) {
+      handleWeekDishChange(date, e.target.value);
+    }
+  });
+  weekGrid.addEventListener('input', (e) => {
+    const card = e.target.closest('.week-day-card');
+    if (!card) return;
+    if (e.target.classList.contains('week-day-note')) {
+      weekPlanDirtyDates.add(card.dataset.date);
+    }
+  });
+  weekGrid.addEventListener('focusout', (e) => {
+    const card = e.target.closest('.week-day-card');
+    if (!card) return;
+    if (e.target.classList.contains('week-day-note')) {
+      handleWeekNoteCommit(card.dataset.date, e.target.value.trim());
+    }
+  });
+  weekGrid.addEventListener('click', (e) => {
+    const card = e.target.closest('.week-day-card');
+    const repeatBtn = e.target.closest('.week-day-repeat');
+    if (!card || !repeatBtn) return;
+    const select = card.querySelector('.week-day-select');
+    if (select?.value) handleRepeatRestOfWeek(card.dataset.date, select.value);
+  });
 
   // Live Summary Search
   summaryListSearch.addEventListener('input', renderDetailedBreakdownList);

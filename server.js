@@ -19,7 +19,11 @@ import {
   getRemindersLog,
   saveRemindersLog,
   getSecuritySettings,
-  saveSecuritySettings
+  saveSecuritySettings,
+  getWeeklyPlan,
+  saveWeeklyPlan,
+  getAllWeeklyPlans,
+  deleteWeeklyPlan
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -70,6 +74,36 @@ const MAX_ORDER_NOTE_LENGTH = 140;
 function sanitizeOrderNote(note) {
   if (typeof note !== 'string') return '';
   return note.trim().slice(0, MAX_ORDER_NOTE_LENGTH);
+}
+
+// Helper: normalize a dish name for matching — mirrors the client's
+// getDishImage() lookup so "Fried Rice" and "fried rice " are the same dish.
+function normalizeDishName(name) {
+  return String(name || '').trim().toLowerCase();
+}
+
+// Helper: find a menu item by name rather than id — dish ids regenerate
+// whenever the admin re-saves the menu (see /api/menu), so name is the only
+// durable key for matching a weekly plan entry against a future day's menu.
+function findMenuItemByName(menu, dishName) {
+  const key = normalizeDishName(dishName);
+  if (!key) return null;
+  return (menu || []).find(m => normalizeDishName(m.name) === key) || null;
+}
+
+// Helper: write a real order for a user on the given (already-loaded)
+// dailyState. Shared by the self-serve endpoint, the admin assign endpoint's
+// "today" path, and the weekly-plan rollover applier — one place that
+// decides what an "order" object looks like.
+function writeOrderForUser(dailyState, userId, itemId, note, extra = {}) {
+  dailyState.orders = dailyState.orders || {};
+  dailyState.orders[userId] = {
+    itemId,
+    timestamp: Date.now(),
+    note: sanitizeOrderNote(note),
+    ...extra
+  };
+  return dailyState.orders[userId];
 }
 
 // A small, deliberately-not-exhaustive blocklist of passcodes that defeat
@@ -149,6 +183,21 @@ function getBusinessDateString(archiveTime) {
   return formatDateString(now);
 }
 
+// Helper: The cutoff Date/time for an ARBITRARY date string, given the
+// single recurring daily cutoffTime — this applies unchanged to any date
+// since it's a time-of-day, not a date-specific setting. cutoffExtensionMinutes
+// is deliberately scoped to the CURRENT business date only: extra time an
+// admin grants today must not silently extend some other day's cutoff too.
+function getEffectiveCutoffDateFor(dailyState, dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const [cutoffHour, cutoffMin] = (dailyState.cutoffTime || '00:00').split(':').map(Number);
+  const cutoffDate = new Date(year, month - 1, day, cutoffHour, cutoffMin, 0, 0);
+  if (dateStr === dailyState.date) {
+    cutoffDate.setMinutes(cutoffDate.getMinutes() + (dailyState.cutoffExtensionMinutes || 0));
+  }
+  return cutoffDate;
+}
+
 // Helper: The actual cutoff Date/time for the current business date, after
 // adding any extra minutes an admin has granted (see /api/cutoff/extend).
 // Anchoring to dailyState.date (not just the wall-clock hour:minute) matters
@@ -156,11 +205,7 @@ function getBusinessDateString(archiveTime) {
 // archiveTime the next — a bare hour:minute comparison would treat a brand
 // new business date as already-past-cutoff for the rest of that calendar day.
 function getEffectiveCutoffDate(dailyState) {
-  const [year, month, day] = dailyState.date.split('-').map(Number);
-  const [cutoffHour, cutoffMin] = dailyState.cutoffTime.split(':').map(Number);
-  const cutoffDate = new Date(year, month - 1, day, cutoffHour, cutoffMin, 0, 0);
-  cutoffDate.setMinutes(cutoffDate.getMinutes() + (dailyState.cutoffExtensionMinutes || 0));
-  return cutoffDate;
+  return getEffectiveCutoffDateFor(dailyState, dailyState.date);
 }
 
 // Helper: Format a Date's time-of-day back to an HH:MM string
@@ -172,20 +217,30 @@ function formatMinutesAsHHMM(date) {
 
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-// Helper: which weekday (0=Sun..6=Sat) the current business date falls on
-function getBusinessDateWeekday(dailyState) {
-  const [year, month, day] = dailyState.date.split('-').map(Number);
+// Helper: which weekday (0=Sun..6=Sat) an arbitrary YYYY-MM-DD date falls on
+function getWeekdayForDate(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
   return new Date(year, month - 1, day).getDay();
 }
 
-// Helper: is today's business date one Lunch Buddy is open on? Missing/empty
+// Helper: which weekday (0=Sun..6=Sat) the current business date falls on
+function getBusinessDateWeekday(dailyState) {
+  return getWeekdayForDate(dailyState.date);
+}
+
+// Helper: is an arbitrary date one Lunch Buddy is open on? Missing/empty
 // operationalDays means "every day" — existing deployments keep working
 // exactly as before until an admin actually configures this.
-function isOperationalDay(dailyState) {
+function isOperationalDate(dailyState, dateStr) {
   const days = dailyState.operationalDays;
   if (!Array.isArray(days) || days.length === 0) return true;
-  if (!dailyState.date) return true;
-  return days.includes(getBusinessDateWeekday(dailyState));
+  if (!dateStr) return true;
+  return days.includes(getWeekdayForDate(dateStr));
+}
+
+// Helper: is today's business date one Lunch Buddy is open on?
+function isOperationalDay(dailyState) {
+  return isOperationalDate(dailyState, dailyState.date);
 }
 
 // Helper: name of the next day Lunch Buddy will be open, starting the
@@ -208,6 +263,39 @@ function checkCutoff(dailyState) {
 
   if (!dailyState.cutoffTime || !dailyState.date) return false;
   return Date.now() >= getEffectiveCutoffDate(dailyState).getTime();
+}
+
+// Helper: is an arbitrary date locked for editing? Past dates are always
+// locked (already archived); today follows the real checkCutoff (including
+// manual lock); future dates are never locked (they haven't had a chance to).
+function isDateLocked(dailyState, dateStr) {
+  if (!dailyState.date) return false;
+  if (dateStr < dailyState.date) return true;
+  if (dateStr === dailyState.date) return checkCutoff(dailyState);
+  return false;
+}
+
+// Helper: the Monday..Sunday dates of the calendar week containing the
+// current business date, filtered down to only the operational days — this
+// is the row of day-cards the weekly planner shows. Always the CURRENT week
+// (never jumps ahead just because today is late in the week), so days
+// before today naturally render as past/read-only and today renders live.
+function getPlanWeekDates(dailyState) {
+  if (!dailyState.date) return [];
+  const [year, month, day] = dailyState.date.split('-').map(Number);
+  const today = new Date(year, month - 1, day);
+  const isoWeekday = today.getDay() === 0 ? 7 : today.getDay(); // Mon=1..Sun=7
+  const monday = new Date(today);
+  monday.setDate(monday.getDate() - (isoWeekday - 1));
+
+  const dates = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(monday);
+    d.setDate(d.getDate() + i);
+    const dateStr = formatDateString(d);
+    if (isOperationalDate(dailyState, dateStr)) dates.push(dateStr);
+  }
+  return dates;
 }
 
 // Helper: Archive daily state to history
@@ -239,6 +327,70 @@ async function archiveCurrentDay(dailyState) {
   }
 }
 
+// Helper: convert saved weekly plan entries for dailyState.date into real
+// orders, matched by dish NAME against whatever menu is actually live right
+// now. A plan is a pre-fill, never a bypass: if the menu isn't published yet,
+// the day isn't operational, cutoff already passed, or the named dish is
+// gone from the menu, the entry is simply dropped and the person picks
+// manually — that's the intended fallback, not an error.
+// Mutates `dailyState.orders` (and, on success, `dailyState.weeklyPlansAppliedDate`)
+// in place. Returns true if it ran to completion (the caller must save
+// dailyState either way in that case — even if no order actually changed,
+// the applied-date marker did); false if it bailed out to retry later.
+async function applyWeeklyPlansForDate(dailyState) {
+  if (
+    !dailyState.date ||
+    !dailyState.menuPublished ||
+    !dailyState.menu?.length ||
+    !isOperationalDay(dailyState) ||
+    checkCutoff(dailyState)
+  ) {
+    return false;
+  }
+
+  const roster = await getRoster();
+  const rosterIds = new Set(roster.map(u => u.id));
+  const plans = await getAllWeeklyPlans();
+
+  for (const plan of plans) {
+    const userId = plan.userId;
+    if (!plan.entries || !rosterIds.has(userId)) continue;
+
+    let planChanged = false;
+
+    // Prune entries for dates that have already gone by — they're either
+    // already applied (below) or were skipped days that are now moot.
+    for (const date of Object.keys(plan.entries)) {
+      if (date < dailyState.date) {
+        delete plan.entries[date];
+        planChanged = true;
+      }
+    }
+
+    const entry = plan.entries[dailyState.date];
+    if (entry) {
+      if (!dailyState.orders?.[userId]) {
+        // A manual pick always wins over a plan, so only apply if the user
+        // hasn't already placed a real order for today some other way.
+        const matched = findMenuItemByName(dailyState.menu, entry.dishName);
+        if (matched) {
+          writeOrderForUser(dailyState, userId, matched.id, entry.note, { viaWeeklyPlan: true });
+        }
+      }
+      delete plan.entries[dailyState.date];
+      planChanged = true;
+    }
+
+    if (planChanged) {
+      plan.updatedAt = Date.now();
+      await saveWeeklyPlan(userId, plan);
+    }
+  }
+
+  dailyState.weeklyPlansAppliedDate = dailyState.date;
+  return true;
+}
+
 // Middleware: Check and handle daily transition/reset
 // Serializes the check-archive-save sequence below across concurrent
 // requests. Without this, two requests landing close together right as the
@@ -255,6 +407,7 @@ async function handleDailyResetMiddleware(req, res, next) {
 
     if (!dailyState.date) {
       dailyState.date = businessDate;
+      await applyWeeklyPlansForDate(dailyState);
       await saveDailyState(dailyState);
     } else if (dailyState.date !== businessDate) {
       // Archive time has passed, archive the previous business day
@@ -268,7 +421,15 @@ async function handleDailyResetMiddleware(req, res, next) {
       dailyState.foodArrival = null; // clear yesterday's "food's in" broadcast
       // Retain menu, menuPublished, cutoffTime and archiveTime — the menu
       // carries over day to day until an admin changes it
+      await applyWeeklyPlansForDate(dailyState); // must run after orders={} above
       await saveDailyState(dailyState);
+    } else if (dailyState.weeklyPlansAppliedDate !== businessDate) {
+      // The apply bailed earlier today (e.g. menu wasn't published yet at
+      // rollover time) — retry on every request until it succeeds. Cheap:
+      // once weeklyPlansAppliedDate is set, this branch never runs again today.
+      if (await applyWeeklyPlansForDate(dailyState)) {
+        await saveDailyState(dailyState);
+      }
     }
   });
   dailyRolloverChain = run.catch(() => {}); // keep the chain alive even if this run throws
@@ -650,6 +811,7 @@ app.delete('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => 
     delete dailyState.orders[id];
     await saveDailyState(dailyState);
   }
+  await deleteWeeklyPlan(id);
 
   res.json({ success: true, message: 'User removed from roster.' });
 });
@@ -679,7 +841,8 @@ app.get('/api/daily', authMiddleware, async (req, res) => {
         timestamp: userOrder.timestamp,
         assignedBy: userOrder.assignedBy || null,
         served: !!userOrder.served,
-        note: userOrder.note || ''
+        note: userOrder.note || '',
+        viaWeeklyPlan: !!userOrder.viaWeeklyPlan
       });
       if (userOrder.itemId) {
         dishTotals[userOrder.itemId] = (dishTotals[userOrder.itemId] || 0) + 1;
@@ -904,15 +1067,10 @@ app.post('/api/order', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Dish is not on today\'s menu.' });
   }
 
-  dailyState.orders = dailyState.orders || {};
-  dailyState.orders[userId] = {
-    itemId,
-    timestamp: Date.now(),
-    note: sanitizeOrderNote(note)
-  };
+  const order = writeOrderForUser(dailyState, userId, itemId, note);
 
   await saveDailyState(dailyState);
-  res.json({ success: true, order: dailyState.orders[userId] });
+  res.json({ success: true, order });
 });
 
 // Team Member: Cancel today's own order (opt out entirely, not just change dish)
@@ -981,6 +1139,258 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
 
   await saveDailyState(dailyState);
   res.json({ success: true, order: dailyState.orders[userId] });
+});
+
+// --- Weekly Planning ---
+// A weekly "plan" is a pre-fill, never a bypass: today's card in the weekly
+// view IS the real order (same store, same cutoff, same everything above),
+// and every future day still has to clear its own cutoff/operational/menu
+// checks — both when the person picks it here, and again for real when
+// applyWeeklyPlansForDate() converts it into an actual order at rollover.
+
+// Assembles the response shape for one day of the weekly view, from
+// whichever store is actually authoritative for that date: `history` for a
+// past day, live `dailyState.orders` for today, or the saved plan entry for
+// a future day. `pastEntry` is the matching `history` doc, or null/undefined
+// when the date isn't in the past (callers other than GET never need it,
+// since PUT/DELETE only ever touch today-or-later dates).
+function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
+  const weekday = getWeekdayForDate(date);
+  const dayName = DAY_NAMES[weekday];
+  const isToday = date === dailyState.date;
+  const isPast = !!dailyState.date && date < dailyState.date;
+  const isOperational = isOperationalDate(dailyState, date);
+  const isLocked = isDateLocked(dailyState, date);
+  const cutoffTimestamp = getEffectiveCutoffDateFor(dailyState, date).toISOString();
+
+  let source = 'none';
+  let dishName = null;
+  let note = '';
+  let served = false;
+  let viaWeeklyPlan = false;
+  let dishStillOnMenu = null;
+
+  if (isPast) {
+    const pastOrder = pastEntry?.orders?.[userId];
+    if (pastOrder) {
+      source = 'order';
+      dishName = pastEntry.menu.find(m => m.id === pastOrder.itemId)?.name || null;
+      note = pastOrder.note || '';
+      served = !!pastOrder.served;
+      viaWeeklyPlan = !!pastOrder.viaWeeklyPlan;
+    }
+  } else if (isToday) {
+    const order = dailyState.orders?.[userId];
+    if (order) {
+      source = 'order';
+      dishName = dailyState.menu.find(m => m.id === order.itemId)?.name || null;
+      note = order.note || '';
+      served = !!order.served;
+      viaWeeklyPlan = !!order.viaWeeklyPlan;
+    }
+  } else {
+    const planEntry = plan.entries?.[date];
+    if (planEntry) {
+      source = 'plan';
+      dishName = planEntry.dishName;
+      note = planEntry.note || '';
+      dishStillOnMenu = !!findMenuItemByName(dailyState.menu, planEntry.dishName);
+    }
+  }
+
+  return {
+    date, weekday, dayName, isToday, isPast, isOperational, isLocked,
+    cutoffTimestamp, source, dishName, note, served, viaWeeklyPlan, dishStillOnMenu,
+    editable: !isLocked && isOperational && !!dailyState.menuPublished
+  };
+}
+
+// Team Member: Read this week's plan — one card per operational day in the
+// current Mon-Sun week, sourced from history/today's order/plan as above.
+app.get('/api/week-plan', authMiddleware, async (req, res) => {
+  const dailyState = await getDailyState();
+  const userId = req.user.id;
+  const weekDates = getPlanWeekDates(dailyState);
+  const plan = await getWeeklyPlan(userId);
+
+  let historyByDate = new Map();
+  if (weekDates.some(d => dailyState.date && d < dailyState.date)) {
+    const history = await getHistory();
+    historyByDate = new Map(history.map(h => [h.date, h]));
+  }
+
+  const days = weekDates.map(date =>
+    buildWeekDayInfo(dailyState, plan, date, userId, historyByDate.get(date))
+  );
+
+  res.json({
+    businessDate: dailyState.date,
+    menu: dailyState.menu,
+    menuPublished: dailyState.menuPublished,
+    days
+  });
+});
+
+// Team Member: Set (or change) one day's plan pick. If :date is today, this
+// writes a real order through the same path POST /api/order uses — today is
+// never a "plan", it's the live order.
+app.put('/api/week-plan/:date', authMiddleware, async (req, res) => {
+  const { date } = req.params;
+  const { dishName, note } = req.body;
+  const userId = req.user.id;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'Invalid date format.' });
+  }
+
+  const dailyState = await getDailyState();
+  const weekDates = getPlanWeekDates(dailyState);
+  if (!weekDates.includes(date)) {
+    return res.status(400).json({ error: "That date isn't in this week's plan." });
+  }
+
+  const dayName = DAY_NAMES[getWeekdayForDate(date)];
+  if (isDateLocked(dailyState, date)) {
+    return res.status(400).json({ error: `Orders for ${dayName} are already locked.` });
+  }
+  if (!isOperationalDate(dailyState, date)) {
+    return res.status(400).json({ error: `Lunch Buddy is closed on ${dayName}.` });
+  }
+  if (!dailyState.menuPublished) {
+    return res.status(400).json({ error: 'The menu hasn\'t been published yet.' });
+  }
+  const matched = findMenuItemByName(dailyState.menu, dishName);
+  if (!matched) {
+    return res.status(400).json({ error: 'Dish is not on the menu.' });
+  }
+
+  const plan = await getWeeklyPlan(userId);
+  plan.entries = plan.entries || {};
+
+  if (date === dailyState.date) {
+    writeOrderForUser(dailyState, userId, matched.id, note);
+    await saveDailyState(dailyState);
+    // A real order now exists for today — drop any lingering plan entry so
+    // the two stores never disagree about what "today" means.
+    if (plan.entries[date]) {
+      delete plan.entries[date];
+      await saveWeeklyPlan(userId, plan);
+    }
+  } else {
+    plan.entries[date] = {
+      dishName: matched.name,
+      note: sanitizeOrderNote(note),
+      updatedAt: Date.now(),
+      source: 'manual'
+    };
+    plan.updatedAt = Date.now();
+    await saveWeeklyPlan(userId, plan);
+  }
+
+  res.json({ success: true, day: buildWeekDayInfo(dailyState, plan, date, userId, null) });
+});
+
+// Team Member: Clear one day back to "Skipped". Today follows the same
+// already-served guard as DELETE /api/order.
+app.delete('/api/week-plan/:date', authMiddleware, async (req, res) => {
+  const { date } = req.params;
+  const userId = req.user.id;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'Invalid date format.' });
+  }
+
+  const dailyState = await getDailyState();
+  const weekDates = getPlanWeekDates(dailyState);
+  if (!weekDates.includes(date)) {
+    return res.status(400).json({ error: "That date isn't in this week's plan." });
+  }
+
+  const dayName = DAY_NAMES[getWeekdayForDate(date)];
+  if (isDateLocked(dailyState, date)) {
+    return res.status(400).json({ error: `Orders for ${dayName} are already locked.` });
+  }
+
+  const plan = await getWeeklyPlan(userId);
+  plan.entries = plan.entries || {};
+
+  if (date === dailyState.date) {
+    const existingOrder = dailyState.orders?.[userId];
+    if (existingOrder) {
+      if (existingOrder.served) {
+        return res.status(400).json({ error: 'This order has already been served and can\'t be cancelled. Contact an admin.' });
+      }
+      delete dailyState.orders[userId];
+      await saveDailyState(dailyState);
+    }
+  } else if (plan.entries[date]) {
+    delete plan.entries[date];
+    plan.updatedAt = Date.now();
+    await saveWeeklyPlan(userId, plan);
+  }
+
+  res.json({ success: true, day: buildWeekDayInfo(dailyState, plan, date, userId, null) });
+});
+
+// Team Member: "Use this dish for the rest of the week" — fans one pick out
+// across the remaining unlocked/operational days after fromDate (default
+// today), overwriting any existing picks on those days. Deliberately does
+// NOT propagate the note — a note like "for the client meeting" should
+// never silently apply to four other days, only the dish does.
+app.post('/api/week-plan/repeat', authMiddleware, async (req, res) => {
+  const { dishName, note, fromDate } = req.body;
+  const userId = req.user.id;
+
+  const dailyState = await getDailyState();
+  const weekDates = getPlanWeekDates(dailyState);
+  const startDate = (fromDate && /^\d{4}-\d{2}-\d{2}$/.test(fromDate)) ? fromDate : dailyState.date;
+
+  if (!weekDates.includes(startDate)) {
+    return res.status(400).json({ error: "That date isn't in this week's plan." });
+  }
+  if (!dailyState.menuPublished) {
+    return res.status(400).json({ error: 'The menu hasn\'t been published yet.' });
+  }
+  const matched = findMenuItemByName(dailyState.menu, dishName);
+  if (!matched) {
+    return res.status(400).json({ error: 'Dish is not on the menu.' });
+  }
+
+  const plan = await getWeeklyPlan(userId);
+  plan.entries = plan.entries || {};
+
+  const appliedDates = [];
+  const skippedDates = [];
+  let dailyStateChanged = false;
+
+  // Repeating from today also places today's own order, if not already set —
+  // one click does the intuitive thing instead of leaving today untouched.
+  if (startDate === dailyState.date && !isDateLocked(dailyState, startDate) && !dailyState.orders?.[userId]) {
+    writeOrderForUser(dailyState, userId, matched.id, note);
+    dailyStateChanged = true;
+    appliedDates.push(startDate);
+    if (plan.entries[startDate]) delete plan.entries[startDate];
+  }
+
+  for (const date of weekDates) {
+    if (date <= startDate) continue; // strictly after fromDate
+    if (isDateLocked(dailyState, date)) {
+      skippedDates.push({ date, reason: 'locked' });
+      continue;
+    }
+    if (!isOperationalDate(dailyState, date)) {
+      skippedDates.push({ date, reason: 'closed' });
+      continue;
+    }
+    plan.entries[date] = { dishName: matched.name, note: '', updatedAt: Date.now(), source: 'repeat' };
+    appliedDates.push(date);
+  }
+
+  plan.updatedAt = Date.now();
+  await saveWeeklyPlan(userId, plan);
+  if (dailyStateChanged) await saveDailyState(dailyState);
+
+  res.json({ success: true, appliedDates, skippedDates });
 });
 
 // Admin/Abigail: Toggle whether a person's dish has physically been handed out

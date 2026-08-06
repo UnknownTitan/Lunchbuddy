@@ -3065,3 +3065,160 @@ input:checked + .slider:before {
 .closed-day-panel strong {
   color: var(--accent-color);
 }
+
+/* Order Lunch: mode toggle ("Order for today" / "Plan my week") */
+.order-mode-toggle {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.order-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.order-mode-btn .material-symbols-outlined {
+  font-size: 1.15rem;
+}
+
+/* Order Lunch: weekly planner grid */
+.week-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+}
+
+.week-day-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-md);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  transition: var(--transition-smooth);
+}
+
+.week-day-card.today {
+  border-color: var(--accent-color);
+  background: rgba(99, 102, 241, 0.08);
+  box-shadow: 0 0 15px var(--accent-glow);
+}
+
+.week-day-card.locked,
+.week-day-card.closed {
+  opacity: 0.55;
+}
+
+.week-day-card.locked .week-day-select,
+.week-day-card.locked .week-day-note,
+.week-day-card.closed .week-day-select,
+.week-day-card.closed .week-day-note {
+  pointer-events: none;
+}
+
+.week-day-card.skipped {
+  border-style: dashed;
+}
+
+.week-day-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.week-day-name {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.week-day-date {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.week-day-badge {
+  margin-left: auto;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--border-radius-pill);
+}
+
+.week-day-card.today .week-day-badge {
+  color: #fff;
+  background: var(--gradient-accent);
+}
+
+.week-day-thumb {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  background: var(--bg-tertiary);
+  border-radius: var(--border-radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.week-day-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 8px rgba(0, 0, 0, 0.15));
+}
+
+.week-day-select,
+.week-day-note {
+  width: 100%;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-sm);
+  padding: 0.5rem 0.6rem;
+  color: var(--text-primary);
+}
+
+.week-day-select:disabled,
+.week-day-note:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.week-day-warning {
+  font-size: 0.75rem;
+  color: var(--status-on-the-way);
+}
+
+.week-day-repeat {
+  width: 100%;
+  justify-content: center;
+}
+
+@media (max-width: 1024px) {
+  .week-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+}
+
+@media (max-width: 768px) {
+  .week-grid {
+    grid-template-columns: 1fr;
+  }
+  .order-mode-toggle {
+    flex-wrap: wrap;
+  }
+  .order-mode-btn {
+    flex: 1;
+    justify-content: center;
+  }
+}

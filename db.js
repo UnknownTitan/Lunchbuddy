@@ -138,3 +138,30 @@ export async function saveSecuritySettings(settings) {
     { upsert: true }
   );
 }
+
+// One doc per user, keyed by their roster id. Absent doc === no plans yet,
+// which is a valid state (unlike the singleton settings docs), so there's
+// nothing to seed in initDb().
+export async function getWeeklyPlan(userId) {
+  const doc = await db.collection('weeklyPlans').findOne({ _id: userId });
+  if (!doc) return { userId, entries: {} };
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+export async function saveWeeklyPlan(userId, plan) {
+  await db.collection('weeklyPlans').replaceOne(
+    { _id: userId },
+    { _id: userId, ...plan },
+    { upsert: true }
+  );
+}
+
+export async function getAllWeeklyPlans() {
+  const docs = await db.collection('weeklyPlans').find({}).toArray();
+  return docs.map(({ _id, ...rest }) => rest);
+}
+
+export async function deleteWeeklyPlan(userId) {
+  await db.collection('weeklyPlans').deleteOne({ _id: userId });
+}

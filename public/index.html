@@ -221,6 +221,18 @@
             </div>
           </div>
 
+          <!-- Order mode: today vs. plan the whole week -->
+          <div class="order-mode-toggle" id="order-mode-toggle" role="group" aria-label="Order mode">
+            <button type="button" class="day-toggle order-mode-btn selected" data-mode="today" aria-pressed="true">
+              <span class="material-symbols-outlined">today</span>
+              <span>Order for today</span>
+            </button>
+            <button type="button" class="day-toggle order-mode-btn" data-mode="week" aria-pressed="false">
+              <span class="material-symbols-outlined">date_range</span>
+              <span>Plan my week</span>
+            </button>
+          </div>
+
           <!-- Closed Day Panel (shown instead of everything below when today isn't an operational day) -->
           <div class="panel-card closed-day-panel hidden" id="closed-day-panel">
             <span class="material-symbols-outlined closed-day-icon">event_busy</span>
@@ -310,6 +322,21 @@
                 <span>Cancel Order</span>
               </button>
             </div>
+          </div>
+
+          <!-- Weekly Planning View -->
+          <div class="panel-card weekly-plan-card hidden" id="weekly-plan-card">
+            <div class="card-header">
+              <h2>Plan My Week</h2>
+              <p>Pick ahead for the days Lunch Buddy is open. Each day still opens and locks on its own cutoff — you can change any day right up until that day's cutoff.</p>
+            </div>
+            <div class="menu-status-msg hidden" id="weekly-menu-status-msg">
+              The menu hasn't been published yet, so there's nothing to plan with. Check back soon!
+            </div>
+            <div class="week-grid" id="week-grid">
+              <!-- Populated by JS -->
+            </div>
+            <p id="weekly-plan-status" class="status-msg-inline"></p>
           </div>
 
           <!-- Menu Promo Banner -->
