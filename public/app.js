@@ -1240,13 +1240,14 @@ function copyWhatsAppSummary() {
   text += `\n*OVERVIEW:*\n`;
   text += `• Ordered: ${dailyState.stats.ordered} of ${dailyState.stats.total}\n`;
 
-  // Per-person breakdown, grouped by dish, including any notes (protein
-  // choice, allergies, etc.) — this is what actually gets forwarded to
-  // the vendor, so notes have to survive the copy.
+  // Per-person breakdown, grouped by dish — only people who left a note
+  // (protein choice, allergies, etc.) are listed, since that's the only
+  // detail the vendor actually needs beyond the dish quantities above.
   const orderedList = dailyState.orders.ordered || [];
-  if (orderedList.length > 0) {
+  const withNotes = orderedList.filter(item => item.note);
+  if (withNotes.length > 0) {
     const byDish = new Map();
-    orderedList.forEach(item => {
+    withNotes.forEach(item => {
       if (!byDish.has(item.itemName)) byDish.set(item.itemName, []);
       byDish.get(item.itemName).push(item);
     });
@@ -1255,8 +1256,7 @@ function copyWhatsAppSummary() {
     byDish.forEach((members, dishName) => {
       text += `\n*${dishName}:*\n`;
       members.forEach(m => {
-        const note = m.note ? ` (${m.note})` : '';
-        text += `- ${m.name}${note}\n`;
+        text += `- ${m.name} (${m.note})\n`;
       });
     });
   }
