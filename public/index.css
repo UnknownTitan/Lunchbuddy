@@ -573,8 +573,10 @@ button.mobile-menu-toggle {
 
 .label-with-help {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 0.25rem 1rem;
 }
 
 .help-text {
@@ -1758,10 +1760,29 @@ select {
 }
 
 /* Admin controls tab layout */
+/* Two independent columns (not a stretching grid) so a short card like
+   Food Arrival doesn't get stretched to match a much taller neighbor like
+   the Menu Builder — each column just stacks its own cards at their
+   natural height. */
 .admin-grid {
-  display: grid;
-  grid-template-columns: 1.6fr 1fr;
+  display: flex;
+  align-items: flex-start;
   gap: 1.5rem;
+}
+
+.admin-col-main,
+.admin-col-side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.admin-col-main {
+  flex: 1.6;
+}
+
+.admin-col-side {
+  flex: 1;
 }
 
 /* Admin Menu Items list */
@@ -2192,7 +2213,7 @@ input:checked + .slider:before {
   }
 
   .admin-grid {
-    grid-template-columns: 1fr;
+    flex-direction: column;
   }
   .roster-manager-layout {
     grid-template-columns: 1fr;
@@ -2981,3 +3002,66 @@ input:checked + .slider:before {
 }
 
 
+
+/* Admin: Operational Days picker */
+.operational-days-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.day-toggle {
+  padding: 0.55rem 1rem;
+  border-radius: var(--border-radius-pill);
+  border: 1px solid var(--card-border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+
+.day-toggle:hover {
+  border-color: var(--text-muted);
+}
+
+.day-toggle.selected {
+  background: var(--gradient-accent);
+  border-color: transparent;
+  color: #fff;
+  box-shadow: 0 4px 12px -2px var(--accent-glow);
+}
+
+/* Order Lunch: "Closed" panel shown on non-operational days */
+.closed-day-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.5rem;
+  padding: 3rem 2rem;
+}
+
+.closed-day-icon {
+  font-size: 3rem;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.closed-day-panel h3 {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.closed-day-panel p {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.closed-day-panel strong {
+  color: var(--accent-color);
+}

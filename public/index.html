@@ -221,6 +221,13 @@
             </div>
           </div>
 
+          <!-- Closed Day Panel (shown instead of everything below when today isn't an operational day) -->
+          <div class="panel-card closed-day-panel hidden" id="closed-day-panel">
+            <span class="material-symbols-outlined closed-day-icon">event_busy</span>
+            <h3>Lunch Buddy is Closed</h3>
+            <p>Come back on <strong id="closed-day-next-label">Monday</strong>.</p>
+          </div>
+
           <!-- Reminder Banner (shown when a coordinator sends a reminder) -->
           <div class="notification-request-banner reminder-banner hidden" id="reminder-banner">
             <div class="notif-banner-content">
@@ -306,7 +313,7 @@
           </div>
 
           <!-- Menu Promo Banner -->
-          <div class="menu-promo-banner">
+          <div class="menu-promo-banner" id="menu-promo-banner">
             <div class="menu-promo-filmstrip" aria-hidden="true">
               <img src="assets/salad-bowl.webp" alt="" loading="lazy">
               <img src="assets/soup-bowl-1.webp" alt="" loading="lazy">
@@ -411,7 +418,8 @@
         <!-- TAB: ADMIN CONTROLS -->
         <section class="tab-panel" id="admin-tab">
           <div class="admin-grid">
-            
+            <div class="admin-col-main">
+
             <!-- Menu Setup -->
             <div class="panel-card admin-menu-setup">
               <div class="card-header">
@@ -444,19 +452,6 @@
                 </div>
               </div>
               <p id="admin-menu-status" class="status-msg-inline"></p>
-            </div>
-
-            <!-- Food Arrival Broadcast -->
-            <div class="panel-card food-arrival-card">
-              <div class="card-header">
-                <h2>Food Arrival</h2>
-                <p>Let the whole team know lunch is here — shows a banner in the app and sends a push notification to anyone who's enabled them.</p>
-              </div>
-              <button type="button" class="btn btn-primary btn-block btn-icon-text" id="btn-food-arrived">
-                <span class="material-symbols-outlined">restaurant</span>
-                <span>Food's In — Notify Everyone</span>
-              </button>
-              <p id="food-arrived-status" class="status-msg-inline"></p>
             </div>
 
             <!-- Settings / Reset -->
@@ -524,6 +519,43 @@
               </div>
             </div>
 
+            </div>
+            <div class="admin-col-side">
+
+            <!-- Food Arrival Broadcast -->
+            <div class="panel-card food-arrival-card">
+              <div class="card-header">
+                <h2>Food Arrival</h2>
+                <p>Let the whole team know lunch is here — shows a banner in the app and sends a push notification to anyone who's enabled them.</p>
+              </div>
+              <button type="button" class="btn btn-primary btn-block btn-icon-text" id="btn-food-arrived">
+                <span class="material-symbols-outlined">restaurant</span>
+                <span>Food's In — Notify Everyone</span>
+              </button>
+              <p id="food-arrived-status" class="status-msg-inline"></p>
+            </div>
+
+            <!-- Operational Days -->
+            <div class="panel-card admin-settings-card">
+              <div class="card-header">
+                <h2>Operational Days</h2>
+                <p>Choose which days of the week Lunch Buddy accepts orders. On any other day, team members see a "closed" message instead of the order form.</p>
+              </div>
+
+              <div class="operational-days-picker" id="operational-days-picker">
+                <button type="button" class="day-toggle" data-day="0">Sun</button>
+                <button type="button" class="day-toggle" data-day="1">Mon</button>
+                <button type="button" class="day-toggle" data-day="2">Tue</button>
+                <button type="button" class="day-toggle" data-day="3">Wed</button>
+                <button type="button" class="day-toggle" data-day="4">Thu</button>
+                <button type="button" class="day-toggle" data-day="5">Fri</button>
+                <button type="button" class="day-toggle" data-day="6">Sat</button>
+              </div>
+
+              <button class="btn btn-primary" id="btn-save-operational-days">Save</button>
+              <p id="admin-operational-days-status" class="status-msg-inline"></p>
+            </div>
+
             <!-- Login Security Settings -->
             <div class="panel-card admin-settings-card">
               <div class="card-header">
@@ -561,6 +593,7 @@
               <p id="security-settings-status" class="status-msg-inline"></p>
             </div>
 
+            </div>
           </div>
         </section>
 

@@ -170,6 +170,37 @@ function formatMinutesAsHHMM(date) {
   return `${hour}:${min}`;
 }
 
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+// Helper: which weekday (0=Sun..6=Sat) the current business date falls on
+function getBusinessDateWeekday(dailyState) {
+  const [year, month, day] = dailyState.date.split('-').map(Number);
+  return new Date(year, month - 1, day).getDay();
+}
+
+// Helper: is today's business date one Lunch Buddy is open on? Missing/empty
+// operationalDays means "every day" — existing deployments keep working
+// exactly as before until an admin actually configures this.
+function isOperationalDay(dailyState) {
+  const days = dailyState.operationalDays;
+  if (!Array.isArray(days) || days.length === 0) return true;
+  if (!dailyState.date) return true;
+  return days.includes(getBusinessDateWeekday(dailyState));
+}
+
+// Helper: name of the next day Lunch Buddy will be open, starting the
+// search the day after today's business date.
+function getNextOperationalDayName(dailyState) {
+  const days = dailyState.operationalDays;
+  if (!Array.isArray(days) || days.length === 0 || !dailyState.date) return null;
+  const todayWeekday = getBusinessDateWeekday(dailyState);
+  for (let offset = 1; offset <= 7; offset++) {
+    const candidate = (todayWeekday + offset) % 7;
+    if (days.includes(candidate)) return DAY_NAMES[candidate];
+  }
+  return null;
+}
+
 // Helper: Check if orders are locked (manual lock OR effective cutoff time passed)
 function checkCutoff(dailyState) {
   // Admin can force-lock early regardless of time
@@ -673,8 +704,13 @@ app.get('/api/daily', authMiddleware, async (req, res) => {
     }
   }
 
+  const isOperationalToday = isOperationalDay(dailyState);
+
   res.json({
     date: dailyState.date,
+    operationalDays: dailyState.operationalDays || [],
+    isOperationalToday,
+    nextOperationalDayName: isOperationalToday ? null : getNextOperationalDayName(dailyState),
     menu: dailyState.menu,
     menuPublished: dailyState.menuPublished,
     cutoffTime: dailyState.cutoffTime,
@@ -824,12 +860,34 @@ app.post('/api/archive-time', authMiddleware, requireAdmin, async (req, res) => 
   res.json({ success: true, archiveTime: dailyState.archiveTime });
 });
 
+// Admin: Set which weekdays (0=Sun..6=Sat) Lunch Buddy accepts orders on
+app.post('/api/operational-days', authMiddleware, requireAdmin, async (req, res) => {
+  const { operationalDays } = req.body;
+  if (
+    !Array.isArray(operationalDays) ||
+    operationalDays.length === 0 ||
+    !operationalDays.every(d => Number.isInteger(d) && d >= 0 && d <= 6) ||
+    new Set(operationalDays).size !== operationalDays.length
+  ) {
+    return res.status(400).json({ error: 'operationalDays must be a non-empty array of unique integers 0-6.' });
+  }
+
+  const dailyState = await getDailyState();
+  dailyState.operationalDays = [...operationalDays].sort((a, b) => a - b);
+  await saveDailyState(dailyState);
+  res.json({ success: true, operationalDays: dailyState.operationalDays });
+});
+
 // Team Member: Place daily dish order
 app.post('/api/order', authMiddleware, async (req, res) => {
   const { itemId, note } = req.body;
   const userId = req.user.id;
 
   const dailyState = await getDailyState();
+
+  if (!isOperationalDay(dailyState)) {
+    return res.status(400).json({ error: 'Lunch Buddy is closed today.' });
+  }
 
   if (checkCutoff(dailyState)) {
     return res.status(400).json({ error: 'The daily cutoff time has passed. Orders are locked.' });
@@ -896,6 +954,10 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
   }
 
   const dailyState = await getDailyState();
+
+  if (!isOperationalDay(dailyState)) {
+    return res.status(400).json({ error: 'Lunch Buddy is closed today.' });
+  }
 
   if (checkCutoff(dailyState)) {
     return res.status(400).json({ error: 'The daily cutoff time has passed. Orders are locked.' });

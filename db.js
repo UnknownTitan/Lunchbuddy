@@ -40,6 +40,7 @@ export async function initDb() {
       date: '',
       cutoffTime: '11:30',
       archiveTime: '14:00',
+      operationalDays: [0, 1, 2, 3, 4, 5, 6],
       menu: [],
       menuPublished: false,
       orders: {}

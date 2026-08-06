@@ -141,6 +141,12 @@ const adminCutoffStatus = document.getElementById('admin-cutoff-status');
 const adminArchiveTime = document.getElementById('admin-archive-time');
 const btnSaveArchiveTime = document.getElementById('btn-save-archive-time');
 const adminArchiveTimeStatus = document.getElementById('admin-archive-time-status');
+const operationalDaysPicker = document.getElementById('operational-days-picker');
+const btnSaveOperationalDays = document.getElementById('btn-save-operational-days');
+const adminOperationalDaysStatus = document.getElementById('admin-operational-days-status');
+const closedDayPanel = document.getElementById('closed-day-panel');
+const closedDayNextLabel = document.getElementById('closed-day-next-label');
+const menuPromoBanner = document.getElementById('menu-promo-banner');
 // Lock toggle
 const btnForceLock = document.getElementById('btn-force-lock');
 const btnLockRevert = document.getElementById('btn-lock-revert');
@@ -656,7 +662,7 @@ async function fetchDailyState() {
 
 // Shows a banner if the current user has an un-dismissed reminder for today
 function updateReminderBanner() {
-  if (!dailyState || !dailyState.myReminder || !currentUser) {
+  if (!dailyState || !dailyState.myReminder || !currentUser || dailyState.isOperationalToday === false) {
     reminderBanner.classList.add('hidden');
     return;
   }
@@ -690,7 +696,7 @@ function dismissReminderBanner() {
 // hasn't dismissed that specific broadcast yet (keyed by its timestamp, so
 // a second broadcast the same day — e.g. next-day rollover — reappears).
 function updateFoodArrivedBanner() {
-  if (!dailyState || !dailyState.foodArrival || !currentUser) {
+  if (!dailyState || !dailyState.foodArrival || !currentUser || dailyState.isOperationalToday === false) {
     foodArrivedBanner.classList.add('hidden');
     return;
   }
@@ -846,8 +852,29 @@ function updateHeaderDisplay() {
 }
 
 // Computes remaining time and updates countdown banner styling/text
+// Shows the "Lunch Buddy is Closed" panel instead of the countdown/order
+// form/confirmation card on days the admin hasn't marked as operational.
+// Returns true when closed, so callers can bail out of their own rendering.
+function applyClosedDayState() {
+  const closed = dailyState && dailyState.isOperationalToday === false;
+  closedDayPanel.classList.toggle('hidden', !closed);
+  countdownBanner.classList.toggle('hidden', closed);
+  if (closed) {
+    closedDayNextLabel.textContent = dailyState.nextOperationalDayName || 'the next operational day';
+    orderFormCard.classList.add('hidden');
+    confirmationCard.classList.add('hidden');
+    reminderBanner.classList.add('hidden');
+    foodArrivedBanner.classList.add('hidden');
+    menuPromoBanner.classList.add('hidden');
+  } else {
+    menuPromoBanner.classList.remove('hidden');
+  }
+  return closed;
+}
+
 function updateCountdownBanner() {
   if (!dailyState) return;
+  if (applyClosedDayState()) return;
 
   // Use the server's cutoffTimestamp (a full datetime anchored to the actual
   // business date) rather than reconstructing it from HH:MM against the
@@ -919,7 +946,9 @@ function updateOrderGreeting() {
   orderGreetingText.textContent = `${timeGreeting}, ${firstName}`;
 
   const userOrder = dailyState?.orders?.ordered?.find(o => o.userId === currentUser.id);
-  if (dailyState?.isLocked && !userOrder) {
+  if (dailyState?.isOperationalToday === false) {
+    orderGreetingSubtext.textContent = "Lunch Buddy isn't taking orders today.";
+  } else if (dailyState?.isLocked && !userOrder) {
     orderGreetingSubtext.textContent = "Cutoff's passed and you didn't get an order in today.";
   } else if (userOrder) {
     orderGreetingSubtext.textContent = `You're set for today — ${userOrder.itemName}.`;
@@ -930,6 +959,7 @@ function updateOrderGreeting() {
 
 function renderFoodOrderForm() {
   if (!dailyState) return;
+  if (dailyState.isOperationalToday === false) return;
 
   // Find logged in user's current selection, if any
   const userOrder = dailyState.orders.ordered.find(o => o.userId === currentUser.id);
@@ -1476,6 +1506,39 @@ function loadAdminSettings() {
   adminCutoffTime.value = dailyState.cutoffTime;
   adminArchiveTime.value = dailyState.archiveTime;
   updateLockUI(dailyState.isManuallyLocked, dailyState.isLocked, dailyState.cutoffExtensionMinutes, dailyState.effectiveCutoffTime);
+
+  const activeDays = dailyState.operationalDays && dailyState.operationalDays.length
+    ? dailyState.operationalDays
+    : [0, 1, 2, 3, 4, 5, 6];
+  operationalDaysPicker.querySelectorAll('.day-toggle').forEach(btn => {
+    btn.classList.toggle('selected', activeDays.includes(Number(btn.dataset.day)));
+  });
+}
+
+async function saveOperationalDays() {
+  adminOperationalDaysStatus.className = 'status-msg-inline';
+  adminOperationalDaysStatus.textContent = 'Saving...';
+
+  const selectedDays = [...operationalDaysPicker.querySelectorAll('.day-toggle.selected')]
+    .map(btn => Number(btn.dataset.day));
+
+  if (selectedDays.length === 0) {
+    adminOperationalDaysStatus.className = 'status-msg-inline error-text';
+    adminOperationalDaysStatus.textContent = 'Select at least one day.';
+    return;
+  }
+
+  try {
+    await apiCall('/api/operational-days', 'POST', { operationalDays: selectedDays });
+    adminOperationalDaysStatus.className = 'status-msg-inline success';
+    adminOperationalDaysStatus.style.color = 'var(--status-in-office)';
+    adminOperationalDaysStatus.textContent = 'Operational days updated!';
+
+    await fetchDailyState();
+  } catch (err) {
+    adminOperationalDaysStatus.className = 'status-msg-inline error-text';
+    adminOperationalDaysStatus.textContent = err.message || 'Failed to update operational days.';
+  }
 }
 
 async function loadSecuritySettings() {
@@ -2437,6 +2500,10 @@ function setupEventListeners() {
   // Admin settings buttons
   btnSaveCutoff.addEventListener('click', saveAdminCutoff);
   btnSaveArchiveTime.addEventListener('click', saveAdminArchiveTime);
+  btnSaveOperationalDays.addEventListener('click', saveOperationalDays);
+  operationalDaysPicker.querySelectorAll('.day-toggle').forEach(btn => {
+    btn.addEventListener('click', () => btn.classList.toggle('selected'));
+  });
 
   // Manual lock toggle buttons
   btnForceLock.addEventListener('click', () => handleForceLock(true));
