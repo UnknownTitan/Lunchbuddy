@@ -3090,6 +3090,13 @@ input:checked + .slider:before {
   gap: 1rem;
 }
 
+.week-grid-loading {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 2rem;
+  color: var(--text-muted);
+}
+
 .week-day-card {
   background: var(--bg-secondary);
   border: 1px solid var(--card-border);

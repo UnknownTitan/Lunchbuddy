@@ -15,6 +15,7 @@ import {
   getDailyState,
   saveDailyState,
   getHistory,
+  getHistoryForDates,
   saveHistory,
   getRemindersLog,
   saveRemindersLog,
@@ -1208,16 +1209,15 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
 // Team Member: Read this week's plan — one card per operational day in the
 // current Mon-Sun week, sourced from history/today's order/plan as above.
 app.get('/api/week-plan', authMiddleware, async (req, res) => {
-  const dailyState = await getDailyState();
   const userId = req.user.id;
+  // getWeeklyPlan doesn't depend on dailyState, so run them concurrently
+  // instead of paying two sequential Atlas round-trips back to back.
+  const [dailyState, plan] = await Promise.all([getDailyState(), getWeeklyPlan(userId)]);
   const weekDates = getPlanWeekDates(dailyState);
-  const plan = await getWeeklyPlan(userId);
 
-  let historyByDate = new Map();
-  if (weekDates.some(d => dailyState.date && d < dailyState.date)) {
-    const history = await getHistory();
-    historyByDate = new Map(history.map(h => [h.date, h]));
-  }
+  const pastDates = weekDates.filter(d => dailyState.date && d < dailyState.date);
+  const history = await getHistoryForDates(pastDates);
+  const historyByDate = new Map(history.map(h => [h.date, h]));
 
   const days = weekDates.map(date =>
     buildWeekDayInfo(dailyState, plan, date, userId, historyByDate.get(date))

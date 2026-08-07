@@ -52,6 +52,7 @@ let orderFormDirty = false;
 // reload doesn't dump someone back into today-mode mid-planning.
 let orderMode = localStorage.getItem('lunchsync_order_mode') === 'week' ? 'week' : 'today';
 let weekPlan = null;
+let weekPlanFetchedAt = 0;
 // Dates (YYYY-MM-DD) with an in-flight edit — mirrors orderFormDirty's role
 // but per-card, since the weekly grid re-renders on every poll too.
 const weekPlanDirtyDates = new Set();
@@ -911,7 +912,16 @@ function setOrderMode(mode) {
     btn.setAttribute('aria-pressed', String(active));
   });
   applyOrderModeVisibility();
-  if (orderMode === 'week') fetchWeekPlan();
+  if (orderMode === 'week') {
+    // Skip the network round-trip if we already fetched recently (e.g. the
+    // user is just toggling back and forth) — re-render instantly from the
+    // cached data instead of re-waiting on the same slow query every time.
+    if (weekPlan && Date.now() - weekPlanFetchedAt < 8000) {
+      renderWeeklyPlan();
+    } else {
+      fetchWeekPlan();
+    }
+  }
 }
 
 // Single source of truth for which of the today-mode panels vs. the weekly
@@ -935,8 +945,15 @@ function applyOrderModeVisibility() {
 }
 
 async function fetchWeekPlan() {
+  // Only show a loading placeholder on the very first load — on subsequent
+  // 10s polls, the existing cards should just stay put until fresh data
+  // arrives, not flash to a loading state every time.
+  if (!weekPlan) {
+    weekGrid.innerHTML = '<p class="week-grid-loading">Loading your week…</p>';
+  }
   try {
     weekPlan = await apiCall('/api/week-plan');
+    weekPlanFetchedAt = Date.now();
     weeklyPlanStatus.textContent = '';
     weeklyPlanStatus.className = 'status-msg-inline';
     renderWeeklyPlan();
@@ -956,6 +973,7 @@ function renderWeeklyPlan() {
   }
   weeklyMenuStatusMsg.classList.add('hidden');
   weekGrid.classList.remove('hidden');
+  weekGrid.querySelector('.week-grid-loading')?.remove();
 
   weekPlan.days.forEach(day => {
     if (weekPlanDirtyDates.has(day.date)) return; // in-flight edit — leave it alone

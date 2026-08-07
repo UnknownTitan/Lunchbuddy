@@ -103,6 +103,15 @@ export async function getHistory() {
   return docs.map(({ _id, _seq, ...rest }) => rest);
 }
 
+// Targeted lookup for a handful of specific dates (e.g. the current week's
+// past days in the weekly planner) — avoids pulling the entire history
+// collection just to find a few entries.
+export async function getHistoryForDates(dates) {
+  if (!dates || dates.length === 0) return [];
+  const docs = await db.collection('history').find({ date: { $in: dates } }).toArray();
+  return docs.map(({ _id, _seq, ...rest }) => rest);
+}
+
 export async function saveHistory(history) {
   const collection = db.collection('history');
   await collection.deleteMany({});
