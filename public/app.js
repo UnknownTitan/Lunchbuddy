@@ -3326,17 +3326,36 @@ async function loadTrends() {
   if (trendsEndDate.value) params.set('endDate', trendsEndDate.value);
 
   try {
-    const data = await apiCall(`/api/trends?${params.toString()}`);
+    const [data] = await Promise.all([apiCall(`/api/trends?${params.toString()}`), loadChartJs()]);
     renderTrendsCharts(data);
   } catch (err) {
     console.error('Error loading trends:', err);
   }
 }
 
-// Registered once, globally — but scoped per-chart via each chart's own
-// `plugins: [ChartDataLabels]` opt-in below, so it doesn't affect any other
-// chart instance that might get added later without asking for it.
-if (window.ChartDataLabels) Chart.register(window.ChartDataLabels);
+// Chart.js + its datalabels plugin are ~200KB combined and only needed by
+// the Trends tab / My Orders' personal chart — loading them in <head> would
+// block every page load (including the Order Lunch page, by far the most
+// common view) for a feature most visits never touch. Loaded once, on
+// first actual use, and cached so repeat tab visits are instant.
+let chartJsLoadPromise = null;
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = src;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
+}
+function loadChartJs() {
+  if (!chartJsLoadPromise) {
+    chartJsLoadPromise = loadScript('https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js')
+      .then(() => loadScript('https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2/dist/chartjs-plugin-datalabels.min.js'))
+      .then(() => Chart.register(window.ChartDataLabels));
+  }
+  return chartJsLoadPromise;
+}
 
 function renderTrendsCharts(data) {
   const hasUnpriced = data.spendByDay.some(d => d.hasUnpricedOrders);
@@ -3475,7 +3494,7 @@ async function loadMyOrders() {
   }
 
   try {
-    const trends = await apiCall('/api/my-trends');
+    const [trends] = await Promise.all([apiCall('/api/my-trends'), loadChartJs()]);
     renderMyTrends(trends);
   } catch (err) {
     console.error('Error loading personal trends:', err);

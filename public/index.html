@@ -9,8 +9,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="index.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2/dist/chartjs-plugin-datalabels.min.js"></script>
+  <!-- Chart.js + its datalabels plugin are lazy-loaded on demand (see
+       loadChartJs() in app.js) — only the Trends tab and My Orders' personal
+       trends chart need them, so every other page load skips this ~200KB
+       and the parse/execute time that came with blocking it in <head>. -->
 </head>
 <body>
 
