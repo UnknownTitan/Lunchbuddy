@@ -25,6 +25,17 @@ function toggleTheme() {
 
 initTheme();
 
+// --- PWA installability ---
+// Registered unconditionally (not gated behind push-notification opt-in,
+// unlike the enablePushNotifications() flow below) so "Add to Home Screen"
+// works on first visit — an active service worker + manifest.json are what
+// browsers actually check for installability, independent of Push/Notification
+// support. Safe to call even if the browser later also registers it again
+// via enablePushNotifications(); the browser returns the same registration.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {}); // best-effort; unsupported browsers just stay non-installable
+}
+
 // --- Prevent pre-auth-screen flash ---
 // Applied immediately on load (before DOMContentLoaded): show whichever
 // pre-auth view is actually correct right away, instead of waiting for
