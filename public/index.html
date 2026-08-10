@@ -9,6 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="index.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2/dist/chartjs-plugin-datalabels.min.js"></script>
 </head>
 <body>
 
@@ -68,13 +70,80 @@
 
   <main class="app-container">
 
+    <!-- COMPANY CODE VIEW -->
+    <!-- Shown first, before any name/passcode entry, until a company code
+         is resolved and remembered in localStorage. -->
+    <section class="view-card login-card hidden" id="company-view">
+      <div class="login-header">
+        <h2>Welcome to Lunch Buddy</h2>
+        <p>Enter your company code to continue.</p>
+      </div>
+
+      <div class="form-group">
+        <label for="company-code-input">Company Code</label>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">apartment</span>
+          <input type="text" id="company-code-input" placeholder="e.g. RFD" autocomplete="off" autocapitalize="characters">
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-company-submit">
+        <span>Continue</span>
+        <span class="material-symbols-outlined">arrow_forward</span>
+      </button>
+
+      <div class="login-footer">
+        <p class="error-text hidden" id="company-error"></p>
+        <p class="login-footer-link">
+          <a href="/platform" id="link-platform-login">Platform administrator sign-in</a>
+        </p>
+      </div>
+    </section>
+
+    <!-- PLATFORM ADMIN LOGIN VIEW -->
+    <section class="view-card login-card hidden" id="platform-login-view">
+      <div class="login-header">
+        <h2>Platform Administrator</h2>
+        <p>Sign in to manage companies on Lunch Buddy.</p>
+      </div>
+
+      <div class="form-group">
+        <label for="platform-login-name">Name</label>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">person</span>
+          <input type="text" id="platform-login-name" placeholder="Your full name" autocomplete="username">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="platform-login-passcode">Passcode</label>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">lock</span>
+          <input type="password" id="platform-login-passcode" placeholder="••••••••" autocomplete="current-password">
+          <button type="button" class="btn btn-icon toggle-passcode-visibility" data-target="platform-login-passcode" title="Show/hide passcode">
+            <span class="material-symbols-outlined">visibility</span>
+          </button>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-platform-login">
+        <span>Log In</span>
+        <span class="material-symbols-outlined">login</span>
+      </button>
+
+      <div class="login-footer">
+        <p class="error-text hidden" id="platform-login-error"></p>
+        <p class="login-footer-link"><a href="/" id="link-back-to-company">Back to company sign-in</a></p>
+      </div>
+    </section>
+
     <!-- LOGIN VIEW -->
-    <section class="view-card login-card" id="login-view">
+    <section class="view-card login-card hidden" id="login-view">
       <div class="login-header">
         <h2>Welcome to Lunch Buddy</h2>
         <p>Please select your name from the roster to check in today.</p>
       </div>
-      
+
       <div class="form-group search-select-container">
         <label for="login-user-search">Select Your Name</label>
         <div class="search-select-input-wrapper">
@@ -109,6 +178,7 @@
 
       <div class="login-footer">
         <p class="error-text hidden" id="login-error"></p>
+        <p class="login-footer-link"><a href="#" id="link-not-your-company">Not your company?</a></p>
       </div>
     </section>
 
@@ -181,9 +251,17 @@
           <span class="material-symbols-outlined">checklist</span>
           <span>Distribution &amp; History</span>
         </button>
+        <button class="nav-tab admin-abigail-only hidden" data-target="trends-tab" id="nav-tab-trends">
+          <span class="material-symbols-outlined">trending_up</span>
+          <span>Trends</span>
+        </button>
         <button class="nav-tab" data-target="my-orders-tab" id="nav-tab-my-orders">
           <span class="material-symbols-outlined">receipt_long</span>
           <span>My Orders</span>
+        </button>
+        <button class="nav-tab platform-admin-only hidden" data-target="companies-tab">
+          <span class="material-symbols-outlined">domain</span>
+          <span>Companies</span>
         </button>
 
         <div class="sidebar-promo-card">
@@ -454,13 +532,26 @@
                 <p>Define the dishes team members can select from today.</p>
               </div>
               
+              <div class="catalog-picker-section">
+                <div class="catalog-picker-header-row">
+                  <label>Pick from your catalog</label>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-manage-catalog">
+                    <span class="material-symbols-outlined">restaurant_menu</span>
+                    <span>Manage Catalog</span>
+                  </button>
+                </div>
+                <div class="catalog-picker-chips" id="catalog-picker-chips">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+
               <div id="admin-menu-list" class="admin-menu-items-list">
                 <!-- Dynamic Input list -->
               </div>
 
               <button class="btn btn-secondary btn-sm" id="btn-admin-add-dish">
                 <span class="material-symbols-outlined">add</span>
-                <span>Add Dish Option</span>
+                <span>Add One-Off Dish</span>
               </button>
 
               <hr class="divider">
@@ -479,6 +570,58 @@
                 </div>
               </div>
               <p id="admin-menu-status" class="status-msg-inline"></p>
+            </div>
+
+            <!-- Dish Catalog Modal -->
+            <div class="modal-overlay hidden" id="catalog-modal-overlay">
+              <div class="panel-card modal-card">
+                <div class="card-header modal-header">
+                  <div>
+                    <h2>Dish Catalog</h2>
+                    <p>Manage reusable dishes with pricing and photos.</p>
+                  </div>
+                  <button type="button" class="btn btn-icon" id="btn-catalog-modal-close" title="Close">
+                    <span class="material-symbols-outlined">close</span>
+                  </button>
+                </div>
+
+                <div class="catalog-list" id="catalog-list">
+                  <!-- Populated by JS -->
+                </div>
+
+                <hr class="divider">
+
+                <form id="catalog-dish-form">
+                  <input type="hidden" id="catalog-dish-id" value="">
+
+                  <div class="form-group">
+                    <label for="catalog-dish-name">Dish Name</label>
+                    <input type="text" id="catalog-dish-name" required placeholder="e.g. Jollof Rice">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="catalog-dish-desc">Description (Optional)</label>
+                    <input type="text" id="catalog-dish-desc" placeholder="e.g. With grilled chicken">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="catalog-dish-price">Price (Optional)</label>
+                    <input type="number" id="catalog-dish-price" min="0" step="0.01" placeholder="e.g. 25.00">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="catalog-dish-image">Photo (Optional, max 300KB)</label>
+                    <input type="file" id="catalog-dish-image" accept="image/webp,image/jpeg,image/png">
+                    <img id="catalog-dish-image-preview" class="catalog-dish-image-preview hidden" alt="">
+                  </div>
+
+                  <div class="roster-form-actions">
+                    <button type="submit" class="btn btn-primary" id="btn-catalog-dish-submit">Save Dish</button>
+                    <button type="button" class="btn btn-secondary" id="btn-catalog-dish-cancel">Cancel</button>
+                  </div>
+                  <p id="catalog-dish-status" class="status-msg-inline"></p>
+                </form>
+              </div>
             </div>
 
             <!-- Settings / Reset -->
@@ -583,6 +726,25 @@
               <p id="admin-operational-days-status" class="status-msg-inline"></p>
             </div>
 
+            <!-- Catering Cost Settings -->
+            <div class="panel-card admin-settings-card">
+              <div class="card-header">
+                <h2>Catering Cost</h2>
+                <p>Used by Trends' spend chart for any order without its own dish price — most often days archived before the Dish Catalog existed.</p>
+              </div>
+
+              <div class="form-group">
+                <label for="company-default-price">Default cost per head</label>
+                <input type="number" id="company-default-price" min="0" step="0.01" placeholder="e.g. 40.00">
+              </div>
+
+              <button type="button" class="btn btn-primary" id="btn-save-company-settings">
+                <span class="material-symbols-outlined">save</span>
+                <span>Save</span>
+              </button>
+              <p id="company-settings-status" class="status-msg-inline"></p>
+            </div>
+
             <!-- Login Security Settings -->
             <div class="panel-card admin-settings-card">
               <div class="card-header">
@@ -641,6 +803,12 @@
                   <span class="material-symbols-outlined">search</span>
                   <input type="text" id="roster-search" placeholder="Search roster...">
                 </div>
+                <div class="input-with-icon select-wrapper roster-branch-filter-wrap">
+                  <span class="material-symbols-outlined">domain</span>
+                  <select id="roster-branch-filter">
+                    <option value="">All Branches</option>
+                  </select>
+                </div>
                 <div class="roster-header-actions">
                   <button type="button" class="btn btn-secondary btn-icon-text" id="btn-roster-sort" title="Toggle name sort order">
                     <span class="material-symbols-outlined" id="roster-sort-icon">south</span>
@@ -660,6 +828,7 @@
                       <th>Name</th>
                       <th>Email</th>
                       <th>Phone</th>
+                      <th>Branch</th>
                       <th>System Role</th>
                       <th>Passcode</th>
                     </tr>
@@ -669,6 +838,34 @@
                   </tbody>
                 </table>
               </div>
+            </div>
+
+            <!-- Branches Card -->
+            <div class="panel-card">
+              <div class="card-header-compact-row">
+                <div>
+                  <h2>Branches</h2>
+                  <p>Manage office/location groupings for the roster.</p>
+                </div>
+              </div>
+              <div class="roster-table-container">
+                <table class="roster-table" id="branches-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="branches-table-body">
+                    <!-- Populated by JS -->
+                  </tbody>
+                </table>
+              </div>
+              <form id="branch-add-form" class="branch-add-form">
+                <input type="text" id="branch-add-name" placeholder="New branch name (e.g. Accra HQ)" required>
+                <button type="submit" class="btn btn-secondary btn-sm">Add</button>
+              </form>
+              <p id="branch-form-status" class="status-msg-inline"></p>
             </div>
 
             <!-- Roster Form Modal -->
@@ -700,6 +897,16 @@
                   <div class="form-group">
                     <label for="roster-phone">Phone Number (Optional)</label>
                     <input type="tel" id="roster-phone" placeholder="e.g. +1 555-0199">
+                  </div>
+
+                  <div class="form-group">
+                    <label for="roster-branch">Branch (Optional)</label>
+                    <div class="input-with-icon select-wrapper">
+                      <span class="material-symbols-outlined">domain</span>
+                      <select id="roster-branch">
+                        <option value="">No branch</option>
+                      </select>
+                    </div>
                   </div>
 
                   <div class="form-group">
@@ -769,7 +976,8 @@
                     <code>Full Name, email@company.com</code>
                     <code>Full Name, email@company.com, +1555123</code>
                     <code>Full Name, email@company.com, , Admin</code>
-                    <span class="help-text">Columns: Name, Email, Phone, Role (defaults to Team Member)</span>
+                    <code>Full Name, email@company.com, , Admin, Accra HQ</code>
+                    <span class="help-text">Columns: Name, Email, Phone, Role, Branch (Role defaults to Team Member; an unrecognized Branch name is just left unassigned)</span>
                   </div>
                 </div>
 
@@ -826,6 +1034,125 @@
           </div>
         </section>
 
+        <!-- TAB: TRENDS -->
+        <section class="tab-panel" id="trends-tab">
+          <div class="panel-card">
+            <div class="card-header-compact-row">
+              <div>
+                <h2>Spend &amp; Popularity Trends</h2>
+                <p>Catering cost and dish popularity over time.</p>
+              </div>
+              <div class="trends-date-range">
+                <input type="date" id="trends-start-date">
+                <span>to</span>
+                <input type="date" id="trends-end-date">
+              </div>
+            </div>
+            <p class="help-text hidden" id="trends-spend-caveat">Some days in this range predate dish pricing, so spend totals for those days may be incomplete.</p>
+          </div>
+
+          <div class="panel-card">
+            <div class="card-header">
+              <h2>Spend Over Time</h2>
+            </div>
+            <div class="trends-chart-wrap">
+              <canvas id="trends-spend-chart"></canvas>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <div class="card-header">
+              <h2>Most Popular Dishes</h2>
+            </div>
+            <div class="trends-chart-wrap">
+              <canvas id="trends-popularity-chart"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB: PLATFORM ADMIN — COMPANIES -->
+        <section class="tab-panel" id="companies-tab">
+          <div class="roster-manager-layout">
+            <div class="panel-card">
+              <div class="card-header-compact-row">
+                <div>
+                  <h2>Companies</h2>
+                  <p>Onboard and manage companies on Lunch Buddy.</p>
+                </div>
+                <div class="roster-header-actions">
+                  <button type="button" class="btn btn-primary btn-icon-text" id="btn-add-company">
+                    <span class="material-symbols-outlined">add_business</span>
+                    <span>New Company</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="roster-table-container">
+                <table class="roster-table" id="companies-table">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th>Code</th>
+                      <th>Members</th>
+                      <th>Status</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody id="companies-table-body">
+                    <!-- Populated by JS -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Company Form Modal -->
+            <div class="modal-overlay hidden" id="company-modal-overlay">
+              <div class="panel-card modal-card">
+                <div class="card-header modal-header">
+                  <div>
+                    <h2 id="company-form-title">New Company</h2>
+                    <p>Company codes are permanent once created.</p>
+                  </div>
+                  <button type="button" class="btn btn-icon" id="btn-company-modal-close" title="Close">
+                    <span class="material-symbols-outlined">close</span>
+                  </button>
+                </div>
+
+                <form id="company-form">
+                  <input type="hidden" id="company-form-id" value="">
+
+                  <div class="form-group">
+                    <label for="company-form-name">Company Name</label>
+                    <input type="text" id="company-form-name" required placeholder="e.g. RFD (Resource for Development)">
+                  </div>
+
+                  <div class="form-group" id="company-form-code-group">
+                    <label for="company-form-code">Company Code</label>
+                    <input type="text" id="company-form-code" required placeholder="e.g. RFD" autocapitalize="characters">
+                  </div>
+
+                  <div class="form-group" id="company-form-admin-group">
+                    <label for="company-form-admin-name">First Admin — Full Name</label>
+                    <input type="text" id="company-form-admin-name" placeholder="e.g. Abigail Vance">
+                  </div>
+
+                  <div class="form-group" id="company-form-admin-email-group">
+                    <label for="company-form-admin-email">First Admin — Email (Optional)</label>
+                    <input type="email" id="company-form-admin-email" placeholder="e.g. abigail@company.com">
+                  </div>
+
+                  <div class="roster-form-actions">
+                    <button type="submit" class="btn btn-primary" id="btn-company-submit-form">Save Company</button>
+                    <button type="button" class="btn btn-secondary" id="btn-company-cancel">Cancel</button>
+                  </div>
+
+                  <p id="company-form-status" class="status-msg-inline"></p>
+                </form>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- TAB: MY PAST ORDERS -->
         <section class="tab-panel" id="my-orders-tab">
           <div class="panel-card">
@@ -835,6 +1162,19 @@
             </div>
             <div id="my-orders-container" class="my-orders-container">
               <!-- Populated by JS -->
+            </div>
+          </div>
+
+          <div class="panel-card hidden" id="my-trends-card">
+            <div class="card-header">
+              <h2>Your Trends</h2>
+              <p>Your own dish picks over time.</p>
+            </div>
+            <div class="my-trends-stats" id="my-trends-stats">
+              <!-- Populated by JS -->
+            </div>
+            <div class="trends-chart-wrap trends-chart-wrap-sm">
+              <canvas id="my-trends-chart"></canvas>
             </div>
           </div>
         </section>

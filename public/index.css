@@ -764,6 +764,16 @@ select {
   margin-top: 1.2rem;
 }
 
+.login-footer-link {
+  margin-top: 0.75rem;
+}
+
+.login-footer-link a {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  text-decoration: underline;
+}
+
 .error-text {
   color: #ef4444;
   font-size: 0.9rem;
@@ -1795,13 +1805,131 @@ select {
 
 .admin-dish-row {
   display: grid;
-  grid-template-columns: 1.5fr 2.8fr auto;
+  grid-template-columns: 1.2fr 2fr 0.9fr auto;
   gap: 0.75rem;
   align-items: center;
   padding: 0.75rem;
   background: var(--bg-secondary);
   border: 1px solid var(--card-border);
   border-radius: var(--border-radius-sm);
+}
+
+.admin-dish-row-catalog {
+  grid-template-columns: 44px 1fr auto;
+}
+
+.admin-dish-row-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--bg-tertiary);
+}
+
+.admin-dish-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.admin-dish-row-info strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Catalog picker (menu builder) */
+.catalog-picker-section {
+  margin-bottom: 1.2rem;
+}
+
+.catalog-picker-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.catalog-picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.catalog-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.7rem 0.4rem 0.4rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.catalog-chip:hover {
+  border-color: var(--accent-color);
+}
+
+.catalog-chip img {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.catalog-chip-empty {
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+/* Catalog management modal */
+.catalog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: 1rem;
+}
+
+.catalog-list-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-sm);
+}
+
+.catalog-list-row img {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--bg-tertiary);
+}
+
+.catalog-list-row-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.catalog-list-row-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.catalog-dish-image-preview {
+  width: 60px;
+  height: 60px;
+  border-radius: 6px;
+  object-fit: cover;
+  margin-top: 0.5rem;
 }
 
 .divider {
@@ -1997,6 +2125,55 @@ input:checked + .slider:before {
   overflow-x: auto;
   border-radius: var(--border-radius-sm);
   border: 1px solid var(--card-border);
+}
+
+.roster-branch-filter-wrap {
+  min-width: 160px;
+}
+
+.roster-branch-filter-wrap select {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.branch-add-form {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.branch-add-form input {
+  flex: 1;
+}
+
+.trends-date-range {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.trends-date-range input[type="date"] {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.trends-chart-wrap {
+  position: relative;
+  height: 320px;
+}
+
+.trends-chart-wrap-sm {
+  height: 220px;
+}
+
+.my-trends-stats {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
 }
 
 .roster-table {

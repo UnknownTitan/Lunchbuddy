@@ -25,17 +25,29 @@ function toggleTheme() {
 
 initTheme();
 
-// --- Prevent login-screen flash ---
-// Applied immediately on load (before DOMContentLoaded), same as the theme
-// fix above: if a saved session exists, hide the login view right away
-// instead of waiting for initApp()'s async verification to finish.
-if (localStorage.getItem('lunchsync_token')) {
-  document.getElementById('login-view').classList.add('hidden');
-}
+// --- Prevent pre-auth-screen flash ---
+// Applied immediately on load (before DOMContentLoaded): show whichever
+// pre-auth view is actually correct right away, instead of waiting for
+// initApp()'s async work (and leaving every view hidden, or the wrong one
+// visible, in the meantime). initApp() below re-derives and may override
+// this once it has verified a saved session.
+(function preAuthFlashGuard() {
+  if (localStorage.getItem('lunchsync_token')) {
+    return; // initApp() will verify the session and show the right view
+  }
+  if (location.pathname === '/platform') {
+    document.getElementById('platform-login-view').classList.remove('hidden');
+  } else if (localStorage.getItem('lunchsync_company')) {
+    document.getElementById('login-view').classList.remove('hidden');
+  } else {
+    document.getElementById('company-view').classList.remove('hidden');
+  }
+})();
 
 // --- Global State ---
 let currentUser = null;
 let currentToken = '';
+let currentCompany = null; // { id, code, name } — null until resolved via /api/company/resolve
 let roster = [];
 let dailyState = null;
 let selectedLoginUserId = '';
@@ -85,6 +97,40 @@ const loginPasscodeGroup = document.getElementById('login-passcode-group');
 const loginPasscode = document.getElementById('login-passcode');
 const btnLogin = document.getElementById('btn-login');
 const loginError = document.getElementById('login-error');
+const linkNotYourCompany = document.getElementById('link-not-your-company');
+
+// Company code view
+const companyView = document.getElementById('company-view');
+const companyCodeInput = document.getElementById('company-code-input');
+const btnCompanySubmit = document.getElementById('btn-company-submit');
+const companyError = document.getElementById('company-error');
+const linkPlatformLogin = document.getElementById('link-platform-login');
+
+// Platform Admin login view
+const platformLoginView = document.getElementById('platform-login-view');
+const platformLoginName = document.getElementById('platform-login-name');
+const platformLoginPasscode = document.getElementById('platform-login-passcode');
+const btnPlatformLogin = document.getElementById('btn-platform-login');
+const platformLoginError = document.getElementById('platform-login-error');
+const linkBackToCompany = document.getElementById('link-back-to-company');
+
+// Companies tab (Platform Admin)
+const companiesTableBody = document.getElementById('companies-table-body');
+const btnAddCompany = document.getElementById('btn-add-company');
+const companyModalOverlay = document.getElementById('company-modal-overlay');
+const btnCompanyModalClose = document.getElementById('btn-company-modal-close');
+const companyForm = document.getElementById('company-form');
+const companyFormId = document.getElementById('company-form-id');
+const companyFormName = document.getElementById('company-form-name');
+const companyFormCode = document.getElementById('company-form-code');
+const companyFormCodeGroup = document.getElementById('company-form-code-group');
+const companyFormAdminName = document.getElementById('company-form-admin-name');
+const companyFormAdminEmail = document.getElementById('company-form-admin-email');
+const companyFormAdminGroup = document.getElementById('company-form-admin-group');
+const companyFormAdminEmailGroup = document.getElementById('company-form-admin-email-group');
+const btnCompanyCancel = document.getElementById('btn-company-cancel');
+const companyFormStatus = document.getElementById('company-form-status');
+const companyFormTitle = document.getElementById('company-form-title');
 
 const forcePasscodeView = document.getElementById('force-passcode-view');
 const newPasscode1 = document.getElementById('new-passcode-1');
@@ -149,6 +195,23 @@ const btnAdminAddDish = document.getElementById('btn-admin-add-dish');
 const btnAdminSaveMenu = document.getElementById('btn-admin-save-menu');
 const adminPublishToggle = document.getElementById('admin-publish-toggle');
 const adminMenuStatus = document.getElementById('admin-menu-status');
+const catalogPickerChips = document.getElementById('catalog-picker-chips');
+const btnManageCatalog = document.getElementById('btn-manage-catalog');
+
+// Dish Catalog Modal
+const catalogModalOverlay = document.getElementById('catalog-modal-overlay');
+const btnCatalogModalClose = document.getElementById('btn-catalog-modal-close');
+const catalogList = document.getElementById('catalog-list');
+const catalogDishForm = document.getElementById('catalog-dish-form');
+const catalogDishId = document.getElementById('catalog-dish-id');
+const catalogDishName = document.getElementById('catalog-dish-name');
+const catalogDishDesc = document.getElementById('catalog-dish-desc');
+const catalogDishPrice = document.getElementById('catalog-dish-price');
+const catalogDishImageInput = document.getElementById('catalog-dish-image');
+const catalogDishImagePreview = document.getElementById('catalog-dish-image-preview');
+const btnCatalogDishSubmit = document.getElementById('btn-catalog-dish-submit');
+const btnCatalogDishCancel = document.getElementById('btn-catalog-dish-cancel');
+const catalogDishStatus = document.getElementById('catalog-dish-status');
 const adminCutoffTime = document.getElementById('admin-cutoff-time');
 const btnSaveCutoff = document.getElementById('btn-save-cutoff');
 const adminCutoffStatus = document.getElementById('admin-cutoff-status');
@@ -158,6 +221,9 @@ const adminArchiveTimeStatus = document.getElementById('admin-archive-time-statu
 const operationalDaysPicker = document.getElementById('operational-days-picker');
 const btnSaveOperationalDays = document.getElementById('btn-save-operational-days');
 const adminOperationalDaysStatus = document.getElementById('admin-operational-days-status');
+const companyDefaultPrice = document.getElementById('company-default-price');
+const btnSaveCompanySettings = document.getElementById('btn-save-company-settings');
+const companySettingsStatus = document.getElementById('company-settings-status');
 const closedDayPanel = document.getElementById('closed-day-panel');
 const closedDayNextLabel = document.getElementById('closed-day-next-label');
 const menuPromoBanner = document.getElementById('menu-promo-banner');
@@ -182,6 +248,7 @@ const securitySettingsStatus = document.getElementById('security-settings-status
 // Roster Tab
 const rosterTableBody = document.getElementById('roster-table-body');
 const rosterSearch = document.getElementById('roster-search');
+const rosterBranchFilter = document.getElementById('roster-branch-filter');
 const btnRosterSort = document.getElementById('btn-roster-sort');
 const rosterSortIcon = document.getElementById('roster-sort-icon');
 const rosterSortLabel = document.getElementById('roster-sort-label');
@@ -191,6 +258,7 @@ const rosterUserId = document.getElementById('roster-user-id');
 const rosterName = document.getElementById('roster-name');
 const rosterEmail = document.getElementById('roster-email');
 const rosterPhone = document.getElementById('roster-phone');
+const rosterBranch = document.getElementById('roster-branch');
 const rosterRole = document.getElementById('roster-role');
 const rosterPasscodeGroup = document.getElementById('roster-passcode-group');
 const rosterPasscode = document.getElementById('roster-passcode');
@@ -205,12 +273,28 @@ const rosterModalExistingActions = document.getElementById('roster-modal-existin
 const btnRosterModalReset = document.getElementById('btn-roster-modal-reset');
 const btnRosterModalDelete = document.getElementById('btn-roster-modal-delete');
 
+// Branches
+const branchesTableBody = document.getElementById('branches-table-body');
+const branchAddForm = document.getElementById('branch-add-form');
+const branchAddName = document.getElementById('branch-add-name');
+const branchFormStatus = document.getElementById('branch-form-status');
+
 // History Tab
 const historyDatesList = document.getElementById('history-dates-list');
 const historyDetailPanel = document.getElementById('history-detail-panel');
 
+// Trends Tab
+const trendsStartDate = document.getElementById('trends-start-date');
+const trendsEndDate = document.getElementById('trends-end-date');
+const trendsSpendCaveat = document.getElementById('trends-spend-caveat');
+const trendsSpendChartCanvas = document.getElementById('trends-spend-chart');
+const trendsPopularityChartCanvas = document.getElementById('trends-popularity-chart');
+
 // My Orders Tab
 const myOrdersContainer = document.getElementById('my-orders-container');
+const myTrendsCard = document.getElementById('my-trends-card');
+const myTrendsStats = document.getElementById('my-trends-stats');
+const myTrendsChartCanvas = document.getElementById('my-trends-chart');
 
 // Generic app modal (replaces window.alert()/confirm())
 const appModalOverlay = document.getElementById('app-modal-overlay');
@@ -289,6 +373,9 @@ async function apiCall(url, method = 'GET', body = null) {
   if (currentToken) {
     headers['x-auth-token'] = currentToken;
   }
+  if (currentCompany?.code) {
+    headers['x-company-code'] = currentCompany.code;
+  }
 
   const config = { method, headers };
   if (body) {
@@ -307,6 +394,12 @@ async function apiCall(url, method = 'GET', body = null) {
       // right after login, but if some other call ever reaches here first,
       // force it open rather than surfacing a raw 403 elsewhere.
       showForcePasscodeView();
+    }
+    if (errData.code === 'COMPANY_CODE_REQUIRED') {
+      // The remembered company code is stale/invalid (e.g. suspended) —
+      // drop it and send the user back to the company-code screen.
+      clearSavedCompany();
+      showCompanyView();
     }
     throw new Error(errData.error || `HTTP error! status: ${response.status}`);
   }
@@ -340,17 +433,115 @@ function formatTime12h(timeStr) {
   return `${displayHr}:${minutes} ${ampm}`;
 }
 
-// --- App Initialization & Auth ---
+// --- Company resolution (multi-tenancy) ---
 
-async function initApp() {
-  // Fetch initial roster for the login screen — the minimal public
-  // id+name list, not the full authenticated roster (no PII pre-login).
+function getSavedCompany() {
+  const raw = localStorage.getItem('lunchsync_company');
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function saveCompany(company) {
+  currentCompany = company;
+  localStorage.setItem('lunchsync_company', JSON.stringify(company));
+}
+
+// Clears the remembered company only — NOT the session token. Logging out
+// of an account should never forget which company you're in; this is a
+// separate, explicit "not your company?" action.
+function clearSavedCompany() {
+  currentCompany = null;
+  localStorage.removeItem('lunchsync_company');
+}
+
+function hideAllPreAuthViews() {
+  companyView.classList.add('hidden');
+  platformLoginView.classList.add('hidden');
+  loginView.classList.add('hidden');
+  forcePasscodeView.classList.add('hidden');
+}
+
+function showCompanyView() {
+  hideAllPreAuthViews();
+  companyCodeInput.value = '';
+  companyError.classList.add('hidden');
+  companyView.classList.remove('hidden');
+}
+
+function showPlatformLoginView() {
+  hideAllPreAuthViews();
+  platformLoginError.classList.add('hidden');
+  platformLoginView.classList.remove('hidden');
+}
+
+function showLoginView() {
+  hideAllPreAuthViews();
+  loginView.classList.remove('hidden');
+}
+
+// Fetch the login screen's minimal public id+name roster list — the caller
+// is responsible for having a resolved company (x-company-code header) first.
+async function loadLoginList() {
   try {
     roster = await apiCall('/api/roster/login-list');
     populateLoginDropdown(roster);
   } catch (err) {
     console.error('Failed to load roster on startup:', err);
   }
+}
+
+async function handleCompanySubmit() {
+  companyError.classList.add('hidden');
+  const code = companyCodeInput.value.trim();
+  if (!code) {
+    companyError.textContent = 'Please enter your company code.';
+    companyError.classList.remove('hidden');
+    return;
+  }
+  try {
+    const result = await apiCall('/api/company/resolve', 'POST', { code });
+    saveCompany(result);
+    await loadLoginList();
+    showLoginView();
+  } catch (err) {
+    companyError.textContent = err.message || 'Company not found.';
+    companyError.classList.remove('hidden');
+  }
+}
+
+async function handlePlatformLogin() {
+  platformLoginError.classList.add('hidden');
+  const name = platformLoginName.value.trim();
+  const passcode = platformLoginPasscode.value.trim();
+  if (!name || !passcode) {
+    platformLoginError.textContent = 'Name and passcode are required.';
+    platformLoginError.classList.remove('hidden');
+    return;
+  }
+  try {
+    const result = await apiCall('/api/platform/login', 'POST', { name, passcode });
+    currentUser = result.user;
+    currentToken = result.token;
+    localStorage.setItem('lunchsync_token', currentToken);
+    if (currentUser.mustChangePasscode) {
+      showForcePasscodeView();
+    } else {
+      loginSuccess();
+    }
+  } catch (err) {
+    platformLoginError.textContent = err.message || 'Login failed.';
+    platformLoginError.classList.remove('hidden');
+  }
+}
+
+// --- App Initialization & Auth ---
+
+async function initApp() {
+  currentCompany = getSavedCompany();
 
   // Check for a saved session token in localStorage
   const savedToken = localStorage.getItem('lunchsync_token');
@@ -363,15 +554,26 @@ async function initApp() {
       const check = await apiCall('/api/me');
       currentUser = check.user;
 
-      if (currentUser.mustChangePasscode) {
+      if (currentUser.role !== 'Platform Admin' && currentUser.mustChangePasscode) {
         showForcePasscodeView();
       } else {
         loginSuccess();
       }
+      setupEventListeners();
+      return;
     } catch (err) {
       console.warn('Saved session invalid or expired, clearing credentials:', err);
       logout();
     }
+  }
+
+  if (location.pathname === '/platform') {
+    showPlatformLoginView();
+  } else if (!currentCompany) {
+    showCompanyView();
+  } else {
+    await loadLoginList();
+    showLoginView();
   }
 
   setupEventListeners();
@@ -450,7 +652,7 @@ async function handleLogin() {
 
 // Blocks access behind a mandatory "set your own passcode" screen
 function showForcePasscodeView() {
-  loginView.classList.add('hidden');
+  hideAllPreAuthViews();
   dashboardView.classList.add('hidden');
   forcePasscodeError.classList.add('hidden');
   newPasscode1.value = '';
@@ -491,32 +693,45 @@ async function handleForcePasscodeSubmit() {
 
 // Successful login configuration
 async function loginSuccess() {
-  loginView.classList.add('hidden');
+  hideAllPreAuthViews();
   dashboardView.classList.remove('hidden');
   headerInfo.classList.remove('hidden');
-  notificationBellWrap.classList.remove('hidden');
   btnMobileMenuToggle.classList.remove('hidden');
 
   headerUserName.textContent = currentUser.name;
   headerUserRole.textContent = currentUser.role;
   headerAvatarInitials.textContent = getInitials(currentUser.name);
 
-  updateNotificationRequestBanner();
-
-  // Render proper tabs based on roles
+  // Render proper tabs based on role
   document.querySelectorAll('.admin-only').forEach(el => el.classList.add('hidden'));
   document.querySelectorAll('.admin-abigail-only').forEach(el => el.classList.add('hidden'));
+  document.querySelectorAll('.platform-admin-only').forEach(el => el.classList.add('hidden'));
+
+  const navTabOrder = document.querySelector('.nav-tab[data-target="order-tab"]');
+  const navTabMyOrders = document.getElementById('nav-tab-my-orders');
+
+  if (currentUser.role === 'Platform Admin') {
+    // A Platform Admin manages companies, not one company's roster/menu/orders —
+    // deliberately skip the company-scoped bootstrap below entirely.
+    document.querySelectorAll('.platform-admin-only').forEach(el => el.classList.remove('hidden'));
+    navTabOrder.classList.add('hidden');
+    navTabMyOrders.classList.add('hidden');
+    notificationBellWrap.classList.add('hidden');
+    switchTab('companies-tab');
+    await loadCompanies();
+    return;
+  }
+
+  navTabOrder.classList.remove('hidden');
+  navTabMyOrders.classList.remove('hidden');
+  notificationBellWrap.classList.remove('hidden');
+  updateNotificationRequestBanner();
 
   if (currentUser.role === 'Admin') {
     document.querySelectorAll('.admin-only').forEach(el => el.classList.remove('hidden'));
     document.querySelectorAll('.admin-abigail-only').forEach(el => el.classList.remove('hidden'));
   } else if (currentUser.role === 'Abigail') {
     document.querySelectorAll('.admin-abigail-only').forEach(el => el.classList.remove('hidden'));
-  }
-
-  // Adjust display of Coordinator tools in Summary
-  if (currentUser.role === 'Admin' || currentUser.role === 'Abigail') {
-    document.querySelectorAll('.admin-abigail-only.hidden').forEach(el => el.classList.remove('hidden'));
   }
 
   // Reload roster snapshot now that we're authenticated
@@ -544,6 +759,8 @@ async function loginSuccess() {
 }
 
 function logout() {
+  const wasPlatformAdmin = currentUser?.role === 'Platform Admin';
+
   currentUser = null;
   currentToken = '';
   selectedLoginUserId = '';
@@ -555,6 +772,8 @@ function logout() {
   }
 
   localStorage.removeItem('lunchsync_token');
+  // The remembered company is deliberately kept — logging out of an
+  // account shouldn't forget which company you're in.
 
   loginUserSearch.value = '';
   loginPasscode.value = '';
@@ -566,16 +785,15 @@ function logout() {
   btnMobileMenuToggle.classList.add('hidden');
   closeMobileNav();
   dashboardView.classList.add('hidden');
-  forcePasscodeView.classList.add('hidden');
-  loginView.classList.remove('hidden');
 
-  // Trigger Roster refetch for general logins
-  apiCall('/api/roster/login-list')
-    .then(r => {
-      roster = r;
-      populateLoginDropdown(roster);
-    })
-    .catch(console.error);
+  if (wasPlatformAdmin) {
+    showPlatformLoginView();
+  } else if (currentCompany) {
+    showLoginView();
+    loadLoginList();
+  } else {
+    showCompanyView();
+  }
 }
 
 // --- Tab Navigation ---
@@ -648,7 +866,9 @@ function onTabLoad(tabId) {
     loadAdminMenuBuilder();
     loadAdminSettings();
     loadSecuritySettings();
+    loadCompanySettings();
   } else if (tabId === 'roster-tab') {
+    loadBranches().then(renderRosterTable);
     renderRosterTable();
     resetRosterForm();
   } else if (tabId === 'history-tab') {
@@ -657,6 +877,8 @@ function onTabLoad(tabId) {
     renderSummaryView();
   } else if (tabId === 'my-orders-tab') {
     loadMyOrders();
+  } else if (tabId === 'trends-tab') {
+    loadTrends();
   }
 }
 
@@ -1011,7 +1233,7 @@ function renderWeeklyPlan() {
         <span class="week-day-date">${escapeHtml(shortDate)}</span>
         ${badge ? `<span class="week-day-badge">${escapeHtml(badge)}</span>` : ''}
       </div>
-      <div class="week-day-thumb"><img src="${getDishImage(day.dishName)}" alt="" loading="lazy"></div>
+      <div class="week-day-thumb"><img src="${getDishImage(day)}" alt="" loading="lazy"></div>
       <select class="week-day-select" aria-label="Dish for ${escapeHtml(day.dayName)}" ${disabled}>${optionsHtml}</select>
       ${warning}
       <input type="text" class="week-day-note" maxlength="140" placeholder="Note (optional)" value="${escapeHtml(day.note || '')}" ${disabled}>
@@ -1196,7 +1418,8 @@ function renderFoodOrderForm() {
     btnChangeOrder.classList.toggle('hidden', showForm || dailyState.isLocked);
     btnCancelOrder.classList.toggle('hidden', showForm || dailyState.isLocked || userOrder.served);
 
-    const dishImage = getDishImage(userOrder.itemName);
+    const matchedMenuItem = dailyState.menu.find(m => m.id === userOrder.itemId);
+    const dishImage = getDishImage(matchedMenuItem || { name: userOrder.itemName });
     if (confThumbImg) confThumbImg.src = dishImage;
     if (orderHeroArtImg) orderHeroArtImg.src = dishImage;
   } else {
@@ -1238,12 +1461,12 @@ function renderFoodOrderForm() {
       <input type="radio" name="lunch-selection" value="${item.id}" ${isChecked ? 'checked' : ''} required>
       <div class="menu-card-inner">
         <div class="menu-card-image-wrap">
-          <img src="${getDishImage(item.name)}" class="menu-card-image" alt="" loading="lazy">
+          <img src="${getDishImage(item)}" class="menu-card-image" alt="" loading="lazy">
         </div>
         <div class="menu-card-body">
           <div class="menu-card-header">
             <span class="menu-card-title">${escapeHtml(item.name)}</span>
-            ${item.price ? `<span class="menu-card-price">${escapeHtml(item.price)}</span>` : ''}
+            ${typeof item.price === 'number' ? `<span class="menu-card-price">${formatPrice(item.price)}</span>` : ''}
           </div>
           <p class="menu-card-desc">${escapeHtml(item.description)}</p>
         </div>
@@ -1258,7 +1481,7 @@ function renderFoodOrderForm() {
         orderFormDirty = true;
         document.querySelectorAll('.menu-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
-        if (orderHeroArtImg) orderHeroArtImg.src = getDishImage(item.name);
+        if (orderHeroArtImg) orderHeroArtImg.src = getDishImage(item);
       }
     });
 
@@ -1617,19 +1840,34 @@ function loadAdminMenuBuilder() {
   if (!dailyState) return;
 
   adminMenuList.innerHTML = '';
-  
+
   if (dailyState.menu.length === 0) {
-    addDishInputRow('', '', '');
+    addDishInputRow('', '', '', null);
   } else {
     dailyState.menu.forEach(item => {
-      addDishInputRow(item.id, item.name, item.description);
+      if (item.catalogDishId) {
+        addCatalogPickRow({ id: item.catalogDishId, name: item.name, price: item.price, imageId: item.imageId }, item.id);
+      } else {
+        addDishInputRow(item.id, item.name, item.description, item.price);
+      }
     });
   }
 
   adminPublishToggle.checked = dailyState.menuPublished;
+  loadCatalogPicker();
 }
 
-function addDishInputRow(id = '', name = '', description = '') {
+// If the list is a single, still-empty one-off placeholder row (the default
+// state when today's menu is blank), clear it before adding a real pick —
+// otherwise saveAdminMenu would reject the empty name.
+function removeEmptyPlaceholderRow() {
+  const rows = adminMenuList.querySelectorAll('.admin-dish-row:not(.admin-dish-row-catalog)');
+  if (rows.length === 1 && !rows[0].querySelector('.dish-name-input')?.value.trim()) {
+    rows[0].remove();
+  }
+}
+
+function addDishInputRow(id = '', name = '', description = '', price = null) {
   const div = document.createElement('div');
   div.className = 'admin-dish-row';
   div.dataset.id = id;
@@ -1637,12 +1875,47 @@ function addDishInputRow(id = '', name = '', description = '') {
   div.innerHTML = `
     <input type="text" class="dish-name-input" placeholder="Dish Name (e.g. Sushi)" value="${escapeHtml(name)}" required>
     <input type="text" class="dish-desc-input" placeholder="Optional description" value="${escapeHtml(description)}">
+    <input type="number" class="dish-price-input" placeholder="Price (optional)" min="0" step="0.01" value="${price != null ? price : ''}">
     <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Delete Row">
       <span class="material-symbols-outlined">delete</span>
     </button>
   `;
 
   // Bind delete action
+  div.querySelector('.btn-delete-row').addEventListener('click', () => {
+    div.remove();
+    if (adminMenuList.children.length === 0) {
+      addDishInputRow();
+    }
+  });
+
+  adminMenuList.appendChild(div);
+}
+
+// A "catalog pick" row: read-only (thumbnail/name/price sourced from the
+// catalog dish, snapshotted onto the daily menu item at save time), with
+// just a remove button — editing the underlying values happens in the
+// Manage Catalog modal, not here.
+function addCatalogPickRow(dish, existingDailyItemId = null) {
+  if (adminMenuList.querySelector(`.admin-dish-row-catalog[data-catalog-dish-id="${dish.id}"]`)) return;
+  removeEmptyPlaceholderRow();
+
+  const div = document.createElement('div');
+  div.className = 'admin-dish-row admin-dish-row-catalog';
+  div.dataset.catalogDishId = dish.id;
+  div.dataset.id = existingDailyItemId || '';
+
+  div.innerHTML = `
+    <img src="${getDishImage(dish)}" class="admin-dish-row-thumb" alt="" loading="lazy">
+    <div class="admin-dish-row-info">
+      <strong>${escapeHtml(dish.name)}</strong>
+      ${typeof dish.price === 'number' ? `<span class="menu-card-price">${formatPrice(dish.price)}</span>` : ''}
+    </div>
+    <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Remove">
+      <span class="material-symbols-outlined">delete</span>
+    </button>
+  `;
+
   div.querySelector('.btn-delete-row').addEventListener('click', () => {
     div.remove();
     if (adminMenuList.children.length === 0) {
@@ -1663,9 +1936,16 @@ async function saveAdminMenu() {
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
+
+    if (row.dataset.catalogDishId) {
+      menuItems.push({ id: row.dataset.id || null, catalogDishId: row.dataset.catalogDishId });
+      continue;
+    }
+
     const nameInput = row.querySelector('.dish-name-input');
     const name = nameInput.value.trim();
     const description = row.querySelector('.dish-desc-input').value.trim();
+    const priceVal = row.querySelector('.dish-price-input').value.trim();
 
     if (!name) {
       adminMenuStatus.className = 'status-msg-inline error-text';
@@ -1677,8 +1957,15 @@ async function saveAdminMenu() {
     menuItems.push({
       id: row.dataset.id || null, // Keep same ID if editing, else make new
       name,
-      description
+      description,
+      price: priceVal ? Number(priceVal) : null
     });
+  }
+
+  if (menuItems.length === 0) {
+    adminMenuStatus.className = 'status-msg-inline error-text';
+    adminMenuStatus.textContent = 'Add at least one dish.';
+    return;
   }
 
   try {
@@ -1686,11 +1973,203 @@ async function saveAdminMenu() {
     adminMenuStatus.className = 'status-msg-inline success';
     adminMenuStatus.style.color = 'var(--status-in-office)';
     adminMenuStatus.textContent = 'Menu structure saved successfully!';
-    
+
     await fetchDailyState();
   } catch (err) {
     adminMenuStatus.className = 'status-msg-inline error-text';
     adminMenuStatus.textContent = err.message || 'Failed to save menu.';
+  }
+}
+
+// --- Dish Catalog (picker + management modal) ---
+
+let catalogDishes = [];
+
+async function loadCatalogPicker() {
+  try {
+    catalogDishes = await apiCall('/api/dishes');
+  } catch (err) {
+    console.error('Error loading dish catalog:', err);
+    catalogDishes = [];
+  }
+  renderCatalogChips();
+}
+
+function renderCatalogChips() {
+  catalogPickerChips.innerHTML = '';
+  if (catalogDishes.length === 0) {
+    catalogPickerChips.innerHTML = '<span class="catalog-chip-empty">No dishes in your catalog yet — use Manage Catalog to add some.</span>';
+    return;
+  }
+  catalogDishes.forEach(dish => {
+    const chip = document.createElement('div');
+    chip.className = 'catalog-chip';
+    chip.innerHTML = `
+      <img src="${getDishImage(dish)}" alt="" loading="lazy">
+      <span>${escapeHtml(dish.name)}${typeof dish.price === 'number' ? ` · ${formatPrice(dish.price)}` : ''}</span>
+    `;
+    chip.addEventListener('click', () => addCatalogPickRow(dish));
+    catalogPickerChips.appendChild(chip);
+  });
+}
+
+function openCatalogModal() {
+  resetCatalogDishForm();
+  renderCatalogList();
+  catalogModalOverlay.classList.remove('hidden');
+}
+
+function closeCatalogModal() {
+  catalogModalOverlay.classList.add('hidden');
+}
+
+function renderCatalogList() {
+  catalogList.innerHTML = '';
+  if (catalogDishes.length === 0) {
+    catalogList.innerHTML = '<p class="help-text">No dishes yet — add your first one below.</p>';
+    return;
+  }
+  catalogDishes.forEach(dish => {
+    const row = document.createElement('div');
+    row.className = 'catalog-list-row';
+    row.innerHTML = `
+      <img src="${getDishImage(dish)}" alt="" loading="lazy">
+      <div class="catalog-list-row-info">
+        <strong>${escapeHtml(dish.name)}</strong>
+        <span class="help-text">${typeof dish.price === 'number' ? formatPrice(dish.price) : 'No price set'}</span>
+      </div>
+      <div class="catalog-list-row-actions">
+        <button type="button" class="btn btn-secondary btn-sm btn-catalog-edit">Edit</button>
+        <button type="button" class="btn btn-danger btn-sm btn-catalog-delete">Remove</button>
+      </div>
+    `;
+    row.querySelector('.btn-catalog-edit').addEventListener('click', () => populateCatalogDishForm(dish));
+    row.querySelector('.btn-catalog-delete').addEventListener('click', () => handleCatalogDishDelete(dish));
+    catalogList.appendChild(row);
+  });
+}
+
+function resetCatalogDishForm() {
+  catalogDishId.value = '';
+  catalogDishName.value = '';
+  catalogDishDesc.value = '';
+  catalogDishPrice.value = '';
+  catalogDishImageInput.value = '';
+  catalogDishImagePreview.classList.add('hidden');
+  catalogDishImagePreview.dataset.pendingUpload = '';
+  catalogDishStatus.textContent = '';
+  btnCatalogDishSubmit.textContent = 'Save Dish';
+}
+
+function populateCatalogDishForm(dish) {
+  catalogDishId.value = dish.id;
+  catalogDishName.value = dish.name;
+  catalogDishDesc.value = dish.description || '';
+  catalogDishPrice.value = dish.price != null ? dish.price : '';
+  catalogDishImageInput.value = '';
+  catalogDishImagePreview.dataset.pendingUpload = '';
+  if (dish.imageId) {
+    catalogDishImagePreview.src = getDishImage(dish);
+    catalogDishImagePreview.classList.remove('hidden');
+  } else {
+    catalogDishImagePreview.classList.add('hidden');
+  }
+  catalogDishStatus.textContent = '';
+  btnCatalogDishSubmit.textContent = 'Update Dish';
+}
+
+// Resizes/compresses an uploaded image client-side (max 800x800) before it
+// ever leaves the browser, keeping the upload well under the server's
+// 300KB limit without the admin having to think about it.
+function resizeImageFile(file, maxDim = 800) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read the selected file.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Could not read the selected image.'));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const scale = Math.min(maxDim / width, maxDim / height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/webp', 0.85));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+catalogDishImageInput?.addEventListener('change', async () => {
+  const file = catalogDishImageInput.files?.[0];
+  if (!file) return;
+  try {
+    const dataUrl = await resizeImageFile(file);
+    catalogDishImagePreview.src = dataUrl;
+    catalogDishImagePreview.classList.remove('hidden');
+    catalogDishImagePreview.dataset.pendingUpload = dataUrl;
+  } catch (err) {
+    catalogDishStatus.className = 'status-msg-inline error-text';
+    catalogDishStatus.textContent = err.message || 'Failed to process image.';
+  }
+});
+
+async function handleCatalogDishFormSubmit(e) {
+  e.preventDefault();
+  catalogDishStatus.className = 'status-msg-inline';
+  catalogDishStatus.textContent = 'Saving...';
+
+  const id = catalogDishId.value;
+  const name = catalogDishName.value.trim();
+  const description = catalogDishDesc.value.trim();
+  const priceVal = catalogDishPrice.value.trim();
+  const price = priceVal ? Number(priceVal) : null;
+  const pendingImage = catalogDishImagePreview.dataset.pendingUpload || '';
+
+  if (!name) {
+    catalogDishStatus.className = 'status-msg-inline error-text';
+    catalogDishStatus.textContent = 'Dish name is required.';
+    return;
+  }
+
+  try {
+    let dish;
+    if (id) {
+      dish = await apiCall(`/api/dishes/${id}`, 'PUT', { name, description, price });
+    } else {
+      dish = await apiCall('/api/dishes', 'POST', { name, description, price });
+    }
+    if (pendingImage) {
+      await apiCall(`/api/dishes/${dish.id}/image`, 'POST', { imageData: pendingImage });
+    }
+    await loadCatalogPicker();
+    resetCatalogDishForm();
+    renderCatalogList();
+    catalogDishStatus.className = 'status-msg-inline success';
+    catalogDishStatus.style.color = 'var(--status-in-office)';
+    catalogDishStatus.textContent = 'Dish saved!';
+  } catch (err) {
+    catalogDishStatus.className = 'status-msg-inline error-text';
+    catalogDishStatus.textContent = err.message || 'Failed to save dish.';
+  }
+}
+
+async function handleCatalogDishDelete(dish) {
+  const ok = await confirmDialog(`Remove "${dish.name}" from your catalog? Days that already used it keep their own record.`);
+  if (!ok) return;
+  try {
+    await apiCall(`/api/dishes/${dish.id}`, 'DELETE');
+    await loadCatalogPicker();
+    renderCatalogList();
+  } catch (err) {
+    showAlert(err.message || 'Failed to remove dish.');
   }
 }
 
@@ -1754,6 +2233,34 @@ async function saveOperationalDays() {
   } catch (err) {
     adminOperationalDaysStatus.className = 'status-msg-inline error-text';
     adminOperationalDaysStatus.textContent = err.message || 'Failed to update operational days.';
+  }
+}
+
+async function loadCompanySettings() {
+  try {
+    const settings = await apiCall('/api/settings/company');
+    companyDefaultPrice.value = settings.defaultPricePerHead != null ? settings.defaultPricePerHead : '';
+  } catch (err) {
+    companySettingsStatus.className = 'status-msg-inline error-text';
+    companySettingsStatus.textContent = err.message || 'Failed to load catering cost settings.';
+  }
+}
+
+async function saveCompanySettingsForm() {
+  companySettingsStatus.className = 'status-msg-inline';
+  companySettingsStatus.textContent = 'Saving...';
+
+  const raw = companyDefaultPrice.value.trim();
+  const defaultPricePerHead = raw ? Number(raw) : null;
+
+  try {
+    await apiCall('/api/settings/company', 'PUT', { defaultPricePerHead });
+    companySettingsStatus.className = 'status-msg-inline success';
+    companySettingsStatus.style.color = 'var(--status-in-office)';
+    companySettingsStatus.textContent = 'Catering cost settings updated!';
+  } catch (err) {
+    companySettingsStatus.className = 'status-msg-inline error-text';
+    companySettingsStatus.textContent = err.message || 'Failed to save catering cost settings.';
   }
 }
 
@@ -1921,7 +2428,8 @@ function parseBulkText(raw) {
         name: parts[0] || '',
         email: parts[1] || '',
         phone: parts[2] || '',
-        role: parts[3] || 'Team Member'
+        role: parts[3] || 'Team Member',
+        branch: parts[4] || ''
       };
     });
 }
@@ -1975,6 +2483,14 @@ async function handleBulkImport() {
       html += `</ul>`;
     }
 
+    if (res.warnings && res.warnings.length > 0) {
+      html += `<ul class="bulk-skip-list">`;
+      res.warnings.forEach(w => {
+        html += `<li>${escapeHtml(w)}</li>`;
+      });
+      html += `</ul>`;
+    }
+
     if (res.members && res.members.length > 0) {
       html += `<p class="help-text" style="margin-top:0.75rem;">Each person got a unique temporary passcode — share these securely; they won't be shown again:</p>`;
       html += `<ul class="bulk-skip-list">`;
@@ -2003,33 +2519,45 @@ async function handleBulkImport() {
 
 // --- Tab: Roster Manager ---
 
+const ROLE_META = {
+  'Admin': { badgeClass: 'admin', label: 'Admin' },
+  'Abigail': { badgeClass: 'abigail', label: 'Abigail' },
+  'Team Member': { badgeClass: 'member', label: 'Team Member' }
+};
+function getRoleMeta(role) {
+  return ROLE_META[role] || { badgeClass: 'member', label: role || 'Unknown' };
+}
+
 function renderRosterTable() {
   rosterTableBody.innerHTML = '';
-  
+
   const searchVal = rosterSearch.value.toLowerCase().trim();
+  const branchFilterVal = rosterBranchFilter.value;
   const filteredRoster = roster
     .filter(u => u.name.toLowerCase().includes(searchVal))
+    .filter(u => !branchFilterVal || u.branchId === branchFilterVal)
     .sort((a, b) => {
       const cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
       return rosterSortDirection === 'asc' ? cmp : -cmp;
     });
 
   if (filteredRoster.length === 0) {
-    rosterTableBody.innerHTML = '<tr><td colspan="5" class="no-results">No team members found</td></tr>';
+    rosterTableBody.innerHTML = '<tr><td colspan="6" class="no-results">No team members found</td></tr>';
     return;
   }
 
   filteredRoster.forEach(user => {
     const tr = document.createElement('tr');
 
-    const roleBadgeClass = user.role === 'Admin' ? 'admin' : user.role === 'Abigail' ? 'abigail' : 'member';
-    const roleLabel = user.role === 'Admin' ? 'Admin' : user.role === 'Abigail' ? 'Abigail' : 'Team Member';
+    const roleMeta = getRoleMeta(user.role);
+    const branchName = getBranchName(user.branchId);
 
     tr.innerHTML = `
       <td data-label="Name"><strong>${escapeHtml(user.name)}</strong></td>
       <td data-label="Email">${escapeHtml(user.email || '—')}</td>
       <td data-label="Phone">${escapeHtml(user.phone || '—')}</td>
-      <td data-label="System Role"><span class="table-role-badge ${roleBadgeClass}">${roleLabel}</span></td>
+      <td data-label="Branch">${branchName ? escapeHtml(branchName) : '<span class="text-muted">No branch</span>'}</td>
+      <td data-label="System Role"><span class="table-role-badge ${roleMeta.badgeClass}">${escapeHtml(roleMeta.label)}</span></td>
       <td data-label="Passcode">${user.hasPasscode ? '<code>Set</code>' : '<code class="no-passcode">None</code>'}</td>
     `;
 
@@ -2051,6 +2579,7 @@ function openRosterModal(user) {
     rosterName.value = user.name;
     rosterEmail.value = user.email;
     rosterPhone.value = user.phone;
+    rosterBranch.value = user.branchId || '';
     rosterRole.value = user.role;
     // Passcodes are hashed server-side and can't be retrieved — leave blank;
     // a value here only gets sent (and applied) if the admin types a new one.
@@ -2065,6 +2594,7 @@ function openRosterModal(user) {
     rosterName.value = '';
     rosterEmail.value = '';
     rosterPhone.value = '';
+    rosterBranch.value = '';
     rosterRole.value = 'Team Member';
     // Leave blank by default — the server generates a unique random
     // passcode if none is set, shown once after saving. Admins can still
@@ -2090,6 +2620,240 @@ function resetRosterForm() {
   closeRosterModal();
 }
 
+// --- Branches ---
+
+let branches = [];
+
+async function loadBranches() {
+  try {
+    branches = await apiCall('/api/branches');
+  } catch (err) {
+    console.error('Error loading branches:', err);
+    branches = [];
+  }
+  renderBranchesTable();
+  populateBranchSelects();
+}
+
+function populateBranchSelects() {
+  const options = branches.map(b => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+  const prevRosterValue = rosterBranch.value;
+  const prevFilterValue = rosterBranchFilter.value;
+  rosterBranch.innerHTML = '<option value="">No branch</option>' + options;
+  rosterBranchFilter.innerHTML = '<option value="">All Branches</option>' + options;
+  rosterBranch.value = prevRosterValue;
+  rosterBranchFilter.value = prevFilterValue;
+}
+
+function getBranchName(branchId) {
+  if (!branchId) return null;
+  return branches.find(b => b.id === branchId)?.name || null;
+}
+
+function renderBranchesTable() {
+  branchesTableBody.innerHTML = '';
+  if (branches.length === 0) {
+    branchesTableBody.innerHTML = '<tr><td colspan="2" class="no-results">No branches yet</td></tr>';
+    return;
+  }
+  branches.forEach(branch => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td data-label="Name"><strong>${escapeHtml(branch.name)}</strong></td>
+      <td data-label=""></td>
+    `;
+    const actionsTd = tr.querySelector('td:last-child');
+
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.className = 'btn btn-secondary btn-sm';
+    renameBtn.textContent = 'Rename';
+    renameBtn.addEventListener('click', () => handleBranchRename(branch));
+    actionsTd.appendChild(renameBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.type = 'button';
+    deleteBtn.className = 'btn btn-danger btn-sm';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', () => handleBranchDelete(branch));
+    actionsTd.appendChild(deleteBtn);
+
+    branchesTableBody.appendChild(tr);
+  });
+}
+
+// Doubles as both "Add Branch" and "Rename Branch" — handleBranchRename
+// below populates the same field and stashes the id being edited on the
+// form itself, rather than opening a second modal for a one-field edit.
+async function handleBranchFormSubmit(e) {
+  e.preventDefault();
+  branchFormStatus.className = 'status-msg-inline';
+  const name = branchAddName.value.trim();
+  if (!name) return;
+
+  const editingId = branchAddForm.dataset.editingId;
+  try {
+    if (editingId) {
+      await apiCall(`/api/branches/${editingId}`, 'PUT', { name });
+      delete branchAddForm.dataset.editingId;
+    } else {
+      await apiCall('/api/branches', 'POST', { name });
+    }
+    branchAddName.value = '';
+    branchFormStatus.textContent = '';
+    await loadBranches();
+  } catch (err) {
+    branchFormStatus.className = 'status-msg-inline error-text';
+    branchFormStatus.textContent = err.message || 'Failed to save branch.';
+  }
+}
+
+function handleBranchRename(branch) {
+  branchAddName.value = branch.name;
+  branchAddForm.dataset.editingId = branch.id;
+  branchAddName.focus();
+}
+
+// No cascade — a roster member's now-orphaned branchId just fails to
+// resolve (getBranchName returns null) and the table shows "No branch".
+async function handleBranchDelete(branch) {
+  const ok = await confirmDialog(`Delete branch "${branch.name}"? Team members assigned to it will show "No branch".`);
+  if (!ok) return;
+  try {
+    await apiCall(`/api/branches/${branch.id}`, 'DELETE');
+    await loadBranches();
+    renderRosterTable();
+  } catch (err) {
+    showAlert(err.message || 'Failed to delete branch.');
+  }
+}
+
+// --- Platform Admin: Companies ---
+
+let companies = [];
+
+async function loadCompanies() {
+  try {
+    companies = await apiCall('/api/companies');
+    renderCompaniesTable();
+  } catch (err) {
+    console.error('Error loading companies:', err);
+  }
+}
+
+function renderCompaniesTable() {
+  companiesTableBody.innerHTML = '';
+
+  if (companies.length === 0) {
+    companiesTableBody.innerHTML = '<tr><td colspan="5" class="no-results">No companies yet</td></tr>';
+    return;
+  }
+
+  companies.forEach(company => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td data-label="Name"><strong>${escapeHtml(company.name)}</strong></td>
+      <td data-label="Code"><code>${escapeHtml(company.code)}</code></td>
+      <td data-label="Members">${company.memberCount}</td>
+      <td data-label="Status"><span class="table-role-badge ${company.status === 'active' ? 'member' : 'admin'}">${company.status === 'active' ? 'Active' : 'Suspended'}</span></td>
+      <td data-label=""></td>
+    `;
+    const actionsTd = tr.querySelector('td:last-child');
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'btn btn-secondary btn-sm';
+    editBtn.textContent = 'Rename';
+    editBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openCompanyModal(company);
+    });
+    actionsTd.appendChild(editBtn);
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'btn btn-secondary btn-sm';
+    toggleBtn.textContent = company.status === 'active' ? 'Suspend' : 'Reactivate';
+    toggleBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const nextStatus = company.status === 'active' ? 'suspended' : 'active';
+      const ok = await confirmDialog(`${nextStatus === 'suspended' ? 'Suspend' : 'Reactivate'} "${company.name}"?`);
+      if (!ok) return;
+      try {
+        await apiCall(`/api/companies/${company.id}/status`, 'PUT', { status: nextStatus });
+        await loadCompanies();
+      } catch (err) {
+        showAlert(err.message || 'Failed to update company status.');
+      }
+    });
+    actionsTd.appendChild(toggleBtn);
+
+    companiesTableBody.appendChild(tr);
+  });
+}
+
+function openCompanyModal(company) {
+  if (company) {
+    companyFormTitle.textContent = 'Rename Company';
+    companyFormId.value = company.id;
+    companyFormName.value = company.name;
+    companyFormCode.value = company.code;
+    companyFormCode.disabled = true;
+    companyFormCodeGroup.classList.add('hidden');
+    companyFormAdminGroup.classList.add('hidden');
+    companyFormAdminEmailGroup.classList.add('hidden');
+  } else {
+    companyFormTitle.textContent = 'New Company';
+    companyFormId.value = '';
+    companyFormName.value = '';
+    companyFormCode.value = '';
+    companyFormCode.disabled = false;
+    companyFormCodeGroup.classList.remove('hidden');
+    companyFormAdminGroup.classList.remove('hidden');
+    companyFormAdminEmailGroup.classList.remove('hidden');
+    companyFormAdminName.value = '';
+    companyFormAdminEmail.value = '';
+  }
+  companyFormStatus.textContent = '';
+  companyModalOverlay.classList.remove('hidden');
+}
+
+function closeCompanyModal() {
+  companyModalOverlay.classList.add('hidden');
+}
+
+async function handleCompanyFormSubmit(e) {
+  e.preventDefault();
+  const id = companyFormId.value;
+  const name = companyFormName.value.trim();
+
+  try {
+    if (id) {
+      await apiCall(`/api/companies/${id}`, 'PUT', { name });
+      closeCompanyModal();
+      await loadCompanies();
+    } else {
+      const code = companyFormCode.value.trim();
+      const adminName = companyFormAdminName.value.trim();
+      const adminEmail = companyFormAdminEmail.value.trim();
+      if (!code || !adminName) {
+        companyFormStatus.textContent = 'Company code and the first Admin\'s name are required.';
+        return;
+      }
+      const result = await apiCall('/api/companies', 'POST', { name, code, adminName, adminEmail });
+      closeCompanyModal();
+      await loadCompanies();
+      await showAppModal({
+        title: 'Company Created',
+        message: `${result.company.name} is ready. Share this one-time passcode with ${result.admin.name} (code: ${result.company.code}):`,
+        code: result.admin.initialPasscode
+      });
+    }
+  } catch (err) {
+    companyFormStatus.textContent = err.message || 'Failed to save company.';
+  }
+}
+
 // Roster Form Submit handler
 async function handleRosterFormSubmit(e) {
   e.preventDefault();
@@ -2099,6 +2863,7 @@ async function handleRosterFormSubmit(e) {
   const email = rosterEmail.value.trim();
   const phone = rosterPhone.value.trim();
   const role = rosterRole.value;
+  const branchId = rosterBranch.value || null;
   const passcode = rosterPasscode.value.trim();
 
   // Native browser validation popups don't always render in embedded
@@ -2112,7 +2877,7 @@ async function handleRosterFormSubmit(e) {
   rosterFormStatus.className = 'status-msg-inline';
   rosterFormStatus.textContent = 'Saving...';
 
-  const payload = { name, email, phone, role };
+  const payload = { name, email, phone, role, branchId };
   // Only include the passcode when the admin actually typed one — on edit,
   // a blank field means "keep the existing passcode" (it can't be shown);
   // on add, a blank field means "auto-generate one".
@@ -2538,6 +3303,162 @@ function exportHistoryCsv(data) {
 
 // --- Tab: My Past Orders ---
 
+// --- Trends Tab ---
+
+let trendsSpendChart = null;
+let trendsPopularityChart = null;
+
+function toDateInputValue(d) {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async function loadTrends() {
+  if (!trendsStartDate.value || !trendsEndDate.value) {
+    trendsStartDate.value = toDateInputValue(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+    trendsEndDate.value = toDateInputValue(new Date());
+  }
+
+  const params = new URLSearchParams();
+  if (trendsStartDate.value) params.set('startDate', trendsStartDate.value);
+  if (trendsEndDate.value) params.set('endDate', trendsEndDate.value);
+
+  try {
+    const data = await apiCall(`/api/trends?${params.toString()}`);
+    renderTrendsCharts(data);
+  } catch (err) {
+    console.error('Error loading trends:', err);
+  }
+}
+
+// Registered once, globally — but scoped per-chart via each chart's own
+// `plugins: [ChartDataLabels]` opt-in below, so it doesn't affect any other
+// chart instance that might get added later without asking for it.
+if (window.ChartDataLabels) Chart.register(window.ChartDataLabels);
+
+function renderTrendsCharts(data) {
+  const hasUnpriced = data.spendByDay.some(d => d.hasUnpricedOrders);
+  trendsSpendCaveat.classList.toggle('hidden', !hasUnpriced);
+
+  // Theme-aware colors, read live rather than hardcoded, so charts stay
+  // legible if the viewer toggles light/dark mode.
+  const style = getComputedStyle(document.documentElement);
+  const textColor = style.getPropertyValue('--text-secondary').trim() || '#9ca3af';
+  const cardBg = style.getPropertyValue('--bg-primary').trim() || '#ffffff';
+  const gridColor = 'rgba(128,128,128,0.08)';
+  const tooltipStyle = {
+    backgroundColor: style.getPropertyValue('--bg-secondary').trim() || '#1f2937',
+    titleColor: textColor,
+    bodyColor: textColor,
+    borderColor: 'rgba(128,128,128,0.2)',
+    borderWidth: 1,
+    padding: 10,
+    cornerRadius: 8,
+    displayColors: false
+  };
+
+  if (trendsSpendChart) trendsSpendChart.destroy();
+  const spendCtx = trendsSpendChartCanvas.getContext('2d');
+  const spendGradient = spendCtx.createLinearGradient(0, 0, 0, trendsSpendChartCanvas.clientHeight || 320);
+  spendGradient.addColorStop(0, 'rgba(99, 102, 241, 0.35)');
+  spendGradient.addColorStop(1, 'rgba(99, 102, 241, 0)');
+
+  trendsSpendChart = new Chart(trendsSpendChartCanvas, {
+    type: 'line',
+    data: {
+      labels: data.spendByDay.map(d => d.date),
+      datasets: [{
+        label: 'Spend',
+        data: data.spendByDay.map(d => d.total),
+        borderColor: '#6366f1',
+        borderWidth: 2.5,
+        backgroundColor: spendGradient,
+        fill: true,
+        tension: 0.35,
+        pointRadius: 0,
+        pointHoverRadius: 6,
+        pointHoverBackgroundColor: '#6366f1',
+        pointHoverBorderColor: cardBg,
+        pointHoverBorderWidth: 2
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: { ...tooltipStyle, callbacks: { label: (ctx) => formatPrice(ctx.parsed.y) } },
+        datalabels: { display: false }
+      },
+      scales: {
+        x: { ticks: { color: textColor, font: { size: 11 } }, grid: { display: false }, border: { display: false } },
+        y: {
+          ticks: { color: textColor, font: { size: 11 }, callback: (v) => `GHc ${v}` },
+          grid: { color: gridColor },
+          border: { display: false },
+          beginAtZero: true
+        }
+      }
+    }
+  });
+
+  if (trendsPopularityChart) trendsPopularityChart.destroy();
+  const topDishes = data.topDishesOverall.slice(0, 8);
+  const maxCount = Math.max(1, ...topDishes.map(d => d.totalCount));
+
+  const popCtx = trendsPopularityChartCanvas.getContext('2d');
+  const popGradient = popCtx.createLinearGradient(0, 0, popCtx.canvas.clientWidth || 600, 0);
+  popGradient.addColorStop(0, '#6366f1');
+  popGradient.addColorStop(1, '#10b981');
+
+  trendsPopularityChart = new Chart(trendsPopularityChartCanvas, {
+    type: 'bar',
+    data: {
+      labels: topDishes.map(d => d.dishName),
+      datasets: [{
+        label: 'Orders',
+        data: topDishes.map(d => d.totalCount),
+        backgroundColor: popGradient,
+        borderRadius: 8,
+        borderSkipped: false,
+        barPercentage: 0.65,
+        categoryPercentage: 0.8
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: { ...tooltipStyle, callbacks: { label: (ctx) => `${ctx.parsed.x} order${ctx.parsed.x === 1 ? '' : 's'}` } },
+        datalabels: {
+          anchor: 'end',
+          align: 'end',
+          color: textColor,
+          font: { weight: '600', size: 12 },
+          formatter: (value) => value
+        }
+      },
+      scales: {
+        x: {
+          display: false,
+          beginAtZero: true,
+          max: maxCount * 1.15 // headroom so the end-of-bar data label never clips off-canvas
+        },
+        y: {
+          ticks: { color: textColor, font: { size: 12, weight: '600' } },
+          grid: { display: false },
+          border: { display: false }
+        }
+      }
+    }
+  });
+}
+
 async function loadMyOrders() {
   myOrdersContainer.innerHTML = `
     <div class="my-orders-loading">
@@ -2552,6 +3473,79 @@ async function loadMyOrders() {
     myOrdersContainer.innerHTML = `<div class="no-results error-text">Failed to load your order history.</div>`;
     console.error('Error loading my orders:', err);
   }
+
+  try {
+    const trends = await apiCall('/api/my-trends');
+    renderMyTrends(trends);
+  } catch (err) {
+    console.error('Error loading personal trends:', err);
+    myTrendsCard.classList.add('hidden');
+  }
+}
+
+let myTrendsChart = null;
+
+function renderMyTrends(trends) {
+  if (!trends.topDishes || trends.topDishes.length === 0) {
+    myTrendsCard.classList.add('hidden');
+    return;
+  }
+  myTrendsCard.classList.remove('hidden');
+
+  myTrendsStats.innerHTML = `
+    <div class="my-stat-pill">
+      <span class="material-symbols-outlined">restaurant</span>
+      <span><strong>${trends.mealsOrdered}</strong> meals logged</span>
+    </div>
+  `;
+
+  const topDishes = trends.topDishes.slice(0, 5);
+  const maxCount = Math.max(1, ...topDishes.map(d => d.totalCount));
+  const textColor = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim() || '#9ca3af';
+
+  const ctx = myTrendsChartCanvas.getContext('2d');
+  const gradient = ctx.createLinearGradient(0, 0, ctx.canvas.clientWidth || 500, 0);
+  gradient.addColorStop(0, '#6366f1');
+  gradient.addColorStop(1, '#10b981');
+
+  if (myTrendsChart) myTrendsChart.destroy();
+  myTrendsChart = new Chart(myTrendsChartCanvas, {
+    type: 'bar',
+    data: {
+      labels: topDishes.map(d => d.dishName),
+      datasets: [{
+        data: topDishes.map(d => d.totalCount),
+        backgroundColor: gradient,
+        borderRadius: 8,
+        borderSkipped: false,
+        barPercentage: 0.6,
+        categoryPercentage: 0.8
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: { label: (c) => `${c.parsed.x} order${c.parsed.x === 1 ? '' : 's'}` },
+          displayColors: false
+        },
+        datalabels: {
+          anchor: 'end',
+          align: 'end',
+          color: textColor,
+          font: { weight: '600', size: 12 },
+          formatter: (v) => v
+        }
+      },
+      scales: {
+        x: { display: false, beginAtZero: true, max: maxCount * 1.2 },
+        y: { ticks: { color: textColor, font: { size: 12, weight: '600' } }, grid: { display: false }, border: { display: false } }
+      }
+    }
+  });
 }
 
 function renderMyOrders(records) {
@@ -2655,6 +3649,43 @@ function setupEventListeners() {
     if (e.key === 'Enter') handleLogin();
   });
 
+  // Company code / Platform Admin pre-auth screens
+  btnCompanySubmit.addEventListener('click', handleCompanySubmit);
+  companyCodeInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handleCompanySubmit();
+  });
+  linkPlatformLogin.addEventListener('click', (e) => {
+    e.preventDefault();
+    history.pushState({}, '', '/platform');
+    showPlatformLoginView();
+  });
+  linkBackToCompany.addEventListener('click', (e) => {
+    e.preventDefault();
+    history.pushState({}, '', '/');
+    if (currentCompany) {
+      loadLoginList();
+      showLoginView();
+    } else {
+      showCompanyView();
+    }
+  });
+  linkNotYourCompany.addEventListener('click', (e) => {
+    e.preventDefault();
+    clearSavedCompany();
+    roster = [];
+    showCompanyView();
+  });
+  btnPlatformLogin.addEventListener('click', handlePlatformLogin);
+  platformLoginPasscode.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') handlePlatformLogin();
+  });
+
+  // Companies tab (Platform Admin)
+  btnAddCompany.addEventListener('click', () => openCompanyModal(null));
+  btnCompanyModalClose.addEventListener('click', closeCompanyModal);
+  btnCompanyCancel.addEventListener('click', closeCompanyModal);
+  companyForm.addEventListener('submit', handleCompanyFormSubmit);
+
   btnLogout.addEventListener('click', logout);
   btnThemeToggle.addEventListener('click', toggleTheme);
   btnMobileMenuToggle.addEventListener('click', toggleMobileNav);
@@ -2746,14 +3777,21 @@ function setupEventListeners() {
   });
 
   // Admin Setup Menu buttons
-  btnAdminAddDish.addEventListener('click', () => addDishInputRow('', '', ''));
+  btnAdminAddDish.addEventListener('click', () => addDishInputRow('', '', '', null));
   btnAdminSaveMenu.addEventListener('click', saveAdminMenu);
+
+  // Dish Catalog
+  btnManageCatalog.addEventListener('click', openCatalogModal);
+  btnCatalogModalClose.addEventListener('click', closeCatalogModal);
+  btnCatalogDishCancel.addEventListener('click', resetCatalogDishForm);
+  catalogDishForm.addEventListener('submit', handleCatalogDishFormSubmit);
   adminPublishToggle.addEventListener('change', handlePublishToggle);
 
   // Admin settings buttons
   btnSaveCutoff.addEventListener('click', saveAdminCutoff);
   btnSaveArchiveTime.addEventListener('click', saveAdminArchiveTime);
   btnSaveOperationalDays.addEventListener('click', saveOperationalDays);
+  btnSaveCompanySettings.addEventListener('click', saveCompanySettingsForm);
   operationalDaysPicker.querySelectorAll('.day-toggle').forEach(btn => {
     btn.addEventListener('click', () => btn.classList.toggle('selected'));
   });
@@ -2766,6 +3804,11 @@ function setupEventListeners() {
 
   // Roster buttons
   rosterSearch.addEventListener('input', renderRosterTable);
+  rosterBranchFilter.addEventListener('change', renderRosterTable);
+  branchAddForm.addEventListener('submit', handleBranchFormSubmit);
+
+  trendsStartDate.addEventListener('change', loadTrends);
+  trendsEndDate.addEventListener('change', loadTrends);
   btnRosterSort.addEventListener('click', () => {
     rosterSortDirection = rosterSortDirection === 'asc' ? 'desc' : 'asc';
     rosterSortIcon.textContent = rosterSortDirection === 'asc' ? 'south' : 'north';
@@ -2806,6 +3849,12 @@ function setupEventListeners() {
 
 // --- Utility Functions ---
 
+// Ghana Cedis — matches the currency the catering costs are actually
+// tracked in, rather than a hardcoded $.
+function formatPrice(amount) {
+  return `GHc ${Number(amount).toFixed(2)}`;
+}
+
 function getInitials(name) {
   if (!name) return '?';
   const parts = name.trim().split(/\s+/);
@@ -2828,8 +3877,17 @@ const DISH_IMAGES = {
 };
 const DEFAULT_DISH_IMAGE = 'assets/jollof-hero.webp';
 
-function getDishImage(name) {
-  const key = (name || '').trim().toLowerCase();
+// Accepts either a dish/menu-item object ({name, imageId?, dishName?}) or a
+// plain name string. A catalog-sourced imageId always wins (served from
+// MongoDB); otherwise falls back to the static name-lookup table above,
+// then the generic default — this is also the graceful-degradation path for
+// pre-catalog history and one-off dishes with no photo.
+function getDishImage(item) {
+  if (item && typeof item === 'object' && item.imageId) {
+    return `/api/dish-images/${item.imageId}`;
+  }
+  const name = typeof item === 'string' ? item : (item?.name || item?.dishName || '');
+  const key = name.trim().toLowerCase();
   return DISH_IMAGES[key] || DEFAULT_DISH_IMAGE;
 }
 

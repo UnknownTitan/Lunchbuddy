@@ -4,7 +4,7 @@ import morgan from 'morgan';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import crypto from 'node:crypto';
 import webpush from 'web-push';
 import { fileURLToPath } from 'url';
@@ -12,6 +12,9 @@ import {
   initDb,
   getRoster,
   saveRoster,
+  getUserById,
+  updateUserById,
+  getPlatformAdminByName,
   getDailyState,
   saveDailyState,
   getHistory,
@@ -24,7 +27,28 @@ import {
   getWeeklyPlan,
   saveWeeklyPlan,
   getAllWeeklyPlans,
-  deleteWeeklyPlan
+  deleteWeeklyPlan,
+  getCompanies,
+  getCompanyById,
+  getCompanyByCode,
+  createCompany,
+  updateCompany,
+  seedCompanyDefaults,
+  getDishes,
+  getDishById,
+  createDish,
+  updateDish,
+  setDishActive,
+  saveDishImage,
+  getDishImageById,
+  deleteDishImage,
+  getBranches,
+  createBranch,
+  updateBranch,
+  deleteBranch,
+  getHistoryInRange,
+  getCompanySettings,
+  saveCompanySettings
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -68,6 +92,13 @@ function formatDuration(ms) {
 
 // Endpoints reachable even while a user is blocked pending a passcode change
 const PASSCODE_CHANGE_EXEMPT_PATHS = new Set(['/api/change-passcode', '/api/me']);
+
+// Roles a company Admin is allowed to assign. Platform Admin is deliberately
+// excluded — without this whitelist a company Admin could PUT their own
+// role to 'Platform Admin' and escalate to platform control.
+const COMPANY_ROLES = ['Admin', 'Abigail', 'Team Member'];
+
+const COMPANY_CODE_REGEX = /^[A-Z0-9][A-Z0-9-]{2,11}$/;
 
 const MAX_ORDER_NOTE_LENGTH = 140;
 
@@ -142,15 +173,94 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(morgan('dev'));
-app.use(express.json());
+// Raised from the 100kb default to fit a base64-encoded dish image
+// (client caps originals at ~300KB before upload — see /api/dishes/:id/image).
+app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Initialize database files
+// Client-side route: the Platform Admin login screen lives at the same
+// index.html, keyed off location.pathname in app.js.
+app.get('/platform', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Initialize database
 await initDb();
 
-// Login-throttling settings, admin-editable at runtime via
-// GET/PUT /api/settings/security — initDb() seeds a DB doc on first run.
-let securitySettings = await getSecuritySettings();
+// ---- Company resolution ----
+// Small in-memory caches (by code and by id) — companies are created rarely
+// and read on nearly every request, so this avoids a DB round-trip per call.
+// Only hits are cached; a miss (unknown code) just falls through to the DB
+// again next time, which is fine at this scale and avoids ever caching a
+// stale "doesn't exist" for a company created moments ago.
+const companyCacheByCode = new Map();
+const companyCacheById = new Map();
+
+function cacheCompany(company) {
+  companyCacheByCode.set(company.code, company);
+  companyCacheById.set(company._id, company);
+}
+
+function invalidateCompanyCache(company) {
+  if (!company) return;
+  companyCacheByCode.delete(company.code);
+  companyCacheById.delete(company._id);
+}
+
+// Reads x-company-code, resolves it to a company, and sets req.companyId /
+// req.company if found and active. Never rejects — an absent or unknown
+// code just leaves req.companyId null, and routes decide what to do with
+// that. Runs before auth, so this value is untrusted; authMiddleware
+// overwrites req.companyId from the verified user record for any
+// authenticated request (see the comment there).
+async function resolveCompanyMiddleware(req, res, next) {
+  req.companyId = null;
+  req.company = null;
+  const rawCode = req.headers['x-company-code'];
+  if (rawCode) {
+    const code = String(rawCode).trim().toUpperCase();
+    let company = companyCacheByCode.get(code);
+    if (!company) {
+      company = await getCompanyByCode(code);
+      if (company) cacheCompany(company);
+    }
+    if (company && company.status === 'active') {
+      req.companyId = company._id;
+      req.company = company;
+    }
+  }
+  next();
+}
+app.use('/api', resolveCompanyMiddleware);
+
+// Per-company login-throttling settings, lazily cached and self-healing
+// (creates defaults on first read if a company somehow has none).
+const securitySettingsCache = new Map();
+
+function defaultSecuritySettings() {
+  return {
+    loginMaxFailedAttempts: Number(process.env.LOGIN_MAX_FAILED_ATTEMPTS) || 5,
+    loginLockoutMinutes: Number(process.env.LOGIN_LOCKOUT_MINUTES) || 15,
+    loginRateLimitMax: Number(process.env.LOGIN_RATE_LIMIT_MAX) || 5,
+    loginRateLimitWindowMinutes: Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MINUTES) || 15
+  };
+}
+
+async function getSecuritySettingsCached(companyId) {
+  if (!securitySettingsCache.has(companyId)) {
+    let settings = await getSecuritySettings(companyId);
+    if (!settings) {
+      settings = defaultSecuritySettings();
+      await saveSecuritySettings(companyId, settings);
+    }
+    securitySettingsCache.set(companyId, settings);
+  }
+  return securitySettingsCache.get(companyId);
+}
+
+function invalidateSecuritySettingsCache(companyId) {
+  securitySettingsCache.delete(companyId);
+}
 
 // Helper: Format a Date as YYYY-MM-DD (local time)
 function formatDateString(d) {
@@ -300,12 +410,12 @@ function getPlanWeekDates(dailyState) {
 }
 
 // Helper: Archive daily state to history
-async function archiveCurrentDay(dailyState) {
+async function archiveCurrentDay(companyId, dailyState) {
   if (dailyState.date && (dailyState.menu.length > 0 || Object.keys(dailyState.orders || {}).length > 0)) {
-    const history = await getHistory();
+    const history = await getHistory(companyId);
     const existingIndex = history.findIndex(h => h.date === dailyState.date);
 
-    const roster = await getRoster();
+    const roster = await getRoster(companyId);
     const rosterMap = {};
     roster.forEach(u => {
       rosterMap[u.id] = { name: u.name, role: u.role, email: u.email, phone: u.phone };
@@ -324,7 +434,7 @@ async function archiveCurrentDay(dailyState) {
     } else {
       history.push(archiveEntry);
     }
-    await saveHistory(history);
+    await saveHistory(companyId, history);
   }
 }
 
@@ -338,7 +448,7 @@ async function archiveCurrentDay(dailyState) {
 // in place. Returns true if it ran to completion (the caller must save
 // dailyState either way in that case — even if no order actually changed,
 // the applied-date marker did); false if it bailed out to retry later.
-async function applyWeeklyPlansForDate(dailyState) {
+async function applyWeeklyPlansForDate(companyId, dailyState) {
   if (
     !dailyState.date ||
     !dailyState.menuPublished ||
@@ -349,9 +459,9 @@ async function applyWeeklyPlansForDate(dailyState) {
     return false;
   }
 
-  const roster = await getRoster();
+  const roster = await getRoster(companyId);
   const rosterIds = new Set(roster.map(u => u.id));
-  const plans = await getAllWeeklyPlans();
+  const plans = await getAllWeeklyPlans(companyId);
 
   for (const plan of plans) {
     const userId = plan.userId;
@@ -384,7 +494,7 @@ async function applyWeeklyPlansForDate(dailyState) {
 
     if (planChanged) {
       plan.updatedAt = Date.now();
-      await saveWeeklyPlan(userId, plan);
+      await saveWeeklyPlan(companyId, userId, plan);
     }
   }
 
@@ -392,27 +502,43 @@ async function applyWeeklyPlansForDate(dailyState) {
   return true;
 }
 
-// Middleware: Check and handle daily transition/reset
+// Paths that never need the per-company daily rollover — either genuinely
+// global (VAPID key), or pre-company-resolution / platform-scoped, where
+// there's no per-company dailyState to roll over in the first place.
+const ROLLOVER_EXEMPT_PATHS = new Set([
+  '/api/push/vapid-public-key',
+  '/api/company/resolve',
+  '/api/platform/login'
+]);
+
+// Middleware: Check and handle daily transition/reset, per company.
 // Serializes the check-archive-save sequence below across concurrent
-// requests. Without this, two requests landing close together right as the
-// business date rolls over can both read the same stale dailyState.date,
-// both decide "this needs archiving," and both write a duplicate history
-// entry — chaining onto this promise instead of a boolean flag closes the
-// race regardless of how many requests arrive in the same tick.
-let dailyRolloverChain = Promise.resolve();
+// requests FOR THE SAME COMPANY. Without this, two requests landing close
+// together right as the business date rolls over can both read the same
+// stale dailyState.date, both decide "this needs archiving," and both write
+// a duplicate history entry — chaining onto that company's own promise
+// instead of a boolean flag closes the race regardless of how many requests
+// arrive in the same tick. Bounded by company count, so no eviction needed.
+const dailyRolloverChains = new Map();
 
 async function handleDailyResetMiddleware(req, res, next) {
-  const run = dailyRolloverChain.then(async () => {
-    const dailyState = await getDailyState();
+  if (!req.companyId || ROLLOVER_EXEMPT_PATHS.has(req.path) || req.path.startsWith('/api/companies')) {
+    return next();
+  }
+  const companyId = req.companyId;
+  const previous = dailyRolloverChains.get(companyId) || Promise.resolve();
+
+  const run = previous.then(async () => {
+    const dailyState = await getDailyState(companyId);
     const businessDate = getBusinessDateString(dailyState.archiveTime);
 
     if (!dailyState.date) {
       dailyState.date = businessDate;
-      await applyWeeklyPlansForDate(dailyState);
-      await saveDailyState(dailyState);
+      await applyWeeklyPlansForDate(companyId, dailyState);
+      await saveDailyState(companyId, dailyState);
     } else if (dailyState.date !== businessDate) {
       // Archive time has passed, archive the previous business day
-      await archiveCurrentDay(dailyState);
+      await archiveCurrentDay(companyId, dailyState);
 
       // Reset daily state for the new business day
       dailyState.date = businessDate;
@@ -422,18 +548,18 @@ async function handleDailyResetMiddleware(req, res, next) {
       dailyState.foodArrival = null; // clear yesterday's "food's in" broadcast
       // Retain menu, menuPublished, cutoffTime and archiveTime — the menu
       // carries over day to day until an admin changes it
-      await applyWeeklyPlansForDate(dailyState); // must run after orders={} above
-      await saveDailyState(dailyState);
+      await applyWeeklyPlansForDate(companyId, dailyState); // must run after orders={} above
+      await saveDailyState(companyId, dailyState);
     } else if (dailyState.weeklyPlansAppliedDate !== businessDate) {
       // The apply bailed earlier today (e.g. menu wasn't published yet at
       // rollover time) — retry on every request until it succeeds. Cheap:
       // once weeklyPlansAppliedDate is set, this branch never runs again today.
-      if (await applyWeeklyPlansForDate(dailyState)) {
-        await saveDailyState(dailyState);
+      if (await applyWeeklyPlansForDate(companyId, dailyState)) {
+        await saveDailyState(companyId, dailyState);
       }
     }
   });
-  dailyRolloverChain = run.catch(() => {}); // keep the chain alive even if this run throws
+  dailyRolloverChains.set(companyId, run.catch(() => {})); // keep the chain alive even if this run throws
 
   try {
     await run;
@@ -457,20 +583,18 @@ function issueToken(user) {
   return jwt.sign({ userId: user.id }, SESSION_SECRET, { expiresIn: TOKEN_EXPIRY });
 }
 
-// Helper: patch a single roster record by id
-async function updateUser(id, patch) {
-  const roster = await getRoster();
-  const index = roster.findIndex(u => u.id === id);
-  if (index === -1) return null;
-  roster[index] = { ...roster[index], ...patch };
-  await saveRoster(roster);
-  return roster[index];
-}
-
 // Middleware: Authenticate request via signed session token & attach req.user.
-// The token is only ever issued at /api/login after a verified passcode
-// check, so a valid token is proof of identity for every role — there's no
-// separate per-request passcode check to bypass.
+// The token is only ever issued after a verified passcode check, so a valid
+// token is proof of identity for every role — there's no separate
+// per-request passcode check to bypass.
+//
+// SECURITY-CRITICAL: this overwrites req.companyId with the value from the
+// freshly-read user record, NOT whatever resolveCompanyMiddleware set from
+// the (client-controlled) x-company-code header. A forged header on an
+// authenticated request is simply ignored from this point on — every
+// company-scoped db.js call downstream of authMiddleware must use
+// req.user.companyId (or req.companyId, which is now the same value), never
+// the raw header. This is the entire tenant-isolation guarantee.
 async function authMiddleware(req, res, next) {
   const token = req.headers['x-auth-token'];
 
@@ -485,8 +609,7 @@ async function authMiddleware(req, res, next) {
     return res.status(401).json({ error: 'Session expired or invalid. Please log in again.' });
   }
 
-  const roster = await getRoster();
-  const user = roster.find(u => u.id === decoded.userId);
+  const user = await getUserById(decoded.userId);
 
   if (!user) {
     return res.status(401).json({ error: 'User not found in roster.' });
@@ -512,6 +635,7 @@ async function authMiddleware(req, res, next) {
   }
 
   req.user = user;
+  req.companyId = user.companyId ?? null;
   next();
 }
 
@@ -532,12 +656,37 @@ function requireAdminOrAbigail(req, res, next) {
   }
 }
 
+// Platform Admin is a distinct tier, not a superset of company Admin — it
+// deliberately fails requireAdmin/requireAdminOrAbigail (blast-radius
+// containment: a platform account can manage companies but can never touch
+// a company's roster, menu, or orders).
+function requirePlatformAdmin(req, res, next) {
+  if (req.user && req.user.role === 'Platform Admin') {
+    next();
+  } else {
+    res.status(403).json({ error: 'Access denied. Platform Admin role required.' });
+  }
+}
+
+// A company-scoped route gated only by authMiddleware (no role requirement)
+// must still reject a Platform Admin session — they have no companyId, and
+// every db.js call here is companyId-scoped.
+function requireCompanyUser(req, res, next) {
+  if (req.user && req.user.companyId) {
+    next();
+  } else {
+    res.status(403).json({ error: 'This action requires a company account.' });
+  }
+}
+
 // --- Endpoints ---
 
-// Slow down brute-forcing of the (short, numeric-ish) passcode. windowMs
-// can't be changed on an existing express-rate-limit instance, so an admin
-// edit to these settings rebuilds the instance — the route below calls
-// through a wrapper so that swap takes effect without re-registering routes.
+// Slow down brute-forcing of the (short, numeric-ish) passcode. A single
+// shared instance across all companies/platform logins — the meaningful,
+// per-company-tunable defense is the account lockout below (driven by each
+// company's own securitySettings); this is just a lighter-weight first line
+// against rapid automated attempts, and it already keys by the account being
+// logged into rather than IP, so it's effectively per-account already.
 function buildLoginRateLimiter(settings) {
   const windowMs = settings.loginRateLimitWindowMinutes * 60 * 1000;
   return rateLimit({
@@ -545,12 +694,7 @@ function buildLoginRateLimiter(settings) {
     max: settings.loginRateLimitMax,
     standardHeaders: true,
     legacyHeaders: false,
-    // Key by the account being logged into, not the caller's IP — this app
-    // runs behind a shared office IP, so an IP-keyed limit means one
-    // person's failed attempts lock out everyone else trying to log in.
-    // The per-account lockout below is the real brute-force defense; this
-    // is just a lighter-weight first line against rapid automated attempts.
-    keyGenerator: (req) => req.body?.userId || req.ip,
+    keyGenerator: (req) => req.body?.userId || req.body?.name || ipKeyGenerator(req.ip),
     handler: (req, res) => {
       const remainingMs = req.rateLimit?.resetTime
         ? req.rateLimit.resetTime.getTime() - Date.now()
@@ -563,7 +707,80 @@ function buildLoginRateLimiter(settings) {
   });
 }
 
-let loginRateLimiterInstance = buildLoginRateLimiter(securitySettings);
+const loginRateLimiterInstance = buildLoginRateLimiter(defaultSecuritySettings());
+
+const companyResolveLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
+  handler: (req, res) => res.status(429).json({ error: 'Too many attempts. Try again later.' })
+});
+
+// Shared verify/lockout/issue-token body for both /api/login and
+// /api/platform/login, so lockout semantics can't drift between the two.
+async function attemptLogin(user, passcode, settings) {
+  const now = Date.now();
+  if (user.lockedUntil && user.lockedUntil > now) {
+    return {
+      ok: false, status: 429,
+      body: {
+        error: `Account temporarily locked due to repeated failed attempts. Try again in ${formatDuration(user.lockedUntil - now)}.`,
+        retryAfterMs: user.lockedUntil - now
+      }
+    };
+  }
+
+  const valid = user.passcodeHash && await bcrypt.compare(passcode, user.passcodeHash);
+  if (!valid) {
+    const loginLockoutMs = settings.loginLockoutMinutes * 60 * 1000;
+    const fails = (user.failedAttempts || 0) + 1;
+    const patch = { failedAttempts: fails };
+    if (fails >= settings.loginMaxFailedAttempts) {
+      patch.lockedUntil = now + loginLockoutMs;
+      patch.failedAttempts = 0;
+      await updateUserById(user.id, patch);
+      return {
+        ok: false, status: 429,
+        body: {
+          error: `Too many failed attempts. Account locked for ${formatDuration(loginLockoutMs)}.`,
+          retryAfterMs: loginLockoutMs
+        }
+      };
+    }
+    await updateUserById(user.id, patch);
+    const remaining = settings.loginMaxFailedAttempts - fails;
+    return {
+      ok: false, status: 401,
+      body: { error: `Incorrect passcode. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining before your account is locked.` }
+    };
+  }
+
+  if (user.failedAttempts || user.lockedUntil) {
+    await updateUserById(user.id, { failedAttempts: 0, lockedUntil: null });
+  }
+
+  const { passcodeHash: _, ...safeUser } = user;
+  const token = issueToken(user);
+  return { ok: true, token, safeUser };
+}
+
+// Public: resolve a company code to its id/name, for the pre-login
+// company-code screen. Its own IP-keyed rate limiter since there's no
+// per-account lockout behind it the way login has.
+app.post('/api/company/resolve', companyResolveLimiter, async (req, res) => {
+  const { code } = req.body;
+  if (!code) {
+    return res.status(400).json({ error: 'Company code is required.' });
+  }
+  const company = await getCompanyByCode(code);
+  if (!company || company.status !== 'active') {
+    return res.status(404).json({ error: 'Company not found.' });
+  }
+  cacheCompany(company);
+  res.json({ id: company._id, code: company.code, name: company.name });
+});
 
 // Login: verify passcode, issue a signed session token
 app.post('/api/login', (req, res, next) => loginRateLimiterInstance(req, res, next), async (req, res) => {
@@ -571,48 +788,38 @@ app.post('/api/login', (req, res, next) => loginRateLimiterInstance(req, res, ne
   if (!userId || !passcode) {
     return res.status(400).json({ error: 'User ID and passcode are required.' });
   }
-  const roster = await getRoster();
-  const user = roster.find(u => u.id === userId);
-  if (!user) {
+  if (!req.companyId) {
+    return res.status(400).json({ error: 'Company not resolved. Enter your company code first.', code: 'COMPANY_CODE_REQUIRED' });
+  }
+
+  const user = await getUserById(userId);
+  // Same 404 whether the id doesn't exist at all or belongs to a different
+  // company — this endpoint never confirms a userId exists elsewhere.
+  if (!user || user.companyId !== req.companyId) {
     return res.status(404).json({ error: 'User not found.' });
   }
 
-  const now = Date.now();
-  if (user.lockedUntil && user.lockedUntil > now) {
-    return res.status(429).json({
-      error: `Account temporarily locked due to repeated failed attempts. Try again in ${formatDuration(user.lockedUntil - now)}.`,
-      retryAfterMs: user.lockedUntil - now
-    });
-  }
+  const settings = await getSecuritySettingsCached(req.companyId);
+  const result = await attemptLogin(user, passcode, settings);
+  if (!result.ok) return res.status(result.status).json(result.body);
+  res.json({ success: true, token: result.token, user: result.safeUser });
+});
 
-  const valid = user.passcodeHash && await bcrypt.compare(passcode, user.passcodeHash);
-  if (!valid) {
-    const loginLockoutMs = securitySettings.loginLockoutMinutes * 60 * 1000;
-    const fails = (user.failedAttempts || 0) + 1;
-    const patch = { failedAttempts: fails };
-    if (fails >= securitySettings.loginMaxFailedAttempts) {
-      patch.lockedUntil = now + loginLockoutMs;
-      patch.failedAttempts = 0;
-      await updateUser(user.id, patch);
-      return res.status(429).json({
-        error: `Too many failed attempts. Account locked for ${formatDuration(loginLockoutMs)}.`,
-        retryAfterMs: loginLockoutMs
-      });
-    }
-    await updateUser(user.id, patch);
-    const remaining = securitySettings.loginMaxFailedAttempts - fails;
-    return res.status(401).json({
-      error: `Incorrect passcode. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining before your account is locked.`
-    });
+// Platform Admin login — separate, non-enumerable route (name + passcode
+// text entry, not a public dropdown; publishing platform-admin names via an
+// unauthenticated list endpoint would be a recon risk on privileged accounts).
+app.post('/api/platform/login', (req, res, next) => loginRateLimiterInstance(req, res, next), async (req, res) => {
+  const { name, passcode } = req.body;
+  if (!name || !passcode) {
+    return res.status(400).json({ error: 'Name and passcode are required.' });
   }
-
-  if (user.failedAttempts || user.lockedUntil) {
-    await updateUser(user.id, { failedAttempts: 0, lockedUntil: null });
+  const user = await getPlatformAdminByName(name);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found.' });
   }
-
-  const { passcodeHash: _, ...safeUser } = user;
-  const token = issueToken(user);
-  res.json({ success: true, token, user: safeUser });
+  const result = await attemptLogin(user, passcode, defaultSecuritySettings());
+  if (!result.ok) return res.status(result.status).json(result.body);
+  res.json({ success: true, token: result.token, user: result.safeUser });
 });
 
 // Verify an existing session token and return the current user (used to
@@ -625,7 +832,9 @@ app.get('/api/me', authMiddleware, async (req, res) => {
 
 // Self-service: set a new passcode. A valid session token is proof enough
 // of identity (no need to re-verify the current passcode). Used both for
-// the mandatory first-login change and any later voluntary change.
+// the mandatory first-login change and any later voluntary change. Works
+// for company users and Platform Admins alike (targeted patch by id, no
+// companyId dependency).
 app.post('/api/change-passcode', authMiddleware, async (req, res) => {
   const { newPasscode } = req.body;
   const validationError = validatePasscode(newPasscode, req.user);
@@ -633,25 +842,19 @@ app.post('/api/change-passcode', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: validationError });
   }
 
-  const roster = await getRoster();
-  const userIndex = roster.findIndex(u => u.id === req.user.id);
-  if (userIndex === -1) {
-    return res.status(404).json({ error: 'User not found.' });
-  }
-
-  roster[userIndex] = {
-    ...roster[userIndex],
+  const patch = {
     passcodeHash: await hashPasscode(newPasscode),
     mustChangePasscode: false,
     passcodeChangedAt: Date.now()
   };
-  await saveRoster(roster);
+  await updateUserById(req.user.id, patch);
 
-  const { passcodeHash: _, ...safeUser } = roster[userIndex];
+  const { passcodeHash: _, ...restOfUser } = req.user;
+  const safeUser = { ...restOfUser, mustChangePasscode: false, passcodeChangedAt: patch.passcodeChangedAt };
   // Reissue the token: authMiddleware rejects tokens older than
   // passcodeChangedAt, which would otherwise invalidate the very request
   // that just changed it.
-  const token = issueToken(roster[userIndex]);
+  const token = issueToken(req.user);
   res.json({ success: true, token, user: safeUser });
 });
 
@@ -659,14 +862,17 @@ app.post('/api/change-passcode', authMiddleware, async (req, res) => {
 // role, or passcode status — that's PII/recon value an unauthenticated
 // caller has no reason to see.
 app.get('/api/roster/login-list', async (req, res) => {
-  const roster = await getRoster();
+  if (!req.companyId) {
+    return res.status(400).json({ error: 'Company not resolved. Enter your company code first.', code: 'COMPANY_CODE_REQUIRED' });
+  }
+  const roster = await getRoster(req.companyId);
   res.json(roster.map(u => ({ id: u.id, name: u.name })));
 });
 
 // Retrieve full team roster (never exposes passcode data, hashed or
 // otherwise) — requires a verified session; this is real PII (email, phone).
-app.get('/api/roster', authMiddleware, async (req, res) => {
-  const roster = await getRoster();
+app.get('/api/roster', authMiddleware, requireCompanyUser, async (req, res) => {
+  const roster = await getRoster(req.user.companyId);
   const safeRoster = roster.map(({ passcode, passcodeHash, pushSubscriptions, ...rest }) => ({
     ...rest,
     hasPasscode: !!passcodeHash
@@ -676,12 +882,16 @@ app.get('/api/roster', authMiddleware, async (req, res) => {
 
 // Admin: Add a user
 app.post('/api/roster', authMiddleware, requireAdmin, async (req, res) => {
-  const { name, email, phone, role, passcode } = req.body;
+  const { name, email, phone, role, passcode, branchId } = req.body;
   if (!name || !role) {
     return res.status(400).json({ error: 'Name and Role are required.' });
   }
+  if (!COMPANY_ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Invalid role.' });
+  }
 
-  const roster = await getRoster();
+  const companyId = req.user.companyId;
+  const roster = await getRoster(companyId);
   if (roster.some(u => u.name.toLowerCase() === name.toLowerCase())) {
     return res.status(400).json({ error: 'A team member with this name already exists.' });
   }
@@ -698,10 +908,12 @@ app.post('/api/roster', authMiddleware, requireAdmin, async (req, res) => {
 
   const newUser = {
     id: `usr-${Date.now()}`,
+    companyId,
     name,
     email: email || '',
     phone: phone || '',
     role,
+    branchId: branchId || null,
     passcodeHash: await hashPasscode(initialPasscode),
     passcodeChangedAt: Date.now(),
     // An admin-assigned passcode is known to more than just this person —
@@ -710,7 +922,7 @@ app.post('/api/roster', authMiddleware, requireAdmin, async (req, res) => {
   };
 
   roster.push(newUser);
-  await saveRoster(roster);
+  await saveRoster(companyId, roster);
   const { passcodeHash: _, ...safeUser } = newUser;
   // Returned once so the admin can share it securely — it can't be
   // retrieved again after this response.
@@ -720,17 +932,25 @@ app.post('/api/roster', authMiddleware, requireAdmin, async (req, res) => {
 // Admin: Edit a user
 app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { name, email, phone, role, passcode } = req.body;
+  const { name, email, phone, role, passcode, branchId } = req.body;
 
-  const roster = await getRoster();
+  const companyId = req.user.companyId;
+  const roster = await getRoster(companyId);
   const userIndex = roster.findIndex(u => u.id === id);
 
   if (userIndex === -1) {
     return res.status(404).json({ error: 'User not found.' });
   }
 
-  if (id === 'usr-admin' && role !== 'Admin') {
-    return res.status(400).json({ error: 'Cannot change role of default system admin.' });
+  if (role && !COMPANY_ROLES.includes(role)) {
+    return res.status(400).json({ error: 'Invalid role.' });
+  }
+
+  if (role && role !== 'Admin' && roster[userIndex].role === 'Admin') {
+    const otherAdmins = roster.filter(u => u.role === 'Admin' && u.id !== id);
+    if (otherAdmins.length === 0) {
+      return res.status(400).json({ error: 'Cannot change role: this is the last Admin for this company.' });
+    }
   }
 
   if (name && roster.some(u => u.id !== id && u.name.toLowerCase() === name.toLowerCase())) {
@@ -753,6 +973,7 @@ app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
     email: email !== undefined ? email : roster[userIndex].email,
     phone: phone !== undefined ? phone : roster[userIndex].phone,
     role: role || roster[userIndex].role,
+    branchId: branchId !== undefined ? (branchId || null) : roster[userIndex].branchId,
     passcodeHash: passcode ? await hashPasscode(passcode) : roster[userIndex].passcodeHash,
     passcodeChangedAt: passcode ? Date.now() : roster[userIndex].passcodeChangedAt,
     // Any admin-set passcode (including a reset) is known to the admin too —
@@ -761,7 +982,7 @@ app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
   };
 
   roster[userIndex] = updatedUser;
-  await saveRoster(roster);
+  await saveRoster(companyId, roster);
   const { passcodeHash: _, ...safeUser } = updatedUser;
   res.json(safeUser);
 });
@@ -769,7 +990,8 @@ app.put('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
 // Admin: Reset a user's passcode to a fresh random value (shown once)
 app.post('/api/roster/:id/reset-passcode', authMiddleware, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const roster = await getRoster();
+  const companyId = req.user.companyId;
+  const roster = await getRoster(companyId);
   const userIndex = roster.findIndex(u => u.id === id);
   if (userIndex === -1) {
     return res.status(404).json({ error: 'User not found.' });
@@ -784,7 +1006,7 @@ app.post('/api/roster/:id/reset-passcode', authMiddleware, requireAdmin, async (
     failedAttempts: 0,
     lockedUntil: null
   };
-  await saveRoster(roster);
+  await saveRoster(companyId, roster);
 
   const { passcodeHash: _, ...safeUser } = roster[userIndex];
   res.json({ success: true, user: safeUser, newPasscode });
@@ -793,34 +1015,39 @@ app.post('/api/roster/:id/reset-passcode', authMiddleware, requireAdmin, async (
 // Admin: Remove a user
 app.delete('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  if (id === 'usr-admin') {
-    return res.status(400).json({ error: 'Cannot delete the default system admin user.' });
-  }
+  const companyId = req.user.companyId;
+  let roster = await getRoster(companyId);
+  const target = roster.find(u => u.id === id);
 
-  let roster = await getRoster();
-  const userExists = roster.some(u => u.id === id);
-
-  if (!userExists) {
+  if (!target) {
     return res.status(404).json({ error: 'User not found.' });
   }
 
-  roster = roster.filter(u => u.id !== id);
-  await saveRoster(roster);
+  if (target.role === 'Admin') {
+    const otherAdmins = roster.filter(u => u.role === 'Admin' && u.id !== id);
+    if (otherAdmins.length === 0) {
+      return res.status(400).json({ error: 'Cannot delete the last Admin for this company.' });
+    }
+  }
 
-  const dailyState = await getDailyState();
+  roster = roster.filter(u => u.id !== id);
+  await saveRoster(companyId, roster);
+
+  const dailyState = await getDailyState(companyId);
   if (dailyState.orders && dailyState.orders[id]) {
     delete dailyState.orders[id];
-    await saveDailyState(dailyState);
+    await saveDailyState(companyId, dailyState);
   }
-  await deleteWeeklyPlan(id);
+  await deleteWeeklyPlan(companyId, id);
 
   res.json({ success: true, message: 'User removed from roster.' });
 });
 
 // Get daily menu, orders, and stats summaries
-app.get('/api/daily', authMiddleware, async (req, res) => {
-  const dailyState = await getDailyState();
-  const roster = await getRoster();
+app.get('/api/daily', authMiddleware, requireCompanyUser, async (req, res) => {
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
+  const roster = await getRoster(companyId);
 
   const orders = dailyState.orders || {};
   const ordered = [];
@@ -861,7 +1088,7 @@ app.get('/api/daily', authMiddleware, async (req, res) => {
   // Surface the most recent reminder sent to the requesting user today, if any
   let myReminder = null;
   if (dailyState.date) {
-    const logs = await getRemindersLog();
+    const logs = await getRemindersLog(companyId);
     const myLogs = logs.filter(l => l.userId === req.user.id && l.date === dailyState.date);
     if (myLogs.length > 0) {
       myReminder = myLogs[myLogs.length - 1];
@@ -912,6 +1139,152 @@ app.get('/api/daily', authMiddleware, async (req, res) => {
   });
 });
 
+// --- Dish Catalog ---
+// A persistent, company-wide catalog of dishes (name/description/price/
+// image) an Admin manages once, rather than re-typing the same dishes into
+// the daily menu every day. Building a day's menu (POST /api/menu, below)
+// snapshots a catalog dish's current fields onto that day's menu item —
+// editing a catalog dish later never changes an already-built day.
+
+const MAX_DISH_IMAGE_BYTES = 300 * 1024; // original file size, pre-base64
+const ALLOWED_DISH_IMAGE_TYPES = new Set(['image/webp', 'image/jpeg', 'image/png']);
+
+app.get('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
+  const dishes = await getDishes(req.user.companyId, { includeInactive: req.query.includeInactive === 'true' });
+  res.json(dishes.map(({ _id, ...rest }) => rest));
+});
+
+app.post('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
+  const { name, description, price } = req.body;
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Dish name is required.' });
+  }
+  if (price !== undefined && price !== null && (!Number.isFinite(price) || price < 0)) {
+    return res.status(400).json({ error: 'Price must be a non-negative number.' });
+  }
+
+  const companyId = req.user.companyId;
+  const dish = {
+    id: `dish-cat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: name.trim(),
+    normalizedName: normalizeDishName(name),
+    description: description || '',
+    price: Number.isFinite(price) ? price : null,
+    imageId: null,
+    active: true,
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+
+  try {
+    await createDish(companyId, dish);
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'A dish with this name already exists in your catalog.' });
+    }
+    throw err;
+  }
+
+  res.status(201).json(dish);
+});
+
+app.put('/api/dishes/:id', authMiddleware, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { name, description, price } = req.body;
+  const companyId = req.user.companyId;
+
+  const existing = await getDishById(companyId, id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Dish not found.' });
+  }
+  if (price !== undefined && price !== null && (!Number.isFinite(price) || price < 0)) {
+    return res.status(400).json({ error: 'Price must be a non-negative number.' });
+  }
+
+  const patch = { updatedAt: Date.now() };
+  if (name !== undefined) {
+    if (!name.trim()) return res.status(400).json({ error: 'Dish name is required.' });
+    patch.name = name.trim();
+    patch.normalizedName = normalizeDishName(name);
+  }
+  if (description !== undefined) patch.description = description;
+  if (price !== undefined) patch.price = Number.isFinite(price) ? price : null;
+
+  try {
+    await updateDish(companyId, id, patch);
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'A dish with this name already exists in your catalog.' });
+    }
+    throw err;
+  }
+
+  res.json({ ...existing, ...patch });
+});
+
+// Soft delete only — dailyState.menu items and history entries may still
+// reference this dish by catalogDishId, so it must never be hard-deleted.
+app.delete('/api/dishes/:id', authMiddleware, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const companyId = req.user.companyId;
+  const existing = await getDishById(companyId, id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Dish not found.' });
+  }
+  await setDishActive(companyId, id, false);
+  res.json({ success: true });
+});
+
+app.post('/api/dishes/:id/image', authMiddleware, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { imageData } = req.body;
+  const companyId = req.user.companyId;
+
+  const dish = await getDishById(companyId, id);
+  if (!dish) {
+    return res.status(404).json({ error: 'Dish not found.' });
+  }
+
+  const match = /^data:([\w/+.-]+);base64,(.+)$/.exec(imageData || '');
+  if (!match) {
+    return res.status(400).json({ error: 'imageData must be a base64 data URL.' });
+  }
+  const [, contentType, base64] = match;
+  if (!ALLOWED_DISH_IMAGE_TYPES.has(contentType)) {
+    return res.status(400).json({ error: 'Image must be webp, jpeg, or png.' });
+  }
+
+  const data = Buffer.from(base64, 'base64');
+  if (data.length > MAX_DISH_IMAGE_BYTES) {
+    return res.status(400).json({ error: `Image must be under ${Math.round(MAX_DISH_IMAGE_BYTES / 1024)}KB.` });
+  }
+
+  const image = await saveDishImage(companyId, { contentType, data, size: data.length });
+  await updateDish(companyId, id, { imageId: image._id, updatedAt: Date.now() });
+  if (dish.imageId) {
+    await deleteDishImage(companyId, dish.imageId); // replacing — old image is now unreferenced
+  }
+
+  res.json({ success: true, imageId: image._id });
+});
+
+// Public and unauthenticated, deliberately: this is rendered via <img src>,
+// which cannot carry the x-auth-token header authMiddleware requires
+// everywhere else. Served by opaque, unguessable id only — the same
+// trade-off the app already made for the static dish photos under
+// public/assets/, which have always been plain public files. Immutable
+// once created (a re-upload gets a new imageId, never mutates in place),
+// so it's safe to cache aggressively.
+app.get('/api/dish-images/:imageId', async (req, res) => {
+  const image = await getDishImageById(req.params.imageId);
+  if (!image) {
+    return res.status(404).end();
+  }
+  res.set('Content-Type', image.contentType);
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.send(image.data.buffer ? Buffer.from(image.data.buffer) : image.data);
+});
+
 // Admin: Set daily menu
 app.post('/api/menu', authMiddleware, requireAdmin, async (req, res) => {
   const { menu } = req.body;
@@ -919,44 +1292,88 @@ app.post('/api/menu', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Menu must be an array.' });
   }
 
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   if (checkCutoff(dailyState)) {
     return res.status(400).json({ error: 'Cutoff time has passed. Menu is locked.' });
   }
 
-  dailyState.menu = menu.map(item => ({
-    id: item.id || `dish-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-    name: item.name,
-    description: item.description || '',
-    price: item.price || ''
-  }));
+  // Items picked from the catalog get their name/description/price/imageId
+  // SNAPSHOTTED from the catalog dish right now — not a live reference — so
+  // a later catalog price edit never retroactively changes an already-built
+  // day (this is also what makes archiveCurrentDay's later verbatim copy
+  // into `history` correct with no changes needed there).
+  const catalogIds = menu.filter(item => item.catalogDishId).map(item => item.catalogDishId);
+  const catalogById = new Map();
+  if (catalogIds.length > 0) {
+    (await getDishes(companyId)).forEach(d => catalogById.set(d.id, d));
+  }
 
-  await saveDailyState(dailyState);
+  const newMenu = [];
+  for (const item of menu) {
+    const id = item.id || `dish-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+    if (item.catalogDishId) {
+      const dish = catalogById.get(item.catalogDishId);
+      if (!dish) {
+        return res.status(400).json({ error: 'A selected catalog dish was not found or is no longer active.' });
+      }
+      newMenu.push({
+        id,
+        name: dish.name,
+        description: dish.description || '',
+        price: typeof dish.price === 'number' ? dish.price : null,
+        catalogDishId: dish.id,
+        imageId: dish.imageId || null
+      });
+    } else {
+      if (!item.name) {
+        return res.status(400).json({ error: 'Each menu item needs a name.' });
+      }
+      newMenu.push({
+        id,
+        name: item.name,
+        description: item.description || '',
+        price: Number.isFinite(item.price) ? item.price : null,
+        catalogDishId: null,
+        imageId: null
+      });
+    }
+  }
+  dailyState.menu = newMenu;
+
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true, menu: dailyState.menu });
 });
 
 // Admin: Publish menu
 app.post('/api/publish-menu', authMiddleware, requireAdmin, async (req, res) => {
   const { published } = req.body;
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
 
   if (checkCutoff(dailyState)) {
     return res.status(400).json({ error: 'Cutoff time has passed. State is locked.' });
   }
 
   dailyState.menuPublished = !!published;
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true, menuPublished: dailyState.menuPublished });
 });
 
 // Admin: View current login-throttling settings
 app.get('/api/settings/security', authMiddleware, requireAdmin, async (req, res) => {
-  res.json(securitySettings);
+  const settings = await getSecuritySettingsCached(req.user.companyId);
+  res.json(settings);
 });
 
-// Admin: Update login-throttling settings (account lockout + rate limiting)
+// Admin: Update login-throttling settings (account lockout + rate limiting).
+// The two rate-limit fields are stored but currently unused — the shared
+// loginRateLimiterInstance isn't per-company (see buildLoginRateLimiter) —
+// left in place for a later phase to activate.
 app.put('/api/settings/security', authMiddleware, requireAdmin, async (req, res) => {
-  const updated = { ...securitySettings };
+  const companyId = req.user.companyId;
+  const current = await getSecuritySettingsCached(companyId);
+  const updated = { ...current };
 
   for (const [key, bounds] of Object.entries(SECURITY_SETTINGS_BOUNDS)) {
     if (req.body[key] === undefined) continue;
@@ -969,11 +1386,10 @@ app.put('/api/settings/security', authMiddleware, requireAdmin, async (req, res)
     updated[key] = value;
   }
 
-  await saveSecuritySettings(updated);
-  securitySettings = updated;
-  loginRateLimiterInstance = buildLoginRateLimiter(securitySettings);
+  await saveSecuritySettings(companyId, updated);
+  securitySettingsCache.set(companyId, updated);
 
-  res.json(securitySettings);
+  res.json(updated);
 });
 
 // Admin: Change daily cutoff time
@@ -983,10 +1399,11 @@ app.post('/api/cutoff', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Invalid time format. Must be HH:MM.' });
   }
 
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   dailyState.cutoffTime = cutoffTime;
   dailyState.cutoffExtensionMinutes = 0; // setting a new base cutoff clears any prior extension
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true, cutoffTime: dailyState.cutoffTime });
 });
 
@@ -998,9 +1415,10 @@ app.post('/api/cutoff/extend', authMiddleware, requireAdmin, async (req, res) =>
     return res.status(400).json({ error: 'minutes must be a positive whole number.' });
   }
 
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   dailyState.cutoffExtensionMinutes = (dailyState.cutoffExtensionMinutes || 0) + minutes;
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
 
   const isLocked = checkCutoff(dailyState);
   res.json({
@@ -1018,9 +1436,10 @@ app.post('/api/archive-time', authMiddleware, requireAdmin, async (req, res) => 
     return res.status(400).json({ error: 'Invalid time format. Must be HH:MM.' });
   }
 
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   dailyState.archiveTime = archiveTime;
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true, archiveTime: dailyState.archiveTime });
 });
 
@@ -1036,18 +1455,20 @@ app.post('/api/operational-days', authMiddleware, requireAdmin, async (req, res)
     return res.status(400).json({ error: 'operationalDays must be a non-empty array of unique integers 0-6.' });
   }
 
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   dailyState.operationalDays = [...operationalDays].sort((a, b) => a - b);
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true, operationalDays: dailyState.operationalDays });
 });
 
 // Team Member: Place daily dish order
-app.post('/api/order', authMiddleware, async (req, res) => {
+app.post('/api/order', authMiddleware, requireCompanyUser, async (req, res) => {
   const { itemId, note } = req.body;
   const userId = req.user.id;
+  const companyId = req.user.companyId;
 
-  const dailyState = await getDailyState();
+  const dailyState = await getDailyState(companyId);
 
   if (!isOperationalDay(dailyState)) {
     return res.status(400).json({ error: 'Lunch Buddy is closed today.' });
@@ -1070,14 +1491,15 @@ app.post('/api/order', authMiddleware, async (req, res) => {
 
   const order = writeOrderForUser(dailyState, userId, itemId, note);
 
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true, order });
 });
 
 // Team Member: Cancel today's own order (opt out entirely, not just change dish)
-app.delete('/api/order', authMiddleware, async (req, res) => {
+app.delete('/api/order', authMiddleware, requireCompanyUser, async (req, res) => {
   const userId = req.user.id;
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
 
   if (checkCutoff(dailyState)) {
     return res.status(400).json({ error: 'The daily cutoff time has passed. Orders are locked.' });
@@ -1092,7 +1514,7 @@ app.delete('/api/order', authMiddleware, async (req, res) => {
   }
 
   delete dailyState.orders[userId];
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true });
 });
 
@@ -1106,13 +1528,14 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
     return res.status(400).json({ error: 'userId and itemId are required.' });
   }
 
-  const roster = await getRoster();
+  const companyId = req.user.companyId;
+  const roster = await getRoster(companyId);
   const targetUser = roster.find(u => u.id === userId);
   if (!targetUser) {
     return res.status(404).json({ error: 'User not found in roster.' });
   }
 
-  const dailyState = await getDailyState();
+  const dailyState = await getDailyState(companyId);
 
   if (!isOperationalDay(dailyState)) {
     return res.status(400).json({ error: 'Lunch Buddy is closed today.' });
@@ -1138,7 +1561,7 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
     note: sanitizeOrderNote(note)
   };
 
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true, order: dailyState.orders[userId] });
 });
 
@@ -1170,12 +1593,15 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
   let served = false;
   let viaWeeklyPlan = false;
   let dishStillOnMenu = null;
+  let imageId = null;
 
   if (isPast) {
     const pastOrder = pastEntry?.orders?.[userId];
     if (pastOrder) {
       source = 'order';
-      dishName = pastEntry.menu.find(m => m.id === pastOrder.itemId)?.name || null;
+      const dish = pastEntry.menu.find(m => m.id === pastOrder.itemId);
+      dishName = dish?.name || null;
+      imageId = dish?.imageId || null;
       note = pastOrder.note || '';
       served = !!pastOrder.served;
       viaWeeklyPlan = !!pastOrder.viaWeeklyPlan;
@@ -1184,7 +1610,9 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
     const order = dailyState.orders?.[userId];
     if (order) {
       source = 'order';
-      dishName = dailyState.menu.find(m => m.id === order.itemId)?.name || null;
+      const dish = dailyState.menu.find(m => m.id === order.itemId);
+      dishName = dish?.name || null;
+      imageId = dish?.imageId || null;
       note = order.note || '';
       served = !!order.served;
       viaWeeklyPlan = !!order.viaWeeklyPlan;
@@ -1195,28 +1623,31 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
       source = 'plan';
       dishName = planEntry.dishName;
       note = planEntry.note || '';
-      dishStillOnMenu = !!findMenuItemByName(dailyState.menu, planEntry.dishName);
+      const matched = findMenuItemByName(dailyState.menu, planEntry.dishName);
+      dishStillOnMenu = !!matched;
+      imageId = matched?.imageId || null;
     }
   }
 
   return {
     date, weekday, dayName, isToday, isPast, isOperational, isLocked,
-    cutoffTimestamp, source, dishName, note, served, viaWeeklyPlan, dishStillOnMenu,
+    cutoffTimestamp, source, dishName, note, served, viaWeeklyPlan, dishStillOnMenu, imageId,
     editable: !isLocked && isOperational && !!dailyState.menuPublished
   };
 }
 
 // Team Member: Read this week's plan — one card per operational day in the
 // current Mon-Sun week, sourced from history/today's order/plan as above.
-app.get('/api/week-plan', authMiddleware, async (req, res) => {
+app.get('/api/week-plan', authMiddleware, requireCompanyUser, async (req, res) => {
   const userId = req.user.id;
+  const companyId = req.user.companyId;
   // getWeeklyPlan doesn't depend on dailyState, so run them concurrently
   // instead of paying two sequential Atlas round-trips back to back.
-  const [dailyState, plan] = await Promise.all([getDailyState(), getWeeklyPlan(userId)]);
+  const [dailyState, plan] = await Promise.all([getDailyState(companyId), getWeeklyPlan(companyId, userId)]);
   const weekDates = getPlanWeekDates(dailyState);
 
   const pastDates = weekDates.filter(d => dailyState.date && d < dailyState.date);
-  const history = await getHistoryForDates(pastDates);
+  const history = await getHistoryForDates(companyId, pastDates);
   const historyByDate = new Map(history.map(h => [h.date, h]));
 
   const days = weekDates.map(date =>
@@ -1234,16 +1665,17 @@ app.get('/api/week-plan', authMiddleware, async (req, res) => {
 // Team Member: Set (or change) one day's plan pick. If :date is today, this
 // writes a real order through the same path POST /api/order uses — today is
 // never a "plan", it's the live order.
-app.put('/api/week-plan/:date', authMiddleware, async (req, res) => {
+app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, res) => {
   const { date } = req.params;
   const { dishName, note } = req.body;
   const userId = req.user.id;
+  const companyId = req.user.companyId;
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({ error: 'Invalid date format.' });
   }
 
-  const dailyState = await getDailyState();
+  const dailyState = await getDailyState(companyId);
   const weekDates = getPlanWeekDates(dailyState);
   if (!weekDates.includes(date)) {
     return res.status(400).json({ error: "That date isn't in this week's plan." });
@@ -1264,17 +1696,17 @@ app.put('/api/week-plan/:date', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Dish is not on the menu.' });
   }
 
-  const plan = await getWeeklyPlan(userId);
+  const plan = await getWeeklyPlan(companyId, userId);
   plan.entries = plan.entries || {};
 
   if (date === dailyState.date) {
     writeOrderForUser(dailyState, userId, matched.id, note);
-    await saveDailyState(dailyState);
+    await saveDailyState(companyId, dailyState);
     // A real order now exists for today — drop any lingering plan entry so
     // the two stores never disagree about what "today" means.
     if (plan.entries[date]) {
       delete plan.entries[date];
-      await saveWeeklyPlan(userId, plan);
+      await saveWeeklyPlan(companyId, userId, plan);
     }
   } else {
     plan.entries[date] = {
@@ -1284,7 +1716,7 @@ app.put('/api/week-plan/:date', authMiddleware, async (req, res) => {
       source: 'manual'
     };
     plan.updatedAt = Date.now();
-    await saveWeeklyPlan(userId, plan);
+    await saveWeeklyPlan(companyId, userId, plan);
   }
 
   res.json({ success: true, day: buildWeekDayInfo(dailyState, plan, date, userId, null) });
@@ -1292,15 +1724,16 @@ app.put('/api/week-plan/:date', authMiddleware, async (req, res) => {
 
 // Team Member: Clear one day back to "Skipped". Today follows the same
 // already-served guard as DELETE /api/order.
-app.delete('/api/week-plan/:date', authMiddleware, async (req, res) => {
+app.delete('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, res) => {
   const { date } = req.params;
   const userId = req.user.id;
+  const companyId = req.user.companyId;
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({ error: 'Invalid date format.' });
   }
 
-  const dailyState = await getDailyState();
+  const dailyState = await getDailyState(companyId);
   const weekDates = getPlanWeekDates(dailyState);
   if (!weekDates.includes(date)) {
     return res.status(400).json({ error: "That date isn't in this week's plan." });
@@ -1311,7 +1744,7 @@ app.delete('/api/week-plan/:date', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: `Orders for ${dayName} are already locked.` });
   }
 
-  const plan = await getWeeklyPlan(userId);
+  const plan = await getWeeklyPlan(companyId, userId);
   plan.entries = plan.entries || {};
 
   if (date === dailyState.date) {
@@ -1321,12 +1754,12 @@ app.delete('/api/week-plan/:date', authMiddleware, async (req, res) => {
         return res.status(400).json({ error: 'This order has already been served and can\'t be cancelled. Contact an admin.' });
       }
       delete dailyState.orders[userId];
-      await saveDailyState(dailyState);
+      await saveDailyState(companyId, dailyState);
     }
   } else if (plan.entries[date]) {
     delete plan.entries[date];
     plan.updatedAt = Date.now();
-    await saveWeeklyPlan(userId, plan);
+    await saveWeeklyPlan(companyId, userId, plan);
   }
 
   res.json({ success: true, day: buildWeekDayInfo(dailyState, plan, date, userId, null) });
@@ -1337,11 +1770,12 @@ app.delete('/api/week-plan/:date', authMiddleware, async (req, res) => {
 // today), overwriting any existing picks on those days. Deliberately does
 // NOT propagate the note — a note like "for the client meeting" should
 // never silently apply to four other days, only the dish does.
-app.post('/api/week-plan/repeat', authMiddleware, async (req, res) => {
+app.post('/api/week-plan/repeat', authMiddleware, requireCompanyUser, async (req, res) => {
   const { dishName, note, fromDate } = req.body;
   const userId = req.user.id;
+  const companyId = req.user.companyId;
 
-  const dailyState = await getDailyState();
+  const dailyState = await getDailyState(companyId);
   const weekDates = getPlanWeekDates(dailyState);
   const startDate = (fromDate && /^\d{4}-\d{2}-\d{2}$/.test(fromDate)) ? fromDate : dailyState.date;
 
@@ -1356,7 +1790,7 @@ app.post('/api/week-plan/repeat', authMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'Dish is not on the menu.' });
   }
 
-  const plan = await getWeeklyPlan(userId);
+  const plan = await getWeeklyPlan(companyId, userId);
   plan.entries = plan.entries || {};
 
   const appliedDates = [];
@@ -1387,8 +1821,8 @@ app.post('/api/week-plan/repeat', authMiddleware, async (req, res) => {
   }
 
   plan.updatedAt = Date.now();
-  await saveWeeklyPlan(userId, plan);
-  if (dailyStateChanged) await saveDailyState(dailyState);
+  await saveWeeklyPlan(companyId, userId, plan);
+  if (dailyStateChanged) await saveDailyState(companyId, dailyState);
 
   res.json({ success: true, appliedDates, skippedDates });
 });
@@ -1400,14 +1834,15 @@ app.post('/api/order/serve', authMiddleware, requireAdminOrAbigail, async (req, 
     return res.status(400).json({ error: 'userId and a boolean served flag are required.' });
   }
 
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   const order = dailyState.orders?.[userId];
   if (!order) {
     return res.status(404).json({ error: 'This person has not placed an order yet.' });
   }
 
   order.served = served;
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true, order });
 });
 
@@ -1416,7 +1851,8 @@ app.post('/api/order/serve', authMiddleware, requireAdminOrAbigail, async (req, 
 // the list is treated as submitted to the vendor and shouldn't change.
 app.delete('/api/order/:userId', authMiddleware, requireAdminOrAbigail, async (req, res) => {
   const { userId } = req.params;
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
 
   if (checkCutoff(dailyState)) {
     return res.status(400).json({ error: 'The daily cutoff time has passed. The order list is locked.' });
@@ -1427,15 +1863,16 @@ app.delete('/api/order/:userId', authMiddleware, requireAdminOrAbigail, async (r
   }
 
   delete dailyState.orders[userId];
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true });
 });
 
 // Admin: Clear every order placed today so the roster can make fresh selections
 app.post('/api/order/clear-all', authMiddleware, requireAdmin, async (req, res) => {
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   dailyState.orders = {};
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
   res.json({ success: true });
 });
 
@@ -1448,9 +1885,10 @@ app.post('/api/lock', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'locked must be true or null.' });
   }
 
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   dailyState.isManuallyLocked = locked;
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
 
   const effectiveLocked = checkCutoff(dailyState);
   res.json({ success: true, isManuallyLocked: locked, isLocked: effectiveLocked });
@@ -1463,9 +1901,13 @@ app.post('/api/roster/bulk', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'members must be a non-empty array.' });
   }
 
-  const roster = await getRoster();
+  const companyId = req.user.companyId;
+  const roster = await getRoster(companyId);
+  const branches = await getBranches(companyId);
+  const branchByName = new Map(branches.map(b => [b.name.toLowerCase(), b.id]));
   const added = [];
   const skipped = [];
+  const warnings = [];
 
   for (const m of members) {
     const name = (m.name || '').trim();
@@ -1474,19 +1916,35 @@ app.post('/api/roster/bulk', authMiddleware, requireAdmin, async (req, res) => {
     const duplicate = roster.some(u => u.name.toLowerCase() === name.toLowerCase());
     if (duplicate) { skipped.push({ entry: m, reason: `"${name}" already exists` }); continue; }
 
+    const role = m.role || 'Team Member';
+    if (!COMPANY_ROLES.includes(role)) {
+      skipped.push({ entry: m, reason: 'Invalid role' }); continue;
+    }
+
     if (m.passcode) {
       const validationError = validatePasscode(m.passcode, { name, email: m.email });
       if (validationError) { skipped.push({ entry: m, reason: validationError }); continue; }
     }
 
-    const role = m.role || 'Team Member';
+    // Branch is matched by name (the pasteable format), not id. An
+    // unrecognized branch name only drops the branch assignment for that
+    // row — it never fails the whole import over a typo.
+    let branchId = null;
+    const branchName = (m.branch || '').trim();
+    if (branchName) {
+      branchId = branchByName.get(branchName.toLowerCase()) || null;
+      if (!branchId) warnings.push(`"${name}": branch "${branchName}" not found, left unassigned`);
+    }
+
     const initialPasscode = m.passcode || generatePasscode();
     const newUser = {
       id: `usr-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      companyId,
       name,
       email: (m.email || '').trim(),
       phone: (m.phone || '').trim(),
       role,
+      branchId,
       passcodeHash: await hashPasscode(initialPasscode),
       passcodeChangedAt: Date.now(),
       mustChangePasscode: true
@@ -1495,23 +1953,77 @@ app.post('/api/roster/bulk', authMiddleware, requireAdmin, async (req, res) => {
     added.push({ ...newUser, initialPasscode });
   }
 
-  if (added.length > 0) await saveRoster(roster);
+  if (added.length > 0) await saveRoster(companyId, roster);
 
   res.json({
     success: true,
     added: added.length,
     skipped: skipped.length,
     skippedDetails: skipped,
+    warnings,
     // Each member's one-time initialPasscode is included so the admin can
     // share it — it can't be retrieved again after this response.
     members: added.map(({ passcodeHash, ...rest }) => rest)
   });
 });
 
+// --- Branches ---
+// Lightweight, admin-managed grouping within a company (e.g. office
+// locations) — used to filter/group the roster. No cascade on delete: a
+// roster member's now-orphaned branchId just fails to resolve client-side
+// and displays "No branch", the same tolerance pattern used for a stale
+// weekly-plan dish-name reference.
+
+app.get('/api/branches', authMiddleware, requireAdmin, async (req, res) => {
+  res.json(await getBranches(req.user.companyId));
+});
+
+app.post('/api/branches', authMiddleware, requireAdmin, async (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Branch name is required.' });
+  }
+  const companyId = req.user.companyId;
+  const existing = await getBranches(companyId);
+  if (existing.some(b => b.name.toLowerCase() === name.trim().toLowerCase())) {
+    return res.status(400).json({ error: 'A branch with this name already exists.' });
+  }
+  const branch = await createBranch(companyId, {
+    id: `brc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: name.trim(),
+    createdAt: Date.now()
+  });
+  res.status(201).json(branch);
+});
+
+app.put('/api/branches/:id', authMiddleware, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+  if (!name || !name.trim()) {
+    return res.status(400).json({ error: 'Branch name is required.' });
+  }
+  const companyId = req.user.companyId;
+  const existing = await getBranches(companyId);
+  if (!existing.some(b => b.id === id)) {
+    return res.status(404).json({ error: 'Branch not found.' });
+  }
+  if (existing.some(b => b.id !== id && b.name.toLowerCase() === name.trim().toLowerCase())) {
+    return res.status(400).json({ error: 'A branch with this name already exists.' });
+  }
+  await updateBranch(companyId, id, { name: name.trim() });
+  res.json({ success: true });
+});
+
+app.delete('/api/branches/:id', authMiddleware, requireAdmin, async (req, res) => {
+  await deleteBranch(req.user.companyId, req.params.id);
+  res.json({ success: true });
+});
+
 // Any logged-in user: View their own past orders
-app.get('/api/my-orders', authMiddleware, async (req, res) => {
+app.get('/api/my-orders', authMiddleware, requireCompanyUser, async (req, res) => {
   const userId = req.user.id;
-  const history = await getHistory();
+  const companyId = req.user.companyId;
+  const history = await getHistory(companyId);
 
   // Build a personal history — one entry per archived day that the user appears in
   const personalHistory = history
@@ -1534,10 +2046,116 @@ app.get('/api/my-orders', authMiddleware, async (req, res) => {
   res.json(personalHistory);
 });
 
+// Any logged-in company user: their own dish-popularity trend, filtered down
+// to this one user's orders. Deliberately no spend/cost data here — company
+// catering cost stays Admin/Abigail-only via GET /api/trends, even though
+// it's technically "their own" order — team members don't need per-meal
+// cost visibility.
+app.get('/api/my-trends', authMiddleware, requireCompanyUser, async (req, res) => {
+  const userId = req.user.id;
+  const companyId = req.user.companyId;
+  const history = await getHistory(companyId);
+
+  const popularity = new Map();
+  let mealsOrdered = 0;
+
+  for (const entry of history) {
+    const order = entry.orders?.[userId];
+    if (!order || !order.itemId) continue;
+    mealsOrdered++;
+
+    const dish = (entry.menu || []).find(m => m.id === order.itemId);
+    const dishName = dish?.name || 'Unknown Dish';
+    popularity.set(dishName, (popularity.get(dishName) || 0) + 1);
+  }
+
+  const topDishes = [...popularity.entries()]
+    .map(([dishName, totalCount]) => ({ dishName, totalCount }))
+    .sort((a, b) => b.totalCount - a.totalCount);
+
+  res.json({ mealsOrdered, topDishes });
+});
+
 // Admin/Abigail: View historical records
 app.get('/api/history', authMiddleware, requireAdminOrAbigail, async (req, res) => {
-  const history = await getHistory();
+  const history = await getHistory(req.user.companyId);
   res.json(history.slice().reverse()); // Newest first
+});
+
+// Admin: the per-head fallback cost Trends uses when an order's dish has no
+// price of its own (most commonly orders archived before the Dish Catalog
+// existed) — a company-wide flat rate, not a rewrite of any archived data.
+app.get('/api/settings/company', authMiddleware, requireAdmin, async (req, res) => {
+  res.json(await getCompanySettings(req.user.companyId));
+});
+
+app.put('/api/settings/company', authMiddleware, requireAdmin, async (req, res) => {
+  const { defaultPricePerHead } = req.body;
+  if (defaultPricePerHead !== null && defaultPricePerHead !== undefined) {
+    if (!Number.isFinite(defaultPricePerHead) || defaultPricePerHead < 0) {
+      return res.status(400).json({ error: 'defaultPricePerHead must be a non-negative number, or null to clear it.' });
+    }
+  }
+  const settings = { defaultPricePerHead: defaultPricePerHead ?? null };
+  await saveCompanySettings(req.user.companyId, settings);
+  res.json(settings);
+});
+
+// --- Trends ---
+// Cost + dish-popularity trends, computed in Node from `history` (no Mongo
+// aggregation pipeline — nothing in db.js uses one, this stays consistent
+// with the plain-driver, compute-in-JS style archiveCurrentDay already uses).
+// Pre-catalog history has price:'' (not a number) on every dish. If the
+// company has set a defaultPricePerHead, that flat rate is applied to any
+// such order (past or present) for the SPEND total only — never written
+// back into the archived history document itself, so this stays reversible
+// (clear the setting and old days go back to being flagged/excluded) and
+// never risks corrupting the original per-day record. Popularity was always
+// name-keyed and never price-dependent, so it's unaffected either way.
+app.get('/api/trends', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const { startDate, endDate } = req.query;
+  const companyId = req.user.companyId;
+  const [history, companySettings] = await Promise.all([
+    getHistoryInRange(companyId, startDate || null, endDate || null),
+    getCompanySettings(companyId)
+  ]);
+  const defaultPricePerHead = companySettings.defaultPricePerHead;
+
+  const spendByDay = [];
+  const popularity = new Map(); // dishName -> count
+
+  for (const entry of history) {
+    let total = 0;
+    let hasUnpricedOrders = false;
+    for (const order of Object.values(entry.orders || {})) {
+      const dish = (entry.menu || []).find(m => m.id === order.itemId);
+      if (dish && typeof dish.price === 'number') {
+        total += dish.price;
+      } else if (order.itemId) {
+        if (typeof defaultPricePerHead === 'number') {
+          total += defaultPricePerHead;
+        } else {
+          hasUnpricedOrders = true;
+        }
+      }
+      const dishName = dish?.name || 'Unknown Dish';
+      if (order.itemId) {
+        popularity.set(dishName, (popularity.get(dishName) || 0) + 1);
+      }
+    }
+    spendByDay.push({ date: entry.date, total, hasUnpricedOrders });
+  }
+
+  const topDishesOverall = [...popularity.entries()]
+    .map(([dishName, totalCount]) => ({ dishName, totalCount }))
+    .sort((a, b) => b.totalCount - a.totalCount);
+
+  res.json({
+    range: { startDate: startDate || null, endDate: endDate || null },
+    defaultPricePerHead,
+    spendByDay,
+    topDishesOverall
+  });
 });
 
 // Admin/Abigail: mark an archived day's order as served/unserved. Needed
@@ -1552,7 +2170,8 @@ app.post('/api/history/:date/order-serve', authMiddleware, requireAdminOrAbigail
     return res.status(400).json({ error: 'userId and a boolean served flag are required.' });
   }
 
-  const history = await getHistory();
+  const companyId = req.user.companyId;
+  const history = await getHistory(companyId);
   const entry = history.find(h => h.date === date);
   if (!entry) {
     return res.status(404).json({ error: 'No archived record for this date.' });
@@ -1563,8 +2182,95 @@ app.post('/api/history/:date/order-serve', authMiddleware, requireAdminOrAbigail
   }
 
   order.served = served;
-  await saveHistory(history);
+  await saveHistory(companyId, history);
   res.json({ success: true, order });
+});
+
+// --- Platform Admin: Company management ---
+
+// List companies + a computed member count per company.
+app.get('/api/companies', authMiddleware, requirePlatformAdmin, async (req, res) => {
+  const companies = await getCompanies();
+  const memberCounts = await Promise.all(companies.map(c => getRoster(c._id).then(r => r.length)));
+  res.json(companies.map((c, i) => ({ ...c, memberCount: memberCounts[i] })));
+});
+
+// Create a company + its first Admin, in one step (manual onboarding —
+// there's no public signup in this phase).
+app.post('/api/companies', authMiddleware, requirePlatformAdmin, async (req, res) => {
+  const { name, code, adminName, adminEmail } = req.body;
+  if (!name || !code || !adminName) {
+    return res.status(400).json({ error: 'name, code, and adminName are required.' });
+  }
+
+  const normalizedCode = code.trim().toUpperCase();
+  if (!COMPANY_CODE_REGEX.test(normalizedCode)) {
+    return res.status(400).json({ error: 'Company code must be 3-12 characters: letters, numbers, or hyphens.' });
+  }
+  const existing = await getCompanyByCode(normalizedCode);
+  if (existing) {
+    return res.status(400).json({ error: 'A company with this code already exists.' });
+  }
+
+  const companyId = `cmp-${normalizedCode.toLowerCase()}`;
+  const company = await createCompany({ id: companyId, code: normalizedCode, name, createdBy: req.user.id });
+  await seedCompanyDefaults(companyId);
+
+  const initialPasscode = generatePasscode();
+  const adminUser = {
+    id: `usr-${Date.now()}`,
+    companyId,
+    name: adminName,
+    email: adminEmail || '',
+    phone: '',
+    role: 'Admin',
+    passcodeHash: await hashPasscode(initialPasscode),
+    passcodeChangedAt: Date.now(),
+    mustChangePasscode: true
+  };
+  await saveRoster(companyId, [adminUser]);
+
+  const { passcodeHash: _, ...safeAdmin } = adminUser;
+  // initialPasscode returned once so the platform admin can share it —
+  // it can't be retrieved again after this response.
+  res.status(201).json({ company, admin: { ...safeAdmin, initialPasscode } });
+});
+
+// Rename a company. Code is immutable after creation (it's the login key —
+// changing it would silently break every saved login link/bookmark).
+app.put('/api/companies/:id', authMiddleware, requirePlatformAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { name } = req.body;
+  if (!name) {
+    return res.status(400).json({ error: 'name is required.' });
+  }
+  const company = await getCompanyById(id);
+  if (!company) {
+    return res.status(404).json({ error: 'Company not found.' });
+  }
+  await updateCompany(id, { name });
+  invalidateCompanyCache(company);
+  res.json({ ...company, name });
+});
+
+// Suspend/reactivate a company. No hard delete in this phase — a suspended
+// company simply fails the status==='active' check in
+// resolveCompanyMiddleware, so nobody can log in and nothing rolls over,
+// while all of its data stays intact.
+app.put('/api/companies/:id/status', authMiddleware, requirePlatformAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  if (status !== 'active' && status !== 'suspended') {
+    return res.status(400).json({ error: "status must be 'active' or 'suspended'." });
+  }
+  const company = await getCompanyById(id);
+  if (!company) {
+    return res.status(404).json({ error: 'Company not found.' });
+  }
+  await updateCompany(id, { status });
+  invalidateCompanyCache(company);
+  invalidateSecuritySettingsCache(id);
+  res.json({ ...company, status });
 });
 
 // --- Push Notifications ---
@@ -1577,53 +2283,40 @@ app.get('/api/push/vapid-public-key', (req, res) => {
 // Save a browser push subscription against the logged-in user. A person can
 // have more than one (phone + laptop), keyed by the subscription's unique
 // endpoint URL so re-subscribing the same device just updates it in place.
+// A targeted patch by id — works regardless of companyId (Platform Admins included).
 app.post('/api/push/subscribe', authMiddleware, async (req, res) => {
   const { subscription } = req.body;
   if (!subscription?.endpoint || !subscription?.keys) {
     return res.status(400).json({ error: 'A valid push subscription is required.' });
   }
 
-  const roster = await getRoster();
-  const userIndex = roster.findIndex(u => u.id === req.user.id);
-  if (userIndex === -1) {
-    return res.status(404).json({ error: 'User not found.' });
-  }
-
-  const subs = roster[userIndex].pushSubscriptions || [];
+  const subs = req.user.pushSubscriptions || [];
   const withoutDupe = subs.filter(s => s.endpoint !== subscription.endpoint);
-  roster[userIndex].pushSubscriptions = [...withoutDupe, subscription];
-  await saveRoster(roster);
+  const pushSubscriptions = [...withoutDupe, subscription];
+  await updateUserById(req.user.id, { pushSubscriptions });
 
-  console.log(`Push subscription saved for ${roster[userIndex].name} (now ${roster[userIndex].pushSubscriptions.length} device(s)).`);
+  console.log(`Push subscription saved for ${req.user.name} (now ${pushSubscriptions.length} device(s)).`);
   res.json({ success: true });
 });
 
 // Remove a push subscription (e.g. the user turned notifications off)
 app.post('/api/push/unsubscribe', authMiddleware, async (req, res) => {
   const { endpoint } = req.body;
-  const roster = await getRoster();
-  const userIndex = roster.findIndex(u => u.id === req.user.id);
-  if (userIndex === -1) {
-    return res.status(404).json({ error: 'User not found.' });
-  }
-
-  roster[userIndex].pushSubscriptions = (roster[userIndex].pushSubscriptions || [])
-    .filter(s => s.endpoint !== endpoint);
-  await saveRoster(roster);
-
+  const pushSubscriptions = (req.user.pushSubscriptions || []).filter(s => s.endpoint !== endpoint);
+  await updateUserById(req.user.id, { pushSubscriptions });
   res.json({ success: true });
 });
 
-// Sends a push payload to every subscribed device across the whole roster.
-// Dead subscriptions (expired/revoked — 404 or 410 from the push service)
-// are dropped so they stop being retried forever.
-async function sendPushToAllUsers(payload) {
+// Sends a push payload to every subscribed device across one company's
+// roster. Dead subscriptions (expired/revoked — 404 or 410 from the push
+// service) are dropped so they stop being retried forever.
+async function sendPushToAllUsers(companyId, payload) {
   if (!pushEnabled) {
     console.warn('sendPushToAllUsers: push is disabled (missing VAPID keys) — nothing sent.');
     return;
   }
 
-  const roster = await getRoster();
+  const roster = await getRoster(companyId);
   const body = JSON.stringify(payload);
   let changed = false;
   let attempted = 0;
@@ -1656,18 +2349,19 @@ async function sendPushToAllUsers(payload) {
 
   console.log(`Push broadcast: ${sent}/${attempted} device(s) sent successfully, ${dropped} dead subscription(s) dropped.`);
 
-  if (changed) await saveRoster(roster);
+  if (changed) await saveRoster(companyId, roster);
 }
 
 // Admin/Abigail: broadcast "the food has arrived" — shows an in-app banner
 // to everyone currently on the page, and sends a real push notification to
 // anyone who has notifications enabled (reaches them even with the tab closed).
 app.post('/api/food-arrived', authMiddleware, requireAdminOrAbigail, async (req, res) => {
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
   dailyState.foodArrival = { at: Date.now(), by: req.user.name };
-  await saveDailyState(dailyState);
+  await saveDailyState(companyId, dailyState);
 
-  sendPushToAllUsers({
+  sendPushToAllUsers(companyId, {
     title: '🍽️ Lunch has arrived!',
     body: `${req.user.name} says today's food is here — come get it.`
   }).catch(err => console.error('Error broadcasting push notifications:', err));
@@ -1680,8 +2374,9 @@ app.post('/api/food-arrived', authMiddleware, requireAdminOrAbigail, async (req,
 // Admin/Abigail: Trigger manual reminder (individual or bulk pending)
 app.post('/api/reminders/send', authMiddleware, requireAdminOrAbigail, async (req, res) => {
   const { userId, bulk } = req.body;
-  const dailyState = await getDailyState();
-  const roster = await getRoster();
+  const companyId = req.user.companyId;
+  const dailyState = await getDailyState(companyId);
+  const roster = await getRoster(companyId);
   const orders = dailyState.orders || {};
 
   let usersToRemind = [];
@@ -1706,7 +2401,7 @@ app.post('/api/reminders/send', authMiddleware, requireAdminOrAbigail, async (re
     return res.json({ success: true, message: 'No pending users to remind.', reminded: [] });
   }
 
-  const logs = await getRemindersLog();
+  const logs = await getRemindersLog(companyId);
   const notified = [];
 
   for (const user of usersToRemind) {
@@ -1726,76 +2421,82 @@ app.post('/api/reminders/send', authMiddleware, requireAdminOrAbigail, async (re
     notified.push({ id: user.id, name: user.name });
   }
 
-  await saveRemindersLog(logs);
+  await saveRemindersLog(companyId, logs);
   res.json({ success: true, message: `Successfully sent reminders to ${notified.length} members.`, reminded: notified });
 });
 
 // Admin/Abigail: Retrieve history of reminders sent today
 app.get('/api/reminders/logs', authMiddleware, requireAdminOrAbigail, async (req, res) => {
-  const logs = await getRemindersLog();
-  const dailyState = await getDailyState();
+  const companyId = req.user.companyId;
+  const logs = await getRemindersLog(companyId);
+  const dailyState = await getDailyState(companyId);
   const currentDate = dailyState.date || getLocalDateString();
   const todaysLogs = logs.filter(log => log.date === currentDate);
   res.json(todaysLogs);
 });
 
 // --- Background Automated Reminders Scheduler ---
-async function checkAndSendAutoReminders() {
-  try {
-    const dailyState = await getDailyState();
-    if (!dailyState.date || !dailyState.cutoffTime) return;
+async function checkAndSendAutoRemindersForCompany(companyId) {
+  const dailyState = await getDailyState(companyId);
+  if (!dailyState.date || !dailyState.cutoffTime) return;
 
-    const systemDate = getLocalDateString();
-    if (dailyState.autoReminderSentDate === systemDate) {
-      return; // Already triggered automated alerts today
-    }
+  const systemDate = getLocalDateString();
+  if (dailyState.autoReminderSentDate === systemDate) {
+    return; // Already triggered automated alerts today
+  }
 
-    const [cutoffHour, cutoffMin] = dailyState.cutoffTime.split(':').map(Number);
-    const now = new Date();
-    const cutoffTimeMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), cutoffHour, cutoffMin, 0, 0).getTime();
-    const reminderTimeMs = cutoffTimeMs - 15 * 60 * 1000; // 15 mins before cutoff time
-    const currentTimeMs = now.getTime();
+  const [cutoffHour, cutoffMin] = dailyState.cutoffTime.split(':').map(Number);
+  const now = new Date();
+  const cutoffTimeMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), cutoffHour, cutoffMin, 0, 0).getTime();
+  const reminderTimeMs = cutoffTimeMs - 15 * 60 * 1000; // 15 mins before cutoff time
+  const currentTimeMs = now.getTime();
 
-    // Trigger alerts if within the 15 minute warning window
-    if (currentTimeMs >= reminderTimeMs && currentTimeMs < cutoffTimeMs) {
-      const roster = await getRoster();
-      const checkedInUserIds = new Set([
-        ...dailyState.orders.inOffice.map(o => o.userId),
-        ...dailyState.orders.onTheWay.map(o => o.userId),
-        ...dailyState.orders.notComing.map(o => o.userId)
-      ]);
-      const pendingUsers = roster.filter(u => !checkedInUserIds.has(u.id));
+  // Trigger alerts if within the 15 minute warning window
+  if (currentTimeMs >= reminderTimeMs && currentTimeMs < cutoffTimeMs) {
+    const roster = await getRoster(companyId);
+    const checkedInUserIds = new Set(Object.keys(dailyState.orders || {}));
+    const pendingUsers = roster.filter(u => !checkedInUserIds.has(u.id));
 
-      if (pendingUsers.length > 0) {
-        const logs = await getRemindersLog();
-        console.log(`[AUTO REMINDER] Cutoff locks in 15 minutes. Auto-notifying ${pendingUsers.length} unconfirmed users.`);
+    if (pendingUsers.length > 0) {
+      const logs = await getRemindersLog(companyId);
+      console.log(`[AUTO REMINDER] Cutoff locks in 15 minutes for ${companyId}. Auto-notifying ${pendingUsers.length} unconfirmed users.`);
 
-        for (const user of pendingUsers) {
-          const method = user.email ? 'email' : user.phone ? 'SMS' : 'Console';
-          console.log(`[MOCK NOTIFICATION] Auto-sent cutoff warning to ${user.name} via ${method}`);
+      for (const user of pendingUsers) {
+        const method = user.email ? 'email' : user.phone ? 'SMS' : 'Console';
+        console.log(`[MOCK NOTIFICATION] Auto-sent cutoff warning to ${user.name} via ${method}`);
 
-          logs.push({
-            id: `rem-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-            date: dailyState.date,
-            userId: user.id,
-            userName: user.name,
-            type: 'auto-cutoff-15m',
-            sentAt: new Date().toISOString()
-          });
-        }
-        await saveRemindersLog(logs);
+        logs.push({
+          id: `rem-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+          date: dailyState.date,
+          userId: user.id,
+          userName: user.name,
+          type: 'auto-cutoff-15m',
+          sentAt: new Date().toISOString()
+        });
       }
-
-      dailyState.autoReminderSentDate = systemDate;
-      await saveDailyState(dailyState);
+      await saveRemindersLog(companyId, logs);
     }
-  } catch (err) {
-    console.error('Error in background reminder loop:', err);
+
+    dailyState.autoReminderSentDate = systemDate;
+    await saveDailyState(companyId, dailyState);
+  }
+}
+
+// Sweeps every company each tick, one try/catch per company so one
+// company's failure can't abort the rest.
+async function runAutoReminderSweep() {
+  const companies = await getCompanies();
+  for (const company of companies) {
+    try {
+      await checkAndSendAutoRemindersForCompany(company._id);
+    } catch (err) {
+      console.error(`Error in background reminder loop for ${company._id}:`, err);
+    }
   }
 }
 
 // Check every minute
-setInterval(checkAndSendAutoReminders, 60 * 1000);
+setInterval(runAutoReminderSweep, 60 * 1000);
 
 // Start express server
 app.listen(PORT, () => {
