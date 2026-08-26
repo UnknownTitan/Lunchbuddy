@@ -166,6 +166,23 @@ const notificationRequestBanner = document.getElementById('notification-request-
 const btnEnableNotifications = document.getElementById('btn-enable-notifications');
 const btnFoodArrived = document.getElementById('btn-food-arrived');
 const foodArrivedStatus = document.getElementById('food-arrived-status');
+const notifyTitle = document.getElementById('notify-title');
+const notifyBody = document.getElementById('notify-body');
+const btnSendNotification = document.getElementById('btn-send-notification');
+const notifyStatus = document.getElementById('notify-status');
+const notifyRepeatGroup = document.getElementById('notify-repeat-group');
+const notifyScheduleOnceGroup = document.getElementById('notify-schedule-once-group');
+const notifyScheduleRepeatGroup = document.getElementById('notify-schedule-repeat-group');
+const notifyScheduleTime = document.getElementById('notify-schedule-time');
+const notifyScheduleRepeatTime = document.getElementById('notify-schedule-repeat-time');
+const btnSendNotificationLabel = document.getElementById('btn-send-notification-label');
+const notifyScheduledList = document.getElementById('notify-scheduled-list');
+const notifyScheduledEmpty = document.getElementById('notify-scheduled-empty');
+const checkpointList = document.getElementById('checkpoint-list');
+const btnAddCheckpoint = document.getElementById('btn-add-checkpoint');
+const btnSaveCheckpoints = document.getElementById('btn-save-checkpoints');
+const checkpointStatus = document.getElementById('checkpoint-status');
+const notifyHistoryList = document.getElementById('notify-history-list');
 const countdownText = document.getElementById('countdown-text');
 const orderFormCard = document.getElementById('order-form-card');
 const orderForm = document.getElementById('order-form');
@@ -890,6 +907,10 @@ function onTabLoad(tabId) {
     loadMyOrders();
   } else if (tabId === 'trends-tab') {
     loadTrends();
+  } else if (tabId === 'notifications-tab') {
+    loadScheduledNotifications();
+    loadCheckpoints();
+    loadNotificationHistory();
   }
 }
 
@@ -1105,6 +1126,259 @@ async function handleFoodArrived() {
     foodArrivedStatus.className = 'status-msg-inline error-text';
     foodArrivedStatus.textContent = err.message || 'Failed to notify the team.';
   }
+}
+
+function updateNotifyScheduleUI() {
+  const when = document.querySelector('input[name="notify-when"]:checked')?.value || 'now';
+  const repeat = document.querySelector('input[name="notify-repeat"]:checked')?.value || 'once';
+  const isLater = when === 'later';
+  const isRepeating = isLater && repeat !== 'once';
+
+  notifyRepeatGroup.classList.toggle('hidden', !isLater);
+  notifyScheduleOnceGroup.classList.toggle('hidden', !isLater || isRepeating);
+  notifyScheduleRepeatGroup.classList.toggle('hidden', !isRepeating);
+  btnSendNotificationLabel.textContent = isLater ? 'Schedule' : 'Send';
+}
+
+async function handleSendNotification() {
+  const title = notifyTitle.value.trim();
+  const body = notifyBody.value.trim();
+  const target = document.querySelector('input[name="notify-target"]:checked')?.value || 'all';
+  const when = document.querySelector('input[name="notify-when"]:checked')?.value || 'now';
+  const repeat = document.querySelector('input[name="notify-repeat"]:checked')?.value || 'once';
+
+  if (!title || !body) {
+    notifyStatus.className = 'status-msg-inline error-text';
+    notifyStatus.textContent = 'Title and message are both required.';
+    return;
+  }
+
+  const targetLabel = target === 'pending' ? "everyone who hasn't ordered yet" : 'everyone';
+
+  if (when === 'later') {
+    const payload = { title, body, target };
+
+    if (repeat === 'once') {
+      if (!notifyScheduleTime.value) {
+        notifyStatus.className = 'status-msg-inline error-text';
+        notifyStatus.textContent = 'Pick a date and time to send at.';
+        return;
+      }
+      const sendAt = new Date(notifyScheduleTime.value).getTime();
+      if (!Number.isFinite(sendAt) || sendAt <= Date.now()) {
+        notifyStatus.className = 'status-msg-inline error-text';
+        notifyStatus.textContent = 'Scheduled time must be in the future.';
+        return;
+      }
+      payload.sendAt = sendAt;
+    } else {
+      if (!notifyScheduleRepeatTime.value) {
+        notifyStatus.className = 'status-msg-inline error-text';
+        notifyStatus.textContent = 'Pick a time of day to send at.';
+        return;
+      }
+      payload.repeat = { type: repeat, time: notifyScheduleRepeatTime.value };
+    }
+
+    const whenLabel = repeat === 'once' ? '' : repeat === 'daily' ? ' every day' : ' on weekdays';
+    const confirmed = await confirmDialog(`Schedule this notification${whenLabel} for ${targetLabel}?`);
+    if (!confirmed) return;
+
+    notifyStatus.className = 'status-msg-inline';
+    notifyStatus.textContent = 'Scheduling...';
+
+    try {
+      await apiCall('/api/notifications/schedule', 'POST', payload);
+      notifyStatus.className = 'status-msg-inline success';
+      notifyStatus.style.color = 'var(--status-in-office)';
+      notifyStatus.textContent = 'Notification scheduled!';
+      notifyTitle.value = '';
+      notifyBody.value = '';
+      notifyScheduleTime.value = '';
+      notifyScheduleRepeatTime.value = '';
+      await loadScheduledNotifications();
+    } catch (err) {
+      notifyStatus.className = 'status-msg-inline error-text';
+      notifyStatus.textContent = err.message || 'Failed to schedule notification.';
+    }
+    return;
+  }
+
+  const confirmed = await confirmDialog(`Send this notification to ${targetLabel}?`);
+  if (!confirmed) return;
+
+  notifyStatus.className = 'status-msg-inline';
+  notifyStatus.textContent = 'Sending...';
+
+  try {
+    const { result } = await apiCall('/api/notifications/send', 'POST', { title, body, target });
+    notifyStatus.className = 'status-msg-inline success';
+    notifyStatus.style.color = 'var(--status-in-office)';
+    notifyStatus.textContent = result.attempted === 0
+      ? 'No one has notifications enabled yet.'
+      : `Sent to ${result.sent}/${result.attempted} device(s).`;
+    notifyTitle.value = '';
+    notifyBody.value = '';
+    await loadNotificationHistory();
+  } catch (err) {
+    notifyStatus.className = 'status-msg-inline error-text';
+    notifyStatus.textContent = err.message || 'Failed to send notification.';
+  }
+}
+
+async function loadScheduledNotifications() {
+  try {
+    const notifications = await apiCall('/api/notifications/scheduled');
+    renderScheduledNotifications(notifications);
+  } catch (err) {
+    console.error('Error loading scheduled notifications:', err);
+  }
+}
+
+function renderScheduledNotifications(notifications) {
+  notifyScheduledList.innerHTML = '';
+  notifyScheduledEmpty.classList.toggle('hidden', notifications.length > 0);
+
+  notifications.forEach(n => {
+    const row = document.createElement('div');
+    row.className = 'notify-scheduled-row';
+    const when = new Date(n.sendAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    const targetLabel = n.target === 'pending' ? 'Pending only' : 'Everyone';
+    const repeatLabel = n.repeat
+      ? ` · Repeats ${n.repeat.type === 'weekdays' ? 'weekdays' : 'daily'} at ${n.repeat.time}`
+      : '';
+    row.innerHTML = `
+      <div class="notify-scheduled-row-info">
+        <strong>${escapeHtml(n.title)}</strong>
+        <span class="help-text">Next: ${when} · ${targetLabel}${repeatLabel}</span>
+      </div>
+      <button type="button" class="btn btn-danger btn-sm">Cancel</button>
+    `;
+    row.querySelector('button').addEventListener('click', () => handleCancelScheduledNotification(n.id));
+    notifyScheduledList.appendChild(row);
+  });
+}
+
+async function handleCancelScheduledNotification(id) {
+  const confirmed = await confirmDialog('Cancel this scheduled notification?');
+  if (!confirmed) return;
+  try {
+    await apiCall(`/api/notifications/scheduled/${id}`, 'DELETE');
+    await loadScheduledNotifications();
+  } catch (err) {
+    showAlert(err.message || 'Failed to cancel scheduled notification.');
+  }
+}
+
+// --- Auto-reminder checkpoints ---
+
+let checkpoints = [];
+
+async function loadCheckpoints() {
+  try {
+    const settings = await apiCall('/api/settings/notifications');
+    checkpoints = settings.autoReminderCheckpoints;
+    renderCheckpoints();
+  } catch (err) {
+    console.error('Error loading auto-reminder checkpoints:', err);
+  }
+}
+
+function renderCheckpoints() {
+  checkpointList.innerHTML = '';
+  checkpoints.forEach((cp, index) => {
+    const row = document.createElement('div');
+    row.className = 'checkpoint-row';
+    row.innerHTML = `
+      <input type="number" class="checkpoint-minutes-input" min="1" max="720" value="${cp.minutesBefore}">
+      <span class="help-text">min before cutoff</span>
+      <label class="switch">
+        <input type="checkbox" class="checkpoint-enabled-input" ${cp.enabled ? 'checked' : ''}>
+        <span class="slider round"></span>
+      </label>
+      <button type="button" class="btn btn-icon checkpoint-remove-btn" title="Remove">
+        <span class="material-symbols-outlined">delete</span>
+      </button>
+    `;
+    row.querySelector('.checkpoint-minutes-input').addEventListener('input', (e) => {
+      checkpoints[index].minutesBefore = parseInt(e.target.value, 10) || 1;
+    });
+    row.querySelector('.checkpoint-enabled-input').addEventListener('change', (e) => {
+      checkpoints[index].enabled = e.target.checked;
+    });
+    row.querySelector('.checkpoint-remove-btn').addEventListener('click', () => {
+      checkpoints.splice(index, 1);
+      renderCheckpoints();
+    });
+    checkpointList.appendChild(row);
+  });
+}
+
+function handleAddCheckpoint() {
+  if (checkpoints.length >= 5) {
+    checkpointStatus.className = 'status-msg-inline error-text';
+    checkpointStatus.textContent = 'You can configure at most 5 checkpoints.';
+    return;
+  }
+  checkpoints.push({ minutesBefore: 15, enabled: true });
+  renderCheckpoints();
+}
+
+async function handleSaveCheckpoints() {
+  checkpointStatus.className = 'status-msg-inline';
+  checkpointStatus.textContent = 'Saving...';
+  try {
+    const settings = await apiCall('/api/settings/notifications', 'PUT', { autoReminderCheckpoints: checkpoints });
+    checkpoints = settings.autoReminderCheckpoints;
+    renderCheckpoints();
+    checkpointStatus.className = 'status-msg-inline success';
+    checkpointStatus.style.color = 'var(--status-in-office)';
+    checkpointStatus.textContent = 'Saved!';
+  } catch (err) {
+    checkpointStatus.className = 'status-msg-inline error-text';
+    checkpointStatus.textContent = err.message || 'Failed to save checkpoints.';
+  }
+}
+
+// --- Notification history ---
+
+const NOTIFY_TYPE_LABELS = {
+  'custom': 'Custom',
+  'scheduled': 'Scheduled',
+  'food-arrived': "Food's In",
+  'reminder-manual': 'Reminder',
+  'reminder-auto': 'Auto Reminder'
+};
+
+async function loadNotificationHistory() {
+  try {
+    const history = await apiCall('/api/notifications/history');
+    renderNotificationHistory(history);
+  } catch (err) {
+    console.error('Error loading notification history:', err);
+  }
+}
+
+function renderNotificationHistory(history) {
+  notifyHistoryList.innerHTML = '';
+  if (history.length === 0) {
+    notifyHistoryList.innerHTML = '<p class="help-text">Nothing sent yet.</p>';
+    return;
+  }
+  history.forEach(entry => {
+    const row = document.createElement('div');
+    row.className = 'notify-history-row';
+    const when = new Date(entry.sentAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    const typeLabel = NOTIFY_TYPE_LABELS[entry.type] || entry.type;
+    const by = entry.sentBy ? `by ${escapeHtml(entry.sentBy)}` : 'automatic';
+    const delivery = entry.result ? `${entry.result.sent}/${entry.result.attempted} delivered` : '';
+    row.innerHTML = `
+      <strong>${escapeHtml(entry.title)}</strong>
+      <span class="help-text">${escapeHtml(entry.body)}</span>
+      <span class="help-text"><span class="notify-history-type-badge">${escapeHtml(typeLabel)}</span> ${when} · ${by} · ${delivery}</span>
+    `;
+    notifyHistoryList.appendChild(row);
+  });
 }
 
 function updateHeaderDisplay() {
@@ -1477,7 +1751,6 @@ function renderFoodOrderForm() {
         <div class="menu-card-body">
           <div class="menu-card-header">
             <span class="menu-card-title">${escapeHtml(item.name)}</span>
-            ${typeof item.price === 'number' ? `<span class="menu-card-price">${formatPrice(item.price)}</span>` : ''}
           </div>
           <p class="menu-card-desc">${escapeHtml(item.description)}</p>
         </div>
@@ -3789,6 +4062,12 @@ function setupEventListeners() {
   btnDismissFoodArrived.addEventListener('click', dismissFoodArrivedBanner);
   btnEnableNotifications.addEventListener('click', enablePushNotifications);
   btnFoodArrived.addEventListener('click', handleFoodArrived);
+  btnSendNotification.addEventListener('click', handleSendNotification);
+  document.querySelectorAll('input[name="notify-when"], input[name="notify-repeat"]').forEach(radio => {
+    radio.addEventListener('change', updateNotifyScheduleUI);
+  });
+  btnAddCheckpoint.addEventListener('click', handleAddCheckpoint);
+  btnSaveCheckpoints.addEventListener('click', handleSaveCheckpoints);
 
   // Header: notification bell + user profile dropdowns
   btnNotificationBell.addEventListener('click', (e) => {

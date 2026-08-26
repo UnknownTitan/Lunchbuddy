@@ -36,6 +36,8 @@ async function ensureIndexes() {
   await db.collection('dishImages').createIndex({ companyId: 1 });
   await db.collection('branches').createIndex({ companyId: 1 });
   await db.collection('companySettings').createIndex({ companyId: 1 }, { unique: true, sparse: true });
+  await db.collection('scheduledNotifications').createIndex({ companyId: 1, status: 1, sendAt: 1 });
+  await db.collection('notificationHistory').createIndex({ companyId: 1, sentAt: -1 });
 }
 
 // Inserts the one Platform Admin account (companyId: null) from env vars,
@@ -404,6 +406,55 @@ export async function updateBranch(companyId, branchId, patch) {
 export async function deleteBranch(companyId, branchId) {
   requireCompanyId(companyId, 'deleteBranch');
   await db.collection('branches').deleteOne({ _id: branchId, companyId });
+}
+
+// ---- scheduledNotifications ----
+// One-time future-send push notifications. `target` ('all'/'pending') is
+// stored as intent, not a resolved user list — the background sweep
+// resolves who's actually "pending" at send time, not at schedule time.
+
+export async function getScheduledNotifications(companyId, { status } = {}) {
+  requireCompanyId(companyId, 'getScheduledNotifications');
+  const query = { companyId };
+  if (status) query.status = status;
+  const docs = await db.collection('scheduledNotifications').find(query).sort({ sendAt: 1 }).toArray();
+  return docs.map(({ _id, ...rest }) => rest);
+}
+
+export async function createScheduledNotification(companyId, notification) {
+  requireCompanyId(companyId, 'createScheduledNotification');
+  const doc = { _id: notification.id, ...notification, companyId };
+  await db.collection('scheduledNotifications').insertOne(doc);
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+export async function updateScheduledNotification(companyId, id, patch) {
+  requireCompanyId(companyId, 'updateScheduledNotification');
+  await db.collection('scheduledNotifications').updateOne({ _id: id, companyId }, { $set: patch });
+}
+
+// ---- notificationHistory ----
+// A unified, append-only log of every push notification the system has
+// actually sent — custom sends, scheduled/recurring sends, Food's In
+// broadcasts, manual reminders, and auto cutoff-reminders. Written from one
+// place (sendPushToUsers in server.js) so every send path is covered
+// without having to remember to log at each call site.
+
+export async function logNotificationHistory(companyId, entry) {
+  requireCompanyId(companyId, 'logNotificationHistory');
+  const doc = { _id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, ...entry, companyId };
+  await db.collection('notificationHistory').insertOne(doc);
+}
+
+export async function getNotificationHistory(companyId, { limit = 100 } = {}) {
+  requireCompanyId(companyId, 'getNotificationHistory');
+  const docs = await db.collection('notificationHistory')
+    .find({ companyId })
+    .sort({ sentAt: -1 })
+    .limit(limit)
+    .toArray();
+  return docs.map(({ _id, ...rest }) => rest);
 }
 
 // ---- history (range query for Trends) ----

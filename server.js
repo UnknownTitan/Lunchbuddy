@@ -48,7 +48,12 @@ import {
   deleteBranch,
   getHistoryInRange,
   getCompanySettings,
-  saveCompanySettings
+  saveCompanySettings,
+  getScheduledNotifications,
+  createScheduledNotification,
+  updateScheduledNotification,
+  logNotificationHistory,
+  getNotificationHistory
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -546,6 +551,7 @@ async function handleDailyResetMiddleware(req, res, next) {
       dailyState.isManuallyLocked = null; // clear override; revert to time-based
       dailyState.cutoffExtensionMinutes = 0; // clear any extra time granted yesterday
       dailyState.foodArrival = null; // clear yesterday's "food's in" broadcast
+      dailyState.autoReminderFiredMinutes = []; // let today's checkpoints fire fresh
       // Retain menu, menuPublished, cutoffTime and archiveTime — the menu
       // carries over day to day until an admin changes it
       await applyWeeklyPlansForDate(companyId, dailyState); // must run after orders={} above
@@ -1263,6 +1269,26 @@ app.post('/api/dishes/:id/image', authMiddleware, requireAdmin, async (req, res)
   await updateDish(companyId, id, { imageId: image._id, updatedAt: Date.now() });
   if (dish.imageId) {
     await deleteDishImage(companyId, dish.imageId); // replacing — old image is now unreferenced
+  }
+
+  // Unlike price (deliberately frozen at menu-build time for historical
+  // accuracy — see POST /api/menu), a photo has no "historical accuracy"
+  // concern: if today's live menu already picked this catalog dish before
+  // the photo existed, there's no reason to make the admin re-save the
+  // whole day's menu just to pick up an image. Propagate into today's
+  // still-live dailyState.menu only — archived `history` days are never
+  // touched, they stay a frozen record of what was actually shown that day.
+  const dailyState = await getDailyState(companyId);
+  let dailyStateChanged = false;
+  const updatedMenu = (dailyState.menu || []).map(item => {
+    if (item.catalogDishId === id && item.imageId !== image._id) {
+      dailyStateChanged = true;
+      return { ...item, imageId: image._id };
+    }
+    return item;
+  });
+  if (dailyStateChanged) {
+    await saveDailyState(companyId, { ...dailyState, menu: updatedMenu });
   }
 
   res.json({ success: true, imageId: image._id });
@@ -2307,49 +2333,70 @@ app.post('/api/push/unsubscribe', authMiddleware, async (req, res) => {
   res.json({ success: true });
 });
 
-// Sends a push payload to every subscribed device across one company's
-// roster. Dead subscriptions (expired/revoked — 404 or 410 from the push
+// Sends a push payload to a subset of a company's roster (by id), or the
+// whole roster if userIds is omitted — the shared primitive the Food's In
+// broadcast, reminders, and the custom notification composer all go
+// through. Dead subscriptions (expired/revoked — 404 or 410 from the push
 // service) are dropped so they stop being retried forever.
-async function sendPushToAllUsers(companyId, payload) {
+//
+// `meta` ({ type, target, sentBy }) is logged to notificationHistory in one
+// place here — every current and future send path gets full history
+// coverage automatically, rather than each call site having to remember to
+// log it. `type` is one of 'custom' | 'scheduled' | 'food-arrived' |
+// 'reminder-manual' | 'reminder-auto'; `sentBy` is a display name, or null
+// for system-triggered sends (auto-reminders, the scheduler sweep).
+async function sendPushToUsers(companyId, payload, userIds = null, meta = {}) {
+  let result = { sent: 0, attempted: 0, dropped: 0 };
+
   if (!pushEnabled) {
-    console.warn('sendPushToAllUsers: push is disabled (missing VAPID keys) — nothing sent.');
-    return;
-  }
+    console.warn('sendPushToUsers: push is disabled (missing VAPID keys) — nothing sent.');
+  } else {
+    const roster = await getRoster(companyId);
+    const targets = userIds ? roster.filter(u => userIds.includes(u.id)) : roster;
+    const body = JSON.stringify(payload);
+    let changed = false;
 
-  const roster = await getRoster(companyId);
-  const body = JSON.stringify(payload);
-  let changed = false;
-  let attempted = 0;
-  let sent = 0;
-  let dropped = 0;
+    for (const user of targets) {
+      const subs = user.pushSubscriptions || [];
+      if (subs.length === 0) continue;
 
-  for (const user of roster) {
-    const subs = user.pushSubscriptions || [];
-    if (subs.length === 0) continue;
-
-    const survivors = [];
-    for (const sub of subs) {
-      attempted++;
-      try {
-        await webpush.sendNotification(sub, body);
-        sent++;
-        survivors.push(sub);
-      } catch (err) {
-        if (err.statusCode === 404 || err.statusCode === 410) {
-          changed = true; // subscription is dead, drop it
-          dropped++;
-        } else {
-          console.error(`Push failed for ${user.name}:`, err.statusCode, err.message);
-          survivors.push(sub); // transient failure — keep it, don't drop on a fluke
+      const survivors = [];
+      for (const sub of subs) {
+        result.attempted++;
+        try {
+          await webpush.sendNotification(sub, body);
+          result.sent++;
+          survivors.push(sub);
+        } catch (err) {
+          if (err.statusCode === 404 || err.statusCode === 410) {
+            changed = true; // subscription is dead, drop it
+            result.dropped++;
+          } else {
+            console.error(`Push failed for ${user.name}:`, err.statusCode, err.message);
+            survivors.push(sub); // transient failure — keep it, don't drop on a fluke
+          }
         }
       }
+      user.pushSubscriptions = survivors; // targets are the same object refs as in `roster`
     }
-    user.pushSubscriptions = survivors;
+
+    console.log(`Push: ${result.sent}/${result.attempted} device(s) sent successfully, ${result.dropped} dead subscription(s) dropped.`);
+    if (changed) await saveRoster(companyId, roster);
   }
 
-  console.log(`Push broadcast: ${sent}/${attempted} device(s) sent successfully, ${dropped} dead subscription(s) dropped.`);
+  if (meta.type) {
+    logNotificationHistory(companyId, {
+      title: payload.title,
+      body: payload.body,
+      type: meta.type,
+      target: meta.target ?? null,
+      sentBy: meta.sentBy ?? null,
+      sentAt: Date.now(),
+      result
+    }).catch(err => console.error('Error logging notification history:', err));
+  }
 
-  if (changed) await saveRoster(companyId, roster);
+  return result;
 }
 
 // Admin/Abigail: broadcast "the food has arrived" — shows an in-app banner
@@ -2361,12 +2408,187 @@ app.post('/api/food-arrived', authMiddleware, requireAdminOrAbigail, async (req,
   dailyState.foodArrival = { at: Date.now(), by: req.user.name };
   await saveDailyState(companyId, dailyState);
 
-  sendPushToAllUsers(companyId, {
+  sendPushToUsers(companyId, {
     title: '🍽️ Lunch has arrived!',
     body: `${req.user.name} says today's food is here — come get it.`
-  }).catch(err => console.error('Error broadcasting push notifications:', err));
+  }, null, { type: 'food-arrived', target: 'all', sentBy: req.user.name })
+    .catch(err => console.error('Error broadcasting push notifications:', err));
 
   res.json({ success: true, foodArrival: dailyState.foodArrival });
+});
+
+const MAX_NOTIFICATION_TITLE_LENGTH = 80;
+const MAX_NOTIFICATION_BODY_LENGTH = 300;
+
+// Admin/Abigail: compose and send a custom push notification — to
+// everyone, or just people who haven't ordered yet today.
+// Shared title/body/target validation for both immediate and scheduled sends.
+function validateNotificationInput({ title, body, target }) {
+  if (!title || !title.trim() || !body || !body.trim()) {
+    return 'A title and message body are required.';
+  }
+  if (title.length > MAX_NOTIFICATION_TITLE_LENGTH) {
+    return `Title must be ${MAX_NOTIFICATION_TITLE_LENGTH} characters or fewer.`;
+  }
+  if (body.length > MAX_NOTIFICATION_BODY_LENGTH) {
+    return `Message must be ${MAX_NOTIFICATION_BODY_LENGTH} characters or fewer.`;
+  }
+  if (target !== 'all' && target !== 'pending') {
+    return "target must be 'all' or 'pending'.";
+  }
+  return null;
+}
+
+// Resolves 'pending' (not-yet-ordered) user ids fresh at send time — used
+// both for an immediate send and, more importantly, for a scheduled one
+// where the pending set may have changed a lot since it was scheduled.
+async function resolvePendingUserIds(companyId) {
+  const [dailyState, roster] = await Promise.all([getDailyState(companyId), getRoster(companyId)]);
+  const orders = dailyState.orders || {};
+  return roster.filter(u => !orders[u.id]).map(u => u.id);
+}
+
+app.post('/api/notifications/send', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const { title, body, target } = req.body;
+  const validationError = validateNotificationInput({ title, body, target });
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  const companyId = req.user.companyId;
+  let userIds = null;
+
+  if (target === 'pending') {
+    userIds = await resolvePendingUserIds(companyId);
+    if (userIds.length === 0) {
+      return res.json({ success: true, message: 'No pending users to notify.', result: { sent: 0, attempted: 0, dropped: 0 } });
+    }
+  }
+
+  const result = await sendPushToUsers(companyId, { title: title.trim(), body: body.trim() }, userIds, {
+    type: 'custom',
+    target,
+    sentBy: req.user.name
+  });
+  res.json({ success: true, result });
+});
+
+// Admin/Abigail: schedule a custom notification for a future time. Target
+// (all/pending) is resolved fresh when the background sweep actually sends
+// it, not at schedule-creation time.
+// `repeat` is either omitted/null (one-time — client sends an exact
+// `sendAt` timestamp) or { type: 'daily'|'weekdays', time: 'HH:MM' } (client
+// sends a time only; the first occurrence is computed here).
+app.post('/api/notifications/schedule', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const { title, body, target, sendAt, repeat } = req.body;
+  const validationError = validateNotificationInput({ title, body, target });
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  let sendAtMs;
+  let normalizedRepeat = null;
+  if (repeat) {
+    if (repeat.type !== 'daily' && repeat.type !== 'weekdays') {
+      return res.status(400).json({ error: "repeat.type must be 'daily' or 'weekdays'." });
+    }
+    if (!/^\d{2}:\d{2}$/.test(repeat.time || '')) {
+      return res.status(400).json({ error: 'repeat.time must be in HH:MM format.' });
+    }
+    normalizedRepeat = { type: repeat.type, time: repeat.time };
+    sendAtMs = computeNextOccurrence(repeat.time, Date.now(), repeat.type === 'weekdays');
+  } else {
+    sendAtMs = Number(sendAt);
+    if (!Number.isFinite(sendAtMs) || sendAtMs <= Date.now()) {
+      return res.status(400).json({ error: 'Scheduled time must be in the future.' });
+    }
+  }
+
+  const companyId = req.user.companyId;
+  const notification = {
+    id: `sched-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    title: title.trim(),
+    body: body.trim(),
+    target,
+    sendAt: sendAtMs,
+    repeat: normalizedRepeat,
+    status: 'pending',
+    createdBy: req.user.name,
+    createdAt: Date.now()
+  };
+  const saved = await createScheduledNotification(companyId, notification);
+  res.status(201).json(saved);
+});
+
+// Admin/Abigail: list upcoming (not-yet-sent) scheduled notifications
+app.get('/api/notifications/scheduled', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const notifications = await getScheduledNotifications(req.user.companyId, { status: 'pending' });
+  res.json(notifications);
+});
+
+// Admin/Abigail: cancel a pending scheduled notification
+app.delete('/api/notifications/scheduled/:id', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const companyId = req.user.companyId;
+  const notifications = await getScheduledNotifications(companyId, { status: 'pending' });
+  const target = notifications.find(n => n.id === req.params.id);
+  if (!target) {
+    return res.status(404).json({ error: 'Scheduled notification not found.' });
+  }
+  await updateScheduledNotification(companyId, req.params.id, { status: 'cancelled' });
+  res.json({ success: true });
+});
+
+// Admin/Abigail: unified send history — every push notification the system
+// has actually sent (custom, scheduled/recurring, Food's In, manual and
+// auto reminders), logged in one place inside sendPushToUsers.
+app.get('/api/notifications/history', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const history = await getNotificationHistory(req.user.companyId, { limit: 100 });
+  res.json(history);
+});
+
+const MAX_AUTO_REMINDER_CHECKPOINTS = 5;
+
+// Admin: current auto-reminder checkpoint configuration (falls back to the
+// single-15-minutes default when a company hasn't customized it).
+app.get('/api/settings/notifications', authMiddleware, requireAdmin, async (req, res) => {
+  const settings = await getCompanySettings(req.user.companyId);
+  res.json({
+    autoReminderCheckpoints: settings.autoReminderCheckpoints && settings.autoReminderCheckpoints.length > 0
+      ? settings.autoReminderCheckpoints
+      : DEFAULT_AUTO_REMINDER_CHECKPOINTS
+  });
+});
+
+// Admin: replace the full set of auto-reminder checkpoints (each an
+// independent "X minutes before cutoff" nudge to anyone still pending).
+app.put('/api/settings/notifications', authMiddleware, requireAdmin, async (req, res) => {
+  const { autoReminderCheckpoints } = req.body;
+  if (!Array.isArray(autoReminderCheckpoints) || autoReminderCheckpoints.length === 0) {
+    return res.status(400).json({ error: 'autoReminderCheckpoints must be a non-empty array.' });
+  }
+  if (autoReminderCheckpoints.length > MAX_AUTO_REMINDER_CHECKPOINTS) {
+    return res.status(400).json({ error: `You can configure at most ${MAX_AUTO_REMINDER_CHECKPOINTS} checkpoints.` });
+  }
+  const minutesSeen = new Set();
+  for (const checkpoint of autoReminderCheckpoints) {
+    const minutes = checkpoint.minutesBefore;
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 720) {
+      return res.status(400).json({ error: 'Each minutesBefore must be a whole number between 1 and 720.' });
+    }
+    if (minutesSeen.has(minutes)) {
+      return res.status(400).json({ error: 'Checkpoints must have distinct minutesBefore values.' });
+    }
+    minutesSeen.add(minutes);
+  }
+
+  const normalized = autoReminderCheckpoints
+    .map(c => ({ minutesBefore: c.minutesBefore, enabled: c.enabled !== false }))
+    .sort((a, b) => b.minutesBefore - a.minutesBefore);
+
+  const companyId = req.user.companyId;
+  const current = await getCompanySettings(companyId);
+  await saveCompanySettings(companyId, { ...current, autoReminderCheckpoints: normalized });
+  res.json({ autoReminderCheckpoints: normalized });
 });
 
 // --- Reminders Endpoints ---
@@ -2405,9 +2627,6 @@ app.post('/api/reminders/send', authMiddleware, requireAdminOrAbigail, async (re
   const notified = [];
 
   for (const user of usersToRemind) {
-    const method = user.email ? 'email' : user.phone ? 'SMS' : 'Console';
-    console.log(`[MOCK NOTIFICATION] Sent reminder to ${user.name} via ${method} - "Hi ${user.name}, please log your lunch choice today before cutoff."`);
-
     const logEntry = {
       id: `rem-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       date: dailyState.date || getLocalDateString(),
@@ -2422,6 +2641,13 @@ app.post('/api/reminders/send', authMiddleware, requireAdminOrAbigail, async (re
   }
 
   await saveRemindersLog(companyId, logs);
+
+  sendPushToUsers(companyId, {
+    title: '🍽️ Lunch reminder',
+    body: `Hi! Please log your lunch choice today before cutoff.`
+  }, notified.map(u => u.id), { type: 'reminder-manual', target: bulk ? 'pending' : 'single', sentBy: req.user.name })
+    .catch(err => console.error('Error sending reminder push notifications:', err));
+
   res.json({ success: true, message: `Successfully sent reminders to ${notified.length} members.`, reminded: notified });
 });
 
@@ -2436,67 +2662,145 @@ app.get('/api/reminders/logs', authMiddleware, requireAdminOrAbigail, async (req
 });
 
 // --- Background Automated Reminders Scheduler ---
+// Fallback when a company hasn't configured any checkpoints of its own —
+// matches the single hardcoded "15 minutes before cutoff" this replaced.
+const DEFAULT_AUTO_REMINDER_CHECKPOINTS = [{ minutesBefore: 15, enabled: true }];
+
 async function checkAndSendAutoRemindersForCompany(companyId) {
-  const dailyState = await getDailyState(companyId);
+  const [dailyState, companySettings] = await Promise.all([getDailyState(companyId), getCompanySettings(companyId)]);
   if (!dailyState.date || !dailyState.cutoffTime) return;
 
-  const systemDate = getLocalDateString();
-  if (dailyState.autoReminderSentDate === systemDate) {
-    return; // Already triggered automated alerts today
-  }
+  const checkpoints = (companySettings.autoReminderCheckpoints && companySettings.autoReminderCheckpoints.length > 0)
+    ? companySettings.autoReminderCheckpoints
+    : DEFAULT_AUTO_REMINDER_CHECKPOINTS;
 
   const [cutoffHour, cutoffMin] = dailyState.cutoffTime.split(':').map(Number);
   const now = new Date();
   const cutoffTimeMs = new Date(now.getFullYear(), now.getMonth(), now.getDate(), cutoffHour, cutoffMin, 0, 0).getTime();
-  const reminderTimeMs = cutoffTimeMs - 15 * 60 * 1000; // 15 mins before cutoff time
   const currentTimeMs = now.getTime();
 
-  // Trigger alerts if within the 15 minute warning window
-  if (currentTimeMs >= reminderTimeMs && currentTimeMs < cutoffTimeMs) {
+  // Which checkpoints already fired today — reset to [] whenever the
+  // business date rolls over (see handleDailyResetMiddleware), so this
+  // field only ever reflects "today," no date comparison needed here.
+  const firedMinutes = new Set(dailyState.autoReminderFiredMinutes || []);
+  let changed = false;
+
+  for (const checkpoint of checkpoints) {
+    if (!checkpoint.enabled || firedMinutes.has(checkpoint.minutesBefore)) continue;
+
+    const checkpointTimeMs = cutoffTimeMs - checkpoint.minutesBefore * 60 * 1000;
+    if (currentTimeMs < checkpointTimeMs || currentTimeMs >= cutoffTimeMs) continue;
+
     const roster = await getRoster(companyId);
     const checkedInUserIds = new Set(Object.keys(dailyState.orders || {}));
     const pendingUsers = roster.filter(u => !checkedInUserIds.has(u.id));
 
     if (pendingUsers.length > 0) {
+      console.log(`[AUTO REMINDER] Cutoff locks in ${checkpoint.minutesBefore} minutes for ${companyId}. Auto-notifying ${pendingUsers.length} unconfirmed users.`);
+
+      // Per-user log entries drive each person's own dismissible "you were
+      // reminded" banner (see myReminder in GET /api/daily) — distinct from
+      // sendPushToUsers' notificationHistory write below, which is the
+      // admin-facing "what did the system send" audit log.
       const logs = await getRemindersLog(companyId);
-      console.log(`[AUTO REMINDER] Cutoff locks in 15 minutes for ${companyId}. Auto-notifying ${pendingUsers.length} unconfirmed users.`);
-
       for (const user of pendingUsers) {
-        const method = user.email ? 'email' : user.phone ? 'SMS' : 'Console';
-        console.log(`[MOCK NOTIFICATION] Auto-sent cutoff warning to ${user.name} via ${method}`);
-
         logs.push({
           id: `rem-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
           date: dailyState.date,
           userId: user.id,
           userName: user.name,
-          type: 'auto-cutoff-15m',
+          type: 'auto-cutoff',
           sentAt: new Date().toISOString()
         });
       }
       await saveRemindersLog(companyId, logs);
+
+      await sendPushToUsers(companyId, {
+        title: `⏰ Cutoff in ${checkpoint.minutesBefore} minutes`,
+        body: 'You haven\'t placed a lunch order yet today — pick your dish before the cutoff.'
+      }, pendingUsers.map(u => u.id), { type: 'reminder-auto', target: 'pending', sentBy: null });
     }
 
-    dailyState.autoReminderSentDate = systemDate;
+    firedMinutes.add(checkpoint.minutesBefore);
+    changed = true;
+  }
+
+  if (changed) {
+    dailyState.autoReminderFiredMinutes = [...firedMinutes];
     await saveDailyState(companyId, dailyState);
   }
 }
 
-// Sweeps every company each tick, one try/catch per company so one
-// company's failure can't abort the rest.
-async function runAutoReminderSweep() {
+// Sends any scheduled notification whose sendAt has arrived. 'pending'
+// target is resolved right now, not at schedule time — the set of people
+// who haven't ordered yet can look very different an hour later.
+// Computes the next occurrence of `time` (HH:MM) strictly after `afterMs`,
+// optionally skipping Sat/Sun for weekday-only repeats.
+function computeNextOccurrence(time, afterMs, weekdaysOnly) {
+  const [h, m] = time.split(':').map(Number);
+  const d = new Date(afterMs);
+  d.setHours(h, m, 0, 0);
+  if (d.getTime() <= afterMs) d.setDate(d.getDate() + 1);
+  if (weekdaysOnly) {
+    while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  }
+  return d.getTime();
+}
+
+async function checkScheduledNotificationsForCompany(companyId) {
+  const due = await getScheduledNotifications(companyId, { status: 'pending' });
+  const now = Date.now();
+
+  for (const notification of due) {
+    if (notification.sendAt > now) continue; // sorted by sendAt, but don't assume
+
+    let userIds = null;
+    if (notification.target === 'pending') {
+      userIds = await resolvePendingUserIds(companyId);
+    }
+
+    try {
+      await sendPushToUsers(companyId, { title: notification.title, body: notification.body }, userIds, {
+        type: 'scheduled',
+        target: notification.target,
+        sentBy: notification.createdBy
+      });
+    } catch (err) {
+      console.error(`Error sending scheduled notification ${notification.id}:`, err);
+    }
+
+    if (notification.repeat) {
+      // Recurring — compute the next occurrence from its OWN scheduled time
+      // (not "now"), so a slow or delayed tick never causes drift, and stay
+      // 'pending' so the sweep picks it up again next time.
+      const nextSendAt = computeNextOccurrence(notification.repeat.time, notification.sendAt, notification.repeat.type === 'weekdays');
+      await updateScheduledNotification(companyId, notification.id, { sendAt: nextSendAt, lastSentAt: Date.now() });
+    } else {
+      await updateScheduledNotification(companyId, notification.id, { status: 'sent', sentAt: Date.now() });
+    }
+  }
+}
+
+// Sweeps every company each tick, one try/catch per company (and per sweep
+// type) so one company's or one sweep's failure can't abort the rest.
+async function runBackgroundSweep() {
   const companies = await getCompanies();
   for (const company of companies) {
     try {
       await checkAndSendAutoRemindersForCompany(company._id);
     } catch (err) {
-      console.error(`Error in background reminder loop for ${company._id}:`, err);
+      console.error(`Error in auto-reminder sweep for ${company._id}:`, err);
+    }
+    try {
+      await checkScheduledNotificationsForCompany(company._id);
+    } catch (err) {
+      console.error(`Error in scheduled notification sweep for ${company._id}:`, err);
     }
   }
 }
 
 // Check every minute
-setInterval(runAutoReminderSweep, 60 * 1000);
+setInterval(runBackgroundSweep, 60 * 1000);
 
 // Start express server
 app.listen(PORT, () => {

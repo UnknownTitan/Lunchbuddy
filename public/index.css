@@ -530,6 +530,130 @@ button.mobile-menu-toggle {
   background: var(--status-in-office-bg);
 }
 
+.notify-target-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.notify-target-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 400;
+  cursor: pointer;
+}
+
+.notify-target-option input[type="radio"] {
+  width: auto;
+}
+
+.notify-scheduled-list {
+  margin-top: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.notify-scheduled-list:empty {
+  margin-top: 0;
+}
+
+.notify-scheduled-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-sm);
+}
+
+.notify-scheduled-row-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.notify-scheduled-row-info strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkpoint-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.checkpoint-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-sm);
+}
+
+.checkpoint-row input[type="number"] {
+  width: 70px;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.checkpoint-row .help-text {
+  flex: 1;
+}
+
+.checkpoint-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.notify-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+.notify-history-row {
+  padding: 0.6rem 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.notify-history-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notify-history-type-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
 .card-header {
   margin-bottom: 1.5rem;
 }

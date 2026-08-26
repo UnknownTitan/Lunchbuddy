@@ -270,6 +270,10 @@
           <span class="material-symbols-outlined">trending_up</span>
           <span>Trends</span>
         </button>
+        <button class="nav-tab admin-abigail-only hidden" data-target="notifications-tab" id="nav-tab-notifications">
+          <span class="material-symbols-outlined">notifications_active</span>
+          <span>Notifications</span>
+        </button>
         <button class="nav-tab" data-target="my-orders-tab" id="nav-tab-my-orders">
           <span class="material-symbols-outlined">receipt_long</span>
           <span>My Orders</span>
@@ -1081,6 +1085,140 @@
             </div>
             <div class="trends-chart-wrap">
               <canvas id="trends-popularity-chart"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB: NOTIFICATIONS -->
+        <section class="tab-panel" id="notifications-tab">
+          <div class="admin-grid">
+            <div class="admin-col-main">
+
+              <!-- Compose -->
+              <div class="panel-card">
+                <div class="card-header">
+                  <h2>Send Notification</h2>
+                  <p>Write your own push notification and send it to the team.</p>
+                </div>
+
+                <div class="form-group">
+                  <label for="notify-title">Title</label>
+                  <input type="text" id="notify-title" maxlength="80" placeholder="e.g. Menu change today">
+                </div>
+
+                <div class="form-group">
+                  <label for="notify-body">Message</label>
+                  <textarea id="notify-body" class="bulk-textarea" maxlength="300" rows="3" placeholder="e.g. We're out of Waakye today, please pick something else."></textarea>
+                </div>
+
+                <div class="form-group">
+                  <label>Send to</label>
+                  <div class="notify-target-picker">
+                    <label class="notify-target-option">
+                      <input type="radio" name="notify-target" value="all" checked>
+                      <span>Everyone</span>
+                    </label>
+                    <label class="notify-target-option">
+                      <input type="radio" name="notify-target" value="pending">
+                      <span>Only people who haven't ordered yet</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="form-group">
+                  <label>When</label>
+                  <div class="notify-target-picker">
+                    <label class="notify-target-option">
+                      <input type="radio" name="notify-when" value="now" checked>
+                      <span>Send now</span>
+                    </label>
+                    <label class="notify-target-option">
+                      <input type="radio" name="notify-when" value="later">
+                      <span>Schedule for later</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="form-group hidden" id="notify-repeat-group">
+                  <label>Repeat</label>
+                  <div class="notify-target-picker">
+                    <label class="notify-target-option">
+                      <input type="radio" name="notify-repeat" value="once" checked>
+                      <span>One-time</span>
+                    </label>
+                    <label class="notify-target-option">
+                      <input type="radio" name="notify-repeat" value="daily">
+                      <span>Every day</span>
+                    </label>
+                    <label class="notify-target-option">
+                      <input type="radio" name="notify-repeat" value="weekdays">
+                      <span>Weekdays (Mon–Fri)</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="form-group hidden" id="notify-schedule-once-group">
+                  <label for="notify-schedule-time">Send at</label>
+                  <input type="datetime-local" id="notify-schedule-time">
+                </div>
+
+                <div class="form-group hidden" id="notify-schedule-repeat-group">
+                  <label for="notify-schedule-repeat-time">Time</label>
+                  <input type="time" id="notify-schedule-repeat-time">
+                </div>
+
+                <button type="button" class="btn btn-primary btn-block btn-icon-text" id="btn-send-notification">
+                  <span class="material-symbols-outlined">campaign</span>
+                  <span id="btn-send-notification-label">Send</span>
+                </button>
+                <p id="notify-status" class="status-msg-inline"></p>
+              </div>
+
+              <!-- Upcoming -->
+              <div class="panel-card">
+                <div class="card-header">
+                  <h2>Upcoming</h2>
+                  <p>Scheduled and recurring notifications not yet sent (or due to repeat).</p>
+                </div>
+                <div class="notify-scheduled-list" id="notify-scheduled-list">
+                  <!-- Populated by JS -->
+                </div>
+                <p class="help-text hidden" id="notify-scheduled-empty">Nothing scheduled right now.</p>
+              </div>
+
+            </div>
+            <div class="admin-col-side">
+
+              <!-- Frequency -->
+              <div class="panel-card">
+                <div class="card-header">
+                  <h2>Auto-Reminder Frequency</h2>
+                  <p>Automatic "you haven't ordered yet" nudges before cutoff. Each checkpoint fires independently.</p>
+                </div>
+                <div class="checkpoint-list" id="checkpoint-list">
+                  <!-- Populated by JS -->
+                </div>
+                <div class="checkpoint-actions">
+                  <button type="button" class="btn btn-secondary btn-sm btn-icon-text" id="btn-add-checkpoint">
+                    <span class="material-symbols-outlined">add</span>
+                    <span>Add Checkpoint</span>
+                  </button>
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-save-checkpoints">Save</button>
+                </div>
+                <p id="checkpoint-status" class="status-msg-inline"></p>
+              </div>
+
+              <!-- History -->
+              <div class="panel-card">
+                <div class="card-header">
+                  <h2>History</h2>
+                  <p>Every push notification the system has sent, most recent first.</p>
+                </div>
+                <div class="notify-history-list" id="notify-history-list">
+                  <!-- Populated by JS -->
+                </div>
+              </div>
+
             </div>
           </div>
         </section>
