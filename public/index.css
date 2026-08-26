@@ -536,6 +536,22 @@ button.mobile-menu-toggle {
   gap: 0.5rem;
 }
 
+.notify-editing-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 1.2rem;
+  background: var(--status-pending-bg, var(--bg-tertiary));
+  border: 1px solid var(--status-pending-border, var(--card-border));
+  border-radius: var(--border-radius-sm);
+  font-size: 0.85rem;
+}
+
+.notify-editing-banner .btn {
+  margin-left: auto;
+}
+
 .notify-target-option {
   display: flex;
   align-items: center;
@@ -569,6 +585,12 @@ button.mobile-menu-toggle {
   background: var(--bg-secondary);
   border: 1px solid var(--card-border);
   border-radius: var(--border-radius-sm);
+}
+
+.notify-scheduled-row-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-shrink: 0;
 }
 
 .notify-scheduled-row-info {

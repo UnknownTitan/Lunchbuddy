@@ -183,6 +183,8 @@ const btnAddCheckpoint = document.getElementById('btn-add-checkpoint');
 const btnSaveCheckpoints = document.getElementById('btn-save-checkpoints');
 const checkpointStatus = document.getElementById('checkpoint-status');
 const notifyHistoryList = document.getElementById('notify-history-list');
+const notifyEditingBanner = document.getElementById('notify-editing-banner');
+const btnCancelEditNotification = document.getElementById('btn-cancel-edit-notification');
 const countdownText = document.getElementById('countdown-text');
 const orderFormCard = document.getElementById('order-form-card');
 const orderForm = document.getElementById('order-form');
@@ -1128,6 +1130,8 @@ async function handleFoodArrived() {
   }
 }
 
+let editingScheduledId = null;
+
 function updateNotifyScheduleUI() {
   const when = document.querySelector('input[name="notify-when"]:checked')?.value || 'now';
   const repeat = document.querySelector('input[name="notify-repeat"]:checked')?.value || 'once';
@@ -1137,7 +1141,56 @@ function updateNotifyScheduleUI() {
   notifyRepeatGroup.classList.toggle('hidden', !isLater);
   notifyScheduleOnceGroup.classList.toggle('hidden', !isLater || isRepeating);
   notifyScheduleRepeatGroup.classList.toggle('hidden', !isRepeating);
-  btnSendNotificationLabel.textContent = isLater ? 'Schedule' : 'Send';
+
+  // Choosing "Send now" while editing a scheduled item doesn't map onto
+  // anything the edit endpoint can do — treat it as abandoning the edit
+  // and falling back to composing a fresh immediate send.
+  if (editingScheduledId && !isLater) {
+    cancelEditScheduledNotification();
+    return;
+  }
+
+  btnSendNotificationLabel.textContent = editingScheduledId ? 'Update' : (isLater ? 'Schedule' : 'Send');
+}
+
+function startEditScheduledNotification(n) {
+  editingScheduledId = n.id;
+  notifyEditingBanner.classList.remove('hidden');
+
+  notifyTitle.value = n.title;
+  notifyBody.value = n.body;
+  document.querySelector(`input[name="notify-target"][value="${n.target}"]`).checked = true;
+  document.querySelector('input[name="notify-when"][value="later"]').checked = true;
+
+  if (n.repeat) {
+    document.querySelector(`input[name="notify-repeat"][value="${n.repeat.type}"]`).checked = true;
+    notifyScheduleRepeatTime.value = n.repeat.time;
+    notifyScheduleTime.value = '';
+  } else {
+    document.querySelector('input[name="notify-repeat"][value="once"]').checked = true;
+    // datetime-local wants local time with no timezone/seconds
+    const d = new Date(n.sendAt);
+    const pad = (x) => String(x).padStart(2, '0');
+    notifyScheduleTime.value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  updateNotifyScheduleUI();
+  notifyStatus.className = 'status-msg-inline';
+  notifyStatus.textContent = '';
+  notifyTitle.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function cancelEditScheduledNotification() {
+  editingScheduledId = null;
+  notifyEditingBanner.classList.add('hidden');
+  notifyTitle.value = '';
+  notifyBody.value = '';
+  notifyScheduleTime.value = '';
+  notifyScheduleRepeatTime.value = '';
+  document.querySelector('input[name="notify-target"][value="all"]').checked = true;
+  document.querySelector('input[name="notify-when"][value="now"]').checked = true;
+  document.querySelector('input[name="notify-repeat"][value="once"]').checked = true;
+  updateNotifyScheduleUI();
 }
 
 async function handleSendNotification() {
@@ -1181,25 +1234,29 @@ async function handleSendNotification() {
     }
 
     const whenLabel = repeat === 'once' ? '' : repeat === 'daily' ? ' every day' : ' on weekdays';
-    const confirmed = await confirmDialog(`Schedule this notification${whenLabel} for ${targetLabel}?`);
+    const isEditing = !!editingScheduledId;
+    const confirmed = await confirmDialog(
+      `${isEditing ? 'Update this scheduled' : 'Schedule this'} notification${whenLabel} for ${targetLabel}?`
+    );
     if (!confirmed) return;
 
     notifyStatus.className = 'status-msg-inline';
-    notifyStatus.textContent = 'Scheduling...';
+    notifyStatus.textContent = isEditing ? 'Updating...' : 'Scheduling...';
 
     try {
-      await apiCall('/api/notifications/schedule', 'POST', payload);
+      if (isEditing) {
+        await apiCall(`/api/notifications/scheduled/${editingScheduledId}`, 'PUT', payload);
+      } else {
+        await apiCall('/api/notifications/schedule', 'POST', payload);
+      }
       notifyStatus.className = 'status-msg-inline success';
       notifyStatus.style.color = 'var(--status-in-office)';
-      notifyStatus.textContent = 'Notification scheduled!';
-      notifyTitle.value = '';
-      notifyBody.value = '';
-      notifyScheduleTime.value = '';
-      notifyScheduleRepeatTime.value = '';
+      notifyStatus.textContent = isEditing ? 'Notification updated!' : 'Notification scheduled!';
+      cancelEditScheduledNotification();
       await loadScheduledNotifications();
     } catch (err) {
       notifyStatus.className = 'status-msg-inline error-text';
-      notifyStatus.textContent = err.message || 'Failed to schedule notification.';
+      notifyStatus.textContent = err.message || 'Failed to save notification.';
     }
     return;
   }
@@ -1252,9 +1309,13 @@ function renderScheduledNotifications(notifications) {
         <strong>${escapeHtml(n.title)}</strong>
         <span class="help-text">Next: ${when} · ${targetLabel}${repeatLabel}</span>
       </div>
-      <button type="button" class="btn btn-danger btn-sm">Cancel</button>
+      <div class="notify-scheduled-row-actions">
+        <button type="button" class="btn btn-secondary btn-sm">Edit</button>
+        <button type="button" class="btn btn-danger btn-sm">Cancel</button>
+      </div>
     `;
-    row.querySelector('button').addEventListener('click', () => handleCancelScheduledNotification(n.id));
+    row.querySelector('.btn-secondary').addEventListener('click', () => startEditScheduledNotification(n));
+    row.querySelector('.btn-danger').addEventListener('click', () => handleCancelScheduledNotification(n.id));
     notifyScheduledList.appendChild(row);
   });
 }
@@ -4068,6 +4129,7 @@ function setupEventListeners() {
   });
   btnAddCheckpoint.addEventListener('click', handleAddCheckpoint);
   btnSaveCheckpoints.addEventListener('click', handleSaveCheckpoints);
+  btnCancelEditNotification.addEventListener('click', cancelEditScheduledNotification);
 
   // Header: notification bell + user profile dropdowns
   btnNotificationBell.addEventListener('click', (e) => {

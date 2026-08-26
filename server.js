@@ -2479,6 +2479,29 @@ app.post('/api/notifications/send', authMiddleware, requireAdminOrAbigail, async
 // `repeat` is either omitted/null (one-time — client sends an exact
 // `sendAt` timestamp) or { type: 'daily'|'weekdays', time: 'HH:MM' } (client
 // sends a time only; the first occurrence is computed here).
+// Shared by create and edit: resolves either an exact one-time `sendAt` or
+// a { type, time } repeat rule into { sendAtMs, normalizedRepeat }, or
+// returns a string error message.
+function resolveScheduleTiming({ sendAt, repeat }) {
+  if (repeat) {
+    if (repeat.type !== 'daily' && repeat.type !== 'weekdays') {
+      return "repeat.type must be 'daily' or 'weekdays'.";
+    }
+    if (!/^\d{2}:\d{2}$/.test(repeat.time || '')) {
+      return 'repeat.time must be in HH:MM format.';
+    }
+    return {
+      normalizedRepeat: { type: repeat.type, time: repeat.time },
+      sendAtMs: computeNextOccurrence(repeat.time, Date.now(), repeat.type === 'weekdays')
+    };
+  }
+  const sendAtMs = Number(sendAt);
+  if (!Number.isFinite(sendAtMs) || sendAtMs <= Date.now()) {
+    return 'Scheduled time must be in the future.';
+  }
+  return { normalizedRepeat: null, sendAtMs };
+}
+
 app.post('/api/notifications/schedule', authMiddleware, requireAdminOrAbigail, async (req, res) => {
   const { title, body, target, sendAt, repeat } = req.body;
   const validationError = validateNotificationInput({ title, body, target });
@@ -2486,22 +2509,9 @@ app.post('/api/notifications/schedule', authMiddleware, requireAdminOrAbigail, a
     return res.status(400).json({ error: validationError });
   }
 
-  let sendAtMs;
-  let normalizedRepeat = null;
-  if (repeat) {
-    if (repeat.type !== 'daily' && repeat.type !== 'weekdays') {
-      return res.status(400).json({ error: "repeat.type must be 'daily' or 'weekdays'." });
-    }
-    if (!/^\d{2}:\d{2}$/.test(repeat.time || '')) {
-      return res.status(400).json({ error: 'repeat.time must be in HH:MM format.' });
-    }
-    normalizedRepeat = { type: repeat.type, time: repeat.time };
-    sendAtMs = computeNextOccurrence(repeat.time, Date.now(), repeat.type === 'weekdays');
-  } else {
-    sendAtMs = Number(sendAt);
-    if (!Number.isFinite(sendAtMs) || sendAtMs <= Date.now()) {
-      return res.status(400).json({ error: 'Scheduled time must be in the future.' });
-    }
+  const timing = resolveScheduleTiming({ sendAt, repeat });
+  if (typeof timing === 'string') {
+    return res.status(400).json({ error: timing });
   }
 
   const companyId = req.user.companyId;
@@ -2510,14 +2520,48 @@ app.post('/api/notifications/schedule', authMiddleware, requireAdminOrAbigail, a
     title: title.trim(),
     body: body.trim(),
     target,
-    sendAt: sendAtMs,
-    repeat: normalizedRepeat,
+    sendAt: timing.sendAtMs,
+    repeat: timing.normalizedRepeat,
     status: 'pending',
     createdBy: req.user.name,
     createdAt: Date.now()
   };
   const saved = await createScheduledNotification(companyId, notification);
   res.status(201).json(saved);
+});
+
+// Admin/Abigail: edit a pending scheduled/recurring notification (title,
+// body, target, and/or when it sends). Re-resolves sendAt from scratch —
+// switching from one-time to recurring (or changing the repeat time) takes
+// effect on save, same as creating fresh.
+app.put('/api/notifications/scheduled/:id', authMiddleware, requireAdminOrAbigail, async (req, res) => {
+  const { title, body, target, sendAt, repeat } = req.body;
+  const validationError = validateNotificationInput({ title, body, target });
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  const timing = resolveScheduleTiming({ sendAt, repeat });
+  if (typeof timing === 'string') {
+    return res.status(400).json({ error: timing });
+  }
+
+  const companyId = req.user.companyId;
+  const notifications = await getScheduledNotifications(companyId, { status: 'pending' });
+  const existing = notifications.find(n => n.id === req.params.id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Scheduled notification not found.' });
+  }
+
+  const patch = {
+    title: title.trim(),
+    body: body.trim(),
+    target,
+    sendAt: timing.sendAtMs,
+    repeat: timing.normalizedRepeat
+  };
+  await updateScheduledNotification(companyId, req.params.id, patch);
+  res.json({ ...existing, ...patch });
 });
 
 // Admin/Abigail: list upcoming (not-yet-sent) scheduled notifications
