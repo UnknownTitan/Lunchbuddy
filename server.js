@@ -124,6 +124,294 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// Branded HTML template for the passcode-reset email. {{FirstName}}/
+// {{reset_link}} are the only two dynamic slots — name comes in
+// pre-escaped (see escapeHtml above), resetUrl is server-built (see
+// APP_BASE_URL above), never caller-supplied, so no separate escaping
+// needed for it.
+//
+// Image assets live in public/assets/email-template/ and are referenced
+// by absolute URL (email clients fetch images over the internet — a
+// relative path or local file won't resolve) via imgBase, which falls
+// back to req-derived host exactly like resetUrl's APP_BASE_URL does.
+function buildResetEmailHtml(safeName, resetUrl, imgBase) {
+  const img = (file) => `${imgBase}/assets/email-template/${file}`;
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lunch Buddy - Password Reset</title>
+<style>
+    body {
+        margin: 0;
+        padding: 0;
+        background: #f5f5fb;
+        font-family: Arial, Helvetica, sans-serif;
+        color: #1f2937;
+    }
+
+    .container {
+        max-width: 700px;
+        margin: 0 auto;
+        background: #ffffff;
+    }
+
+    .header {
+        background: #ffffff;
+        padding: 32px 40px;
+        border-bottom: 1px solid #ede9fe;
+    }
+
+    .logo {
+        height: 36px;
+        display: block;
+    }
+
+    .content {
+        padding: 40px;
+    }
+
+    .hero-title {
+        font-size: 42px;
+        font-weight: bold;
+        color: #111827;
+        margin-bottom: 20px;
+    }
+
+    .greeting {
+        font-size: 28px;
+        font-weight: 600;
+        margin-bottom: 20px;
+    }
+
+    .greeting span {
+        color: #7C5CFC;
+    }
+
+    .body-text {
+        font-size: 18px;
+        line-height: 1.7;
+        color: #4b5563;
+        margin-bottom: 35px;
+    }
+
+    .button {
+        display: inline-block;
+        background: linear-gradient(135deg, #7C5CFC 0%, #6B46F6 100%);
+        color: #ffffff !important;
+        text-decoration: none;
+        padding: 18px 40px;
+        border-radius: 12px;
+        font-size: 20px;
+        font-weight: bold;
+    }
+
+    .card {
+        margin-top: 35px;
+        border-radius: 18px;
+        padding: 28px;
+    }
+
+    .security {
+        background: #f7f4ff;
+    }
+
+    .tip {
+        background: #fffaf0;
+    }
+
+    .card-title {
+        font-size: 24px;
+        font-weight: 700;
+        margin-bottom: 10px;
+    }
+
+    .card-text {
+        font-size: 17px;
+        line-height: 1.6;
+        color: #4b5563;
+    }
+
+    .highlight {
+        color: #7C5CFC;
+        font-weight: bold;
+    }
+
+    .support {
+        border-top: 1px solid #e5e7eb;
+        margin-top: 40px;
+        padding-top: 30px;
+    }
+
+    .support-title {
+        font-size: 24px;
+        font-weight: bold;
+    }
+
+    .support-email {
+        color: #7C5CFC;
+        text-decoration: none;
+        font-weight: bold;
+        font-size: 18px;
+    }
+
+    .footer {
+        background: #faf8ff;
+        text-align: center;
+        padding: 40px;
+        margin-top: 30px;
+    }
+
+    .footer-logo {
+        font-size: 30px;
+        font-weight: bold;
+        color: #111827;
+    }
+
+    .footer-tagline {
+        color: #6b7280;
+        margin-top: 10px;
+    }
+
+    .footer-links {
+        margin-top: 20px;
+    }
+
+    .footer-links a {
+        color: #6b7280;
+        text-decoration: none;
+        margin: 0 12px;
+    }
+
+    .social-icons {
+        margin-top: 22px;
+    }
+
+    .card-title img {
+        vertical-align: middle;
+        margin-right: 10px;
+    }
+
+    @media only screen and (max-width: 600px) {
+        .content {
+            padding: 25px;
+        }
+
+        .hero-title {
+            font-size: 32px;
+        }
+
+        .button {
+            display: block;
+            text-align: center;
+        }
+    }
+</style>
+</head>
+<body>
+
+<table width="100%" cellpadding="0" cellspacing="0">
+<tr>
+<td>
+
+<div class="container">
+
+    <div class="header">
+        <img src="${img('logo.png')}" alt="Lunch Buddy" class="logo">
+    </div>
+
+    <div class="content">
+
+        <div class="hero-title">
+            Reset your password
+        </div>
+
+        <div class="greeting">
+            Hi <span>${safeName}</span>,
+        </div>
+
+        <div class="body-text">
+            We received a request to reset your Lunch Buddy password.
+            Click the button below to choose a new password and regain
+            access to your account.
+        </div>
+
+        <a href="${resetUrl}" class="button">
+            Reset My Password →
+        </a>
+
+        <div class="card security">
+            <div class="card-title">
+                <img src="${img('shield.png')}" alt="" width="28" height="36"> Security Notice
+            </div>
+            <div class="card-text">
+                <span class="highlight">
+                    This link will expire in 60 minutes.
+                </span>
+                <br><br>
+                If you didn't request a password reset, you can safely
+                ignore this email.
+            </div>
+        </div>
+
+        <div class="card tip">
+            <div class="card-title">
+                <img src="${img('lunch_bag.png')}" alt="" width="30" height="34"> Lunch Buddy Tip
+            </div>
+            <div class="card-text">
+                Once your password is reset, you can continue placing
+                lunch orders and managing your weekly meal plan.
+            </div>
+        </div>
+
+        <div class="support">
+            <img src="${img('envelope.png')}" alt="" width="52" height="52">
+            <div class="support-title">
+                Need help?
+            </div>
+
+            <p class="card-text">
+                We're here for you.
+            </p>
+
+            <a href="mailto:support@lunchbuddy.com" class="support-email">
+                support@lunchbuddy.com
+            </a>
+        </div>
+
+    </div>
+
+    <div class="footer">
+        <div class="footer-logo">
+            Lunch Buddy
+        </div>
+
+        <div class="footer-tagline">
+            Making lunch simple for teams.
+        </div>
+
+        <div class="social-icons">
+            <img src="${img('social_icons.png')}" alt="Follow Lunch Buddy" width="180">
+        </div>
+
+        <div class="footer-links">
+            <a href="#">Privacy Policy</a>
+            <a href="#">Terms of Service</a>
+            <a href="#">Unsubscribe</a>
+        </div>
+    </div>
+
+</div>
+
+</td>
+</tr>
+</table>
+
+</body>
+</html>`;
+}
+
 async function sendPasscodeResetEmail(toEmail, name, resetUrl) {
   if (!emailEnabled) {
     console.warn('sendPasscodeResetEmail: email is disabled (missing Brevo config) — nothing sent.');
@@ -131,6 +419,10 @@ async function sendPasscodeResetEmail(toEmail, name, resetUrl) {
   }
 
   const safeName = escapeHtml(name);
+  // Reuse resetUrl's own origin for image URLs too, rather than threading
+  // APP_BASE_URL through separately — keeps both under the same fallback
+  // (APP_BASE_URL when set, else the request's host) with one source of truth.
+  const imgBase = new URL(resetUrl).origin;
   const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: {
@@ -143,7 +435,7 @@ async function sendPasscodeResetEmail(toEmail, name, resetUrl) {
       to: [{ email: toEmail, name }],
       subject: 'Reset your Lunch Buddy passcode',
       textContent: `Hi ${name},\n\nSomeone requested a passcode reset for your Lunch Buddy account. Open this link to set a new passcode (it expires in 1 hour):\n\n${resetUrl}\n\nIf you didn't request this, you can safely ignore this email — your passcode won't change.`,
-      htmlContent: `<p>Hi ${safeName},</p><p>Someone requested a passcode reset for your Lunch Buddy account. Click below to set a new one (this link expires in 1 hour):</p><p><a href="${resetUrl}">Reset my passcode</a></p><p>If you didn't request this, you can safely ignore this email — your passcode won't change.</p>`
+      htmlContent: buildResetEmailHtml(safeName, resetUrl, imgBase)
     })
   });
   if (!res.ok) {
