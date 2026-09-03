@@ -7,6 +7,7 @@ import jwt from 'jsonwebtoken';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import crypto from 'node:crypto';
 import webpush from 'web-push';
+import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'url';
 import {
   initDb,
@@ -53,7 +54,11 @@ import {
   createScheduledNotification,
   updateScheduledNotification,
   logNotificationHistory,
-  getNotificationHistory
+  getNotificationHistory,
+  getUserByEmail,
+  createPasswordResetToken,
+  getPasswordResetToken,
+  markPasswordResetTokenUsed
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -76,6 +81,34 @@ if (pushEnabled) {
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 } else {
   console.warn('VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY not set — push notifications are disabled.');
+}
+
+// Passcode-reset email (Gmail SMTP) — optional, same graceful-degradation
+// pattern as push above: if unset, /api/forgot-passcode still responds
+// (generic message either way, to avoid confirming which emails exist) but
+// nothing actually gets sent, and a warning is logged.
+const GMAIL_USER = process.env.GMAIL_USER;
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
+const emailEnabled = !!(GMAIL_USER && GMAIL_APP_PASSWORD);
+const emailTransporter = emailEnabled
+  ? nodemailer.createTransport({ service: 'gmail', auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD } })
+  : null;
+if (!emailEnabled) {
+  console.warn('GMAIL_USER/GMAIL_APP_PASSWORD not set — passcode-reset emails are disabled.');
+}
+
+async function sendPasscodeResetEmail(toEmail, name, resetUrl) {
+  if (!emailTransporter) {
+    console.warn('sendPasscodeResetEmail: email is disabled (missing Gmail credentials) — nothing sent.');
+    return;
+  }
+  await emailTransporter.sendMail({
+    from: `Lunch Buddy <${GMAIL_USER}>`,
+    to: toEmail,
+    subject: 'Reset your Lunch Buddy passcode',
+    text: `Hi ${name},\n\nSomeone requested a passcode reset for your Lunch Buddy account. Open this link to set a new passcode (it expires in 1 hour):\n\n${resetUrl}\n\nIf you didn't request this, you can safely ignore this email — your passcode won't change.`,
+    html: `<p>Hi ${name},</p><p>Someone requested a passcode reset for your Lunch Buddy account. Click below to set a new one (this link expires in 1 hour):</p><p><a href="${resetUrl}">Reset my passcode</a></p><p>If you didn't request this, you can safely ignore this email — your passcode won't change.</p>`
+  });
 }
 
 // Bounds accepted when an admin edits login-throttling settings
@@ -186,6 +219,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Client-side route: the Platform Admin login screen lives at the same
 // index.html, keyed off location.pathname in app.js.
 app.get('/platform', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// Client-side route: the "set a new passcode" screen a forgot-passcode
+// email links to (?token=... is read client-side, same SPA either way).
+app.get('/reset-passcode', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
@@ -862,6 +901,80 @@ app.post('/api/change-passcode', authMiddleware, async (req, res) => {
   // that just changed it.
   const token = issueToken(req.user);
   res.json({ success: true, token, user: safeUser });
+});
+
+const forgotPasscodeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
+  handler: (req, res) => res.status(429).json({ error: 'Too many attempts. Try again later.' })
+});
+
+// Public, pre-login: request a passcode-reset email. Deliberately responds
+// with the same generic message whether or not the email matches an
+// account — confirming/denying an email's existence to an unauthenticated
+// caller is exactly the recon risk the login-list endpoint's own comment
+// already warns about. Own rate limiter (tighter than login's, since a
+// successful hit here sends real email — no point throttling by account
+// the way login does when there's no "account" identified yet).
+app.post('/api/forgot-passcode', forgotPasscodeLimiter, async (req, res) => {
+  const { email } = req.body;
+  const genericResponse = { success: true, message: 'If an account with that email exists, a reset link has been sent.' };
+
+  if (!email || !req.companyId) {
+    return res.json(genericResponse);
+  }
+
+  const user = await getUserByEmail(req.companyId, email);
+  if (!user) {
+    return res.json(genericResponse);
+  }
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+  await createPasswordResetToken(req.companyId, { token, userId: user.id, expiresAt });
+
+  const resetUrl = `${req.protocol}://${req.get('host')}/reset-passcode?token=${token}`;
+  sendPasscodeResetEmail(user.email, user.name, resetUrl)
+    .catch(err => console.error('Error sending passcode-reset email:', err));
+
+  res.json(genericResponse);
+});
+
+// Public: complete a passcode reset from the emailed link's token.
+app.post('/api/reset-passcode', async (req, res) => {
+  const { token, newPasscode } = req.body;
+  if (!token) {
+    return res.status(400).json({ error: 'Reset token is required.' });
+  }
+
+  const resetDoc = await getPasswordResetToken(token);
+  if (!resetDoc || resetDoc.used || new Date(resetDoc.expiresAt).getTime() < Date.now()) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.' });
+  }
+
+  const user = await getUserById(resetDoc.userId);
+  if (!user) {
+    return res.status(400).json({ error: 'This reset link is invalid or has expired. Request a new one.' });
+  }
+
+  const validationError = validatePasscode(newPasscode, user);
+  if (validationError) {
+    return res.status(400).json({ error: validationError });
+  }
+
+  await updateUserById(user.id, {
+    passcodeHash: await hashPasscode(newPasscode),
+    mustChangePasscode: false,
+    passcodeChangedAt: Date.now(),
+    failedAttempts: 0,
+    lockedUntil: null
+  });
+  await markPasswordResetTokenUsed(token);
+
+  res.json({ success: true });
 });
 
 // Public, pre-login: just enough for the login name-picker. No email, phone,

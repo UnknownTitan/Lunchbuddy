@@ -38,6 +38,9 @@ async function ensureIndexes() {
   await db.collection('companySettings').createIndex({ companyId: 1 }, { unique: true, sparse: true });
   await db.collection('scheduledNotifications').createIndex({ companyId: 1, status: 1, sendAt: 1 });
   await db.collection('notificationHistory').createIndex({ companyId: 1, sentAt: -1 });
+  // TTL index: MongoDB auto-deletes a token doc once `expiresAt` (a real
+  // Date) passes — expired reset links clean themselves up, no sweep needed.
+  await db.collection('passwordResetTokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 }
 
 // Inserts the one Platform Admin account (companyId: null) from env vars,
@@ -182,6 +185,21 @@ export async function saveRoster(companyId, roster) {
 export async function getUserById(id) {
   if (!id) return null;
   const doc = await db.collection('roster').findOne({ id });
+  if (!doc) return null;
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+// Company-scoped (unlike getUserById) — used for the pre-auth "forgot
+// passcode" lookup, where the caller already knows the company from the
+// resolved x-company-code header. Case-insensitive exact match.
+export async function getUserByEmail(companyId, email) {
+  requireCompanyId(companyId, 'getUserByEmail');
+  if (!email) return null;
+  const doc = await db.collection('roster').findOne({
+    companyId,
+    email: { $regex: `^${email.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' }
+  });
   if (!doc) return null;
   const { _id, ...rest } = doc;
   return rest;
@@ -455,6 +473,34 @@ export async function getNotificationHistory(companyId, { limit = 100 } = {}) {
     .limit(limit)
     .toArray();
   return docs.map(({ _id, ...rest }) => rest);
+}
+
+// ---- passwordResetTokens ----
+// The token string itself IS `_id` — an opaque, unguessable value is the
+// entire security guarantee here, so lookup is deliberately unscoped by
+// companyId (the caller doesn't know the company yet from a bare token in
+// a clicked email link). `expiresAt` must be a real Date for the TTL index
+// in ensureIndexes() to auto-clean expired ones.
+
+export async function createPasswordResetToken(companyId, { token, userId, expiresAt }) {
+  requireCompanyId(companyId, 'createPasswordResetToken');
+  await db.collection('passwordResetTokens').insertOne({
+    _id: token,
+    companyId,
+    userId,
+    expiresAt,
+    used: false,
+    createdAt: new Date()
+  });
+}
+
+export async function getPasswordResetToken(token) {
+  if (!token) return null;
+  return db.collection('passwordResetTokens').findOne({ _id: token });
+}
+
+export async function markPasswordResetTokenUsed(token) {
+  await db.collection('passwordResetTokens').updateOne({ _id: token }, { $set: { used: true } });
 }
 
 // ---- history (range query for Trends) ----

@@ -193,7 +193,75 @@
 
       <div class="login-footer">
         <p class="error-text hidden" id="login-error"></p>
+        <p class="login-footer-link"><a href="#" id="link-forgot-passcode">Forgot your passcode?</a></p>
         <p class="login-footer-link"><a href="#" id="link-not-your-company">Not your company?</a></p>
+      </div>
+    </section>
+
+    <!-- FORGOT PASSCODE VIEW -->
+    <section class="view-card login-card hidden" id="forgot-passcode-view">
+      <div class="login-header">
+        <h2>Forgot Your Passcode?</h2>
+        <p>Enter the email on file for your account and we'll send you a reset link.</p>
+      </div>
+
+      <div class="form-group">
+        <label for="forgot-passcode-email">Email Address</label>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">mail</span>
+          <input type="email" id="forgot-passcode-email" placeholder="you@company.com" autocomplete="email">
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-forgot-passcode-submit">
+        <span>Send Reset Link</span>
+        <span class="material-symbols-outlined">send</span>
+      </button>
+
+      <div class="login-footer">
+        <p class="error-text hidden" id="forgot-passcode-error"></p>
+        <p class="status-msg-inline hidden" id="forgot-passcode-status"></p>
+        <p class="login-footer-link"><a href="#" id="link-back-to-login-from-forgot">Back to login</a></p>
+      </div>
+    </section>
+
+    <!-- RESET PASSCODE VIEW (from an emailed link's ?token=...) -->
+    <section class="view-card login-card hidden" id="reset-passcode-view">
+      <div class="login-header">
+        <h2>Set a New Passcode</h2>
+        <p>Choose a new passcode for your account.</p>
+      </div>
+
+      <div class="form-group">
+        <label for="reset-passcode-1">New Passcode</label>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">lock</span>
+          <input type="password" id="reset-passcode-1" placeholder="At least 8 characters" autocomplete="new-password">
+          <button type="button" class="btn btn-icon toggle-passcode-visibility" data-target="reset-passcode-1" title="Show/hide passcode">
+            <span class="material-symbols-outlined">visibility</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label for="reset-passcode-2">Confirm New Passcode</label>
+        <div class="input-with-icon">
+          <span class="material-symbols-outlined">lock</span>
+          <input type="password" id="reset-passcode-2" placeholder="Re-enter your new passcode" autocomplete="new-password">
+          <button type="button" class="btn btn-icon toggle-passcode-visibility" data-target="reset-passcode-2" title="Show/hide passcode">
+            <span class="material-symbols-outlined">visibility</span>
+          </button>
+        </div>
+      </div>
+
+      <button class="btn btn-primary btn-block" id="btn-reset-passcode-submit">
+        <span>Set Passcode</span>
+        <span class="material-symbols-outlined">check</span>
+      </button>
+
+      <div class="login-footer">
+        <p class="error-text hidden" id="reset-passcode-error"></p>
+        <p class="login-footer-link"><a href="/" id="link-back-to-login-from-reset">Back to login</a></p>
       </div>
     </section>
 

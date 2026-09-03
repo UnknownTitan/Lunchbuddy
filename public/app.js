@@ -48,6 +48,8 @@ if ('serviceWorker' in navigator) {
   }
   if (location.pathname === '/platform') {
     document.getElementById('platform-login-view').classList.remove('hidden');
+  } else if (location.pathname === '/reset-passcode') {
+    document.getElementById('reset-passcode-view').classList.remove('hidden');
   } else if (localStorage.getItem('lunchsync_company')) {
     document.getElementById('login-view').classList.remove('hidden');
   } else {
@@ -109,6 +111,22 @@ const loginPasscode = document.getElementById('login-passcode');
 const btnLogin = document.getElementById('btn-login');
 const loginError = document.getElementById('login-error');
 const linkNotYourCompany = document.getElementById('link-not-your-company');
+const linkForgotPasscode = document.getElementById('link-forgot-passcode');
+
+// Forgot Passcode view
+const forgotPasscodeView = document.getElementById('forgot-passcode-view');
+const forgotPasscodeEmail = document.getElementById('forgot-passcode-email');
+const btnForgotPasscodeSubmit = document.getElementById('btn-forgot-passcode-submit');
+const forgotPasscodeError = document.getElementById('forgot-passcode-error');
+const forgotPasscodeStatus = document.getElementById('forgot-passcode-status');
+const linkBackToLoginFromForgot = document.getElementById('link-back-to-login-from-forgot');
+
+// Reset Passcode view (from an emailed link)
+const resetPasscodeView = document.getElementById('reset-passcode-view');
+const resetPasscode1 = document.getElementById('reset-passcode-1');
+const resetPasscode2 = document.getElementById('reset-passcode-2');
+const btnResetPasscodeSubmit = document.getElementById('btn-reset-passcode-submit');
+const resetPasscodeError = document.getElementById('reset-passcode-error');
 
 // Company code view
 const companyView = document.getElementById('company-view');
@@ -493,6 +511,8 @@ function hideAllPreAuthViews() {
   platformLoginView.classList.add('hidden');
   loginView.classList.add('hidden');
   forcePasscodeView.classList.add('hidden');
+  forgotPasscodeView.classList.add('hidden');
+  resetPasscodeView.classList.add('hidden');
 }
 
 function showCompanyView() {
@@ -511,6 +531,22 @@ function showPlatformLoginView() {
 function showLoginView() {
   hideAllPreAuthViews();
   loginView.classList.remove('hidden');
+}
+
+function showForgotPasscodeView() {
+  hideAllPreAuthViews();
+  forgotPasscodeEmail.value = '';
+  forgotPasscodeError.classList.add('hidden');
+  forgotPasscodeStatus.classList.add('hidden');
+  forgotPasscodeView.classList.remove('hidden');
+}
+
+function showResetPasscodeView() {
+  hideAllPreAuthViews();
+  resetPasscode1.value = '';
+  resetPasscode2.value = '';
+  resetPasscodeError.classList.add('hidden');
+  resetPasscodeView.classList.remove('hidden');
 }
 
 // Fetch the login screen's minimal public id+name roster list — the caller
@@ -568,10 +604,86 @@ async function handlePlatformLogin() {
   }
 }
 
+async function handleForgotPasscodeSubmit() {
+  forgotPasscodeError.classList.add('hidden');
+  forgotPasscodeStatus.classList.add('hidden');
+  const email = forgotPasscodeEmail.value.trim();
+  if (!email) {
+    forgotPasscodeError.textContent = 'Enter your email address.';
+    forgotPasscodeError.classList.remove('hidden');
+    return;
+  }
+
+  btnForgotPasscodeSubmit.disabled = true;
+  try {
+    // The server always responds the same way whether or not the email
+    // matches an account — that's deliberate (no confirming/denying an
+    // email's existence to an unauthenticated caller), so this message is
+    // shown regardless of the actual outcome.
+    const result = await apiCall('/api/forgot-passcode', 'POST', { email });
+    forgotPasscodeStatus.textContent = result.message;
+    forgotPasscodeStatus.classList.remove('hidden');
+  } catch (err) {
+    forgotPasscodeError.textContent = err.message || 'Something went wrong. Please try again.';
+    forgotPasscodeError.classList.remove('hidden');
+  } finally {
+    btnForgotPasscodeSubmit.disabled = false;
+  }
+}
+
+async function handleResetPasscodeSubmit() {
+  resetPasscodeError.classList.add('hidden');
+
+  const token = new URLSearchParams(location.search).get('token');
+  if (!token) {
+    resetPasscodeError.textContent = 'This reset link is missing its token. Request a new one from the login screen.';
+    resetPasscodeError.classList.remove('hidden');
+    return;
+  }
+
+  const p1 = resetPasscode1.value.trim();
+  const p2 = resetPasscode2.value.trim();
+  if (p1.length < 8) {
+    resetPasscodeError.textContent = 'Passcode must be at least 8 characters.';
+    resetPasscodeError.classList.remove('hidden');
+    return;
+  }
+  if (p1 !== p2) {
+    resetPasscodeError.textContent = 'Passcodes do not match.';
+    resetPasscodeError.classList.remove('hidden');
+    return;
+  }
+
+  try {
+    await apiCall('/api/reset-passcode', 'POST', { token, newPasscode: p1 });
+    await showAlert('Your passcode has been reset. You can now log in with it.', { title: 'Passcode Reset' });
+    history.pushState({}, '', '/');
+    if (currentCompany) {
+      await loadLoginList();
+      showLoginView();
+    } else {
+      showCompanyView();
+    }
+  } catch (err) {
+    resetPasscodeError.textContent = err.message || 'Failed to reset passcode.';
+    resetPasscodeError.classList.remove('hidden');
+  }
+}
+
 // --- App Initialization & Auth ---
 
 async function initApp() {
   currentCompany = getSavedCompany();
+
+  // A reset-passcode link is an explicit, unambiguous action — show it
+  // even if this browser also happens to have an existing saved session,
+  // rather than silently ignoring the link and dropping them into their
+  // dashboard instead.
+  if (location.pathname === '/reset-passcode') {
+    showResetPasscodeView();
+    setupEventListeners();
+    return;
+  }
 
   // Check for a saved session token in localStorage
   const savedToken = localStorage.getItem('lunchsync_token');
@@ -4040,6 +4152,16 @@ function setupEventListeners() {
     showCompanyView();
   });
   btnPlatformLogin.addEventListener('click', handlePlatformLogin);
+  linkForgotPasscode.addEventListener('click', (e) => {
+    e.preventDefault();
+    showForgotPasscodeView();
+  });
+  linkBackToLoginFromForgot.addEventListener('click', (e) => {
+    e.preventDefault();
+    showLoginView();
+  });
+  btnForgotPasscodeSubmit.addEventListener('click', handleForgotPasscodeSubmit);
+  btnResetPasscodeSubmit.addEventListener('click', handleResetPasscodeSubmit);
   platformLoginPasscode.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') handlePlatformLogin();
   });
