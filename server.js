@@ -82,48 +82,79 @@ if (pushEnabled) {
   console.warn('VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY not set — push notifications are disabled.');
 }
 
-// Passcode-reset email (Resend's HTTP API) — optional, same
-// graceful-degradation pattern as push above: if unset, /api/forgot-passcode
-// still responds (generic message either way, to avoid confirming which
-// emails exist) but nothing actually gets sent, and a warning is logged.
+// Passcode-reset email, sent via Brevo's transactional email HTTP API —
+// optional, same graceful-degradation pattern as push above: if unset,
+// /api/forgot-passcode still responds (generic message either way, to
+// avoid confirming which emails exist) but nothing actually gets sent, and
+// a warning is logged.
 //
-// Plain SMTP (the first approach here — Gmail) doesn't work on Render:
-// Render blocks outbound SMTP (ports 25/465/587) on its platform entirely,
-// regardless of credentials, so any raw-SMTP provider will always time out
-// from here. Resend's API is just a normal HTTPS POST, which isn't blocked.
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-// Resend's shared address — works immediately with no domain verification.
-// Once a custom domain is verified on the Resend account, set
-// RESEND_FROM_EMAIL to something like "Lunch Buddy <noreply@yourdomain.com>".
-const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'Lunch Buddy <onboarding@resend.dev>';
-const emailEnabled = !!RESEND_API_KEY;
+// Plain SMTP doesn't work on Render: it blocks outbound SMTP (ports
+// 25/465/587) on its platform entirely, regardless of credentials, so any
+// raw-SMTP provider always times out from here — Brevo's API is a normal
+// HTTPS POST, which isn't blocked. Brevo verifies a single sender email
+// (click a confirmation link, no domain/DNS needed) rather than requiring
+// a whole verified domain, so it can send to any recipient immediately.
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const BREVO_FROM_EMAIL = process.env.BREVO_FROM_EMAIL; // must be the verified sender in Brevo
+// Base URL for links embedded in outgoing email (e.g. the passcode-reset
+// link). Deliberately a fixed env var, not derived from the request's Host
+// header: an Express app behind a proxy that forwards Host verbatim will
+// hand req.get('host') straight to whatever the caller sent, and building a
+// reset link from that lets a spoofed Host redirect a real reset token to
+// an attacker-controlled domain. Falls back to req-derived only when unset,
+// for local dev convenience — set this in production.
+const APP_BASE_URL = process.env.APP_BASE_URL;
+const emailEnabled = !!(BREVO_API_KEY && BREVO_FROM_EMAIL);
 if (!emailEnabled) {
-  console.warn('RESEND_API_KEY not set — passcode-reset emails are disabled.');
+  console.warn('BREVO_API_KEY/BREVO_FROM_EMAIL not set — passcode-reset emails are disabled.');
+} else if (!APP_BASE_URL) {
+  console.warn('APP_BASE_URL not set — passcode-reset links will be built from the request Host header, which a proxy may forward unverified. Set APP_BASE_URL in production.');
+}
+
+// Roster names are admin-entered, not attacker-controlled in the usual sense,
+// but they still land verbatim inside htmlContent below — escape so a stray
+// '&'/'<'/'"' in someone's name can't break the markup or (in a pasted/typo'd
+// edge case) inject markup into the email.
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 async function sendPasscodeResetEmail(toEmail, name, resetUrl) {
   if (!emailEnabled) {
-    console.warn('sendPasscodeResetEmail: email is disabled (missing RESEND_API_KEY) — nothing sent.');
+    console.warn('sendPasscodeResetEmail: email is disabled (missing Brevo config) — nothing sent.');
     return;
   }
-  const res = await fetch('https://api.resend.com/emails', {
+
+  const safeName = escapeHtml(name);
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${RESEND_API_KEY}`,
-      'Content-Type': 'application/json'
+      'api-key': BREVO_API_KEY,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
     },
     body: JSON.stringify({
-      from: RESEND_FROM_EMAIL,
-      to: toEmail,
+      sender: { name: 'Lunch Buddy', email: BREVO_FROM_EMAIL },
+      to: [{ email: toEmail, name }],
       subject: 'Reset your Lunch Buddy passcode',
-      text: `Hi ${name},\n\nSomeone requested a passcode reset for your Lunch Buddy account. Open this link to set a new passcode (it expires in 1 hour):\n\n${resetUrl}\n\nIf you didn't request this, you can safely ignore this email — your passcode won't change.`,
-      html: `<p>Hi ${name},</p><p>Someone requested a passcode reset for your Lunch Buddy account. Click below to set a new one (this link expires in 1 hour):</p><p><a href="${resetUrl}">Reset my passcode</a></p><p>If you didn't request this, you can safely ignore this email — your passcode won't change.</p>`
+      textContent: `Hi ${name},\n\nSomeone requested a passcode reset for your Lunch Buddy account. Open this link to set a new passcode (it expires in 1 hour):\n\n${resetUrl}\n\nIf you didn't request this, you can safely ignore this email — your passcode won't change.`,
+      htmlContent: `<p>Hi ${safeName},</p><p>Someone requested a passcode reset for your Lunch Buddy account. Click below to set a new one (this link expires in 1 hour):</p><p><a href="${resetUrl}">Reset my passcode</a></p><p>If you didn't request this, you can safely ignore this email — your passcode won't change.</p>`
     })
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
-    throw new Error(`Resend API error ${res.status}: ${body}`);
+    throw new Error(`Brevo API error ${res.status}: ${body}`);
   }
+  // Note: a 2xx here only means Brevo *accepted* the send request, not that
+  // it was delivered — an unverified sender or a suppressed/bounced address
+  // can still fail after this point. If a user reports a missing reset
+  // email despite no error in this app's logs, check the Brevo dashboard's
+  // transactional-email log for that message before assuming a code bug.
 }
 
 // Bounds accepted when an admin edits login-throttling settings
@@ -951,7 +982,8 @@ app.post('/api/forgot-passcode', forgotPasscodeLimiter, async (req, res) => {
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
   await createPasswordResetToken(req.companyId, { token, userId: user.id, expiresAt });
 
-  const resetUrl = `${req.protocol}://${req.get('host')}/reset-passcode?token=${token}`;
+  const baseUrl = APP_BASE_URL || `${req.protocol}://${req.get('host')}`;
+  const resetUrl = `${baseUrl}/reset-passcode?token=${token}`;
   sendPasscodeResetEmail(user.email, user.name, resetUrl)
     .catch(err => console.error('Error sending passcode-reset email:', err));
 
