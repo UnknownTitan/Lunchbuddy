@@ -7,7 +7,6 @@ import jwt from 'jsonwebtoken';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import crypto from 'node:crypto';
 import webpush from 'web-push';
-import nodemailer from 'nodemailer';
 import { fileURLToPath } from 'url';
 import {
   initDb,
@@ -83,32 +82,48 @@ if (pushEnabled) {
   console.warn('VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY not set — push notifications are disabled.');
 }
 
-// Passcode-reset email (Gmail SMTP) — optional, same graceful-degradation
-// pattern as push above: if unset, /api/forgot-passcode still responds
-// (generic message either way, to avoid confirming which emails exist) but
-// nothing actually gets sent, and a warning is logged.
-const GMAIL_USER = process.env.GMAIL_USER;
-const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD;
-const emailEnabled = !!(GMAIL_USER && GMAIL_APP_PASSWORD);
-const emailTransporter = emailEnabled
-  ? nodemailer.createTransport({ service: 'gmail', auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD } })
-  : null;
+// Passcode-reset email (Resend's HTTP API) — optional, same
+// graceful-degradation pattern as push above: if unset, /api/forgot-passcode
+// still responds (generic message either way, to avoid confirming which
+// emails exist) but nothing actually gets sent, and a warning is logged.
+//
+// Plain SMTP (the first approach here — Gmail) doesn't work on Render:
+// Render blocks outbound SMTP (ports 25/465/587) on its platform entirely,
+// regardless of credentials, so any raw-SMTP provider will always time out
+// from here. Resend's API is just a normal HTTPS POST, which isn't blocked.
+const RESEND_API_KEY = process.env.RESEND_API_KEY;
+// Resend's shared address — works immediately with no domain verification.
+// Once a custom domain is verified on the Resend account, set
+// RESEND_FROM_EMAIL to something like "Lunch Buddy <noreply@yourdomain.com>".
+const RESEND_FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'Lunch Buddy <onboarding@resend.dev>';
+const emailEnabled = !!RESEND_API_KEY;
 if (!emailEnabled) {
-  console.warn('GMAIL_USER/GMAIL_APP_PASSWORD not set — passcode-reset emails are disabled.');
+  console.warn('RESEND_API_KEY not set — passcode-reset emails are disabled.');
 }
 
 async function sendPasscodeResetEmail(toEmail, name, resetUrl) {
-  if (!emailTransporter) {
-    console.warn('sendPasscodeResetEmail: email is disabled (missing Gmail credentials) — nothing sent.');
+  if (!emailEnabled) {
+    console.warn('sendPasscodeResetEmail: email is disabled (missing RESEND_API_KEY) — nothing sent.');
     return;
   }
-  await emailTransporter.sendMail({
-    from: `Lunch Buddy <${GMAIL_USER}>`,
-    to: toEmail,
-    subject: 'Reset your Lunch Buddy passcode',
-    text: `Hi ${name},\n\nSomeone requested a passcode reset for your Lunch Buddy account. Open this link to set a new passcode (it expires in 1 hour):\n\n${resetUrl}\n\nIf you didn't request this, you can safely ignore this email — your passcode won't change.`,
-    html: `<p>Hi ${name},</p><p>Someone requested a passcode reset for your Lunch Buddy account. Click below to set a new one (this link expires in 1 hour):</p><p><a href="${resetUrl}">Reset my passcode</a></p><p>If you didn't request this, you can safely ignore this email — your passcode won't change.</p>`
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      from: RESEND_FROM_EMAIL,
+      to: toEmail,
+      subject: 'Reset your Lunch Buddy passcode',
+      text: `Hi ${name},\n\nSomeone requested a passcode reset for your Lunch Buddy account. Open this link to set a new passcode (it expires in 1 hour):\n\n${resetUrl}\n\nIf you didn't request this, you can safely ignore this email — your passcode won't change.`,
+      html: `<p>Hi ${name},</p><p>Someone requested a passcode reset for your Lunch Buddy account. Click below to set a new one (this link expires in 1 hour):</p><p><a href="${resetUrl}">Reset my passcode</a></p><p>If you didn't request this, you can safely ignore this email — your passcode won't change.</p>`
+    })
   });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Resend API error ${res.status}: ${body}`);
+  }
 }
 
 // Bounds accepted when an admin edits login-throttling settings
