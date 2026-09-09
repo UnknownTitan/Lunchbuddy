@@ -1879,6 +1879,20 @@ select {
   color: var(--status-pending);
 }
 
+.assign-note-input {
+  width: 100%;
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--border-radius-sm);
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+.assign-note-input::placeholder {
+  color: var(--text-muted);
+}
+
 .distribution-row {
   display: flex;
   flex-direction: row;

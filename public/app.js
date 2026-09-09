@@ -2107,6 +2107,7 @@ function renderDetailedBreakdownList() {
         <option value="">Assign dish…</option>
         ${menuOptions}
       </select>
+      <input type="text" class="assign-note-input" data-user-id="${member.userId}" placeholder="Note (optional)" maxlength="140">
     </div>
   `).join('');
 
@@ -2114,16 +2115,19 @@ function renderDetailedBreakdownList() {
     select.addEventListener('change', () => {
       const userId = select.dataset.userId;
       const itemId = select.value;
-      if (itemId) assignDishToMember(userId, itemId);
+      const noteInput = summaryUnconfirmed.querySelector(`.assign-note-input[data-user-id="${userId}"]`);
+      if (itemId) assignDishToMember(userId, itemId, noteInput ? noteInput.value : '');
     });
   });
 }
 
 // Admin/Abigail: manually place an order for someone who couldn't submit
-// their own but let a coordinator know their choice ahead of time.
-async function assignDishToMember(userId, itemId) {
+// their own but let a coordinator know their choice ahead of time. `note`
+// carries along anything the coordinator was told (protein choice,
+// allergies, etc.) — same free-text note a self-serve order can carry.
+async function assignDishToMember(userId, itemId, note = '') {
   try {
-    await apiCall('/api/order/assign', 'POST', { userId, itemId });
+    await apiCall('/api/order/assign', 'POST', { userId, itemId, note });
     showExportFeedback('Order assigned!');
     await fetchDailyState();
   } catch (err) {
