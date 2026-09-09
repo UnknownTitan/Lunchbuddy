@@ -622,10 +622,16 @@
               <div class="catalog-picker-section">
                 <div class="catalog-picker-header-row">
                   <label>Pick from your catalog</label>
-                  <button type="button" class="btn btn-secondary btn-sm" id="btn-manage-catalog">
-                    <span class="material-symbols-outlined">restaurant_menu</span>
-                    <span>Manage Catalog</span>
-                  </button>
+                  <div class="catalog-picker-header-actions">
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-manage-menu-template">
+                      <span class="material-symbols-outlined">auto_awesome</span>
+                      <span>Special Dishes</span>
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-sm" id="btn-manage-catalog">
+                      <span class="material-symbols-outlined">restaurant_menu</span>
+                      <span>Manage Catalog</span>
+                    </button>
+                  </div>
                 </div>
                 <div class="catalog-picker-chips" id="catalog-picker-chips">
                   <!-- Populated by JS -->
@@ -708,6 +714,60 @@
                   </div>
                   <p id="catalog-dish-status" class="status-msg-inline"></p>
                 </form>
+              </div>
+            </div>
+
+            <!-- Special Dishes Modal -->
+            <div class="modal-overlay hidden" id="menu-template-modal-overlay">
+              <div class="panel-card modal-card">
+                <div class="card-header modal-header">
+                  <div>
+                    <h2>Special Dishes</h2>
+                    <p>Pick a dish, pick which day(s) of the week it should show up, and add it — it'll automatically show up on top of whatever's already on the menu that day, every week. Doesn't touch anything else.</p>
+                  </div>
+                  <button type="button" class="btn btn-icon" id="btn-menu-template-modal-close" title="Close">
+                    <span class="material-symbols-outlined">close</span>
+                  </button>
+                </div>
+
+                <div class="catalog-picker-section">
+                  <label>1. Pick a dish</label>
+                  <div class="catalog-picker-chips" id="menu-template-catalog-chips">
+                    <!-- Populated by JS -->
+                  </div>
+                  <button type="button" class="btn btn-secondary btn-sm" id="btn-menu-template-add-oneoff">
+                    <span class="material-symbols-outlined">add</span>
+                    <span>Or type a custom dish</span>
+                  </button>
+                  <div id="menu-template-oneoff-fields" class="menu-template-oneoff-fields hidden">
+                    <input type="text" id="menu-template-oneoff-name" placeholder="Dish name">
+                    <input type="text" id="menu-template-oneoff-desc" placeholder="Optional description">
+                    <input type="number" id="menu-template-oneoff-price" min="0" step="0.01" placeholder="Price (optional)">
+                  </div>
+                  <div id="menu-template-selected-dish" class="menu-template-selected-dish hidden"></div>
+                </div>
+
+                <div class="catalog-picker-section">
+                  <label>2. Which day(s)?</label>
+                  <div class="week-day-tabs" id="menu-template-weekday-picker">
+                    <!-- Populated by JS: Sun..Sat, multi-select toggles -->
+                  </div>
+                </div>
+
+                <button class="btn btn-primary" id="btn-add-special-dish">
+                  <span class="material-symbols-outlined">add_circle</span>
+                  <span>Add Special Dish</span>
+                </button>
+                <p id="menu-template-status" class="status-msg-inline"></p>
+
+                <hr class="divider">
+
+                <div class="card-header">
+                  <h3>Configured Special Dishes</h3>
+                </div>
+                <div id="menu-template-special-list" class="menu-template-special-list">
+                  <!-- Populated by JS -->
+                </div>
               </div>
             </div>
 

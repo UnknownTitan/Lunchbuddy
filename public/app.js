@@ -246,6 +246,22 @@ const adminMenuStatus = document.getElementById('admin-menu-status');
 const catalogPickerChips = document.getElementById('catalog-picker-chips');
 const btnManageCatalog = document.getElementById('btn-manage-catalog');
 
+// Special Dishes Modal
+const btnManageMenuTemplate = document.getElementById('btn-manage-menu-template');
+const menuTemplateModalOverlay = document.getElementById('menu-template-modal-overlay');
+const btnMenuTemplateModalClose = document.getElementById('btn-menu-template-modal-close');
+const menuTemplateCatalogChips = document.getElementById('menu-template-catalog-chips');
+const btnMenuTemplateAddOneoff = document.getElementById('btn-menu-template-add-oneoff');
+const menuTemplateOneoffFields = document.getElementById('menu-template-oneoff-fields');
+const menuTemplateOneoffName = document.getElementById('menu-template-oneoff-name');
+const menuTemplateOneoffDesc = document.getElementById('menu-template-oneoff-desc');
+const menuTemplateOneoffPrice = document.getElementById('menu-template-oneoff-price');
+const menuTemplateSelectedDish = document.getElementById('menu-template-selected-dish');
+const menuTemplateWeekdayPicker = document.getElementById('menu-template-weekday-picker');
+const btnAddSpecialDish = document.getElementById('btn-add-special-dish');
+const menuTemplateStatus = document.getElementById('menu-template-status');
+const menuTemplateSpecialList = document.getElementById('menu-template-special-list');
+
 // Dish Catalog Modal
 const catalogModalOverlay = document.getElementById('catalog-modal-overlay');
 const btnCatalogModalClose = document.getElementById('btn-catalog-modal-close');
@@ -1924,6 +1940,7 @@ function renderFoodOrderForm() {
         <div class="menu-card-body">
           <div class="menu-card-header">
             <span class="menu-card-title">${escapeHtml(item.name)}</span>
+            ${item.special ? '<span class="special-badge">Special</span>' : ''}
           </div>
           <p class="menu-card-desc">${escapeHtml(item.description)}</p>
         </div>
@@ -2354,13 +2371,13 @@ function loadAdminMenuBuilder() {
   adminMenuList.innerHTML = '';
 
   if (dailyState.menu.length === 0) {
-    addDishInputRow('', '', '', null);
+    addDishInputRow(adminMenuList);
   } else {
     dailyState.menu.forEach(item => {
       if (item.catalogDishId) {
-        addCatalogPickRow({ id: item.catalogDishId, name: item.name, price: item.price, imageId: item.imageId }, item.id);
+        addCatalogPickRow(adminMenuList, { id: item.catalogDishId, name: item.name, price: item.price, imageId: item.imageId }, item.id, !!item.special);
       } else {
-        addDishInputRow(item.id, item.name, item.description, item.price);
+        addDishInputRow(adminMenuList, item.id, item.name, item.description, item.price, !!item.special);
       }
     });
   }
@@ -2372,14 +2389,14 @@ function loadAdminMenuBuilder() {
 // If the list is a single, still-empty one-off placeholder row (the default
 // state when today's menu is blank), clear it before adding a real pick —
 // otherwise saveAdminMenu would reject the empty name.
-function removeEmptyPlaceholderRow() {
-  const rows = adminMenuList.querySelectorAll('.admin-dish-row:not(.admin-dish-row-catalog)');
+function removeEmptyPlaceholderRow(container) {
+  const rows = container.querySelectorAll('.admin-dish-row:not(.admin-dish-row-catalog)');
   if (rows.length === 1 && !rows[0].querySelector('.dish-name-input')?.value.trim()) {
     rows[0].remove();
   }
 }
 
-function addDishInputRow(id = '', name = '', description = '', price = null) {
+function addDishInputRow(container, id = '', name = '', description = '', price = null, special = false) {
   const div = document.createElement('div');
   div.className = 'admin-dish-row';
   div.dataset.id = id;
@@ -2388,6 +2405,10 @@ function addDishInputRow(id = '', name = '', description = '', price = null) {
     <input type="text" class="dish-name-input" placeholder="Dish Name (e.g. Sushi)" value="${escapeHtml(name)}" required>
     <input type="text" class="dish-desc-input" placeholder="Optional description" value="${escapeHtml(description)}">
     <input type="number" class="dish-price-input" placeholder="Price (optional)" min="0" step="0.01" value="${price != null ? price : ''}">
+    <label class="special-flag-toggle">
+      <input type="checkbox" class="dish-special-input" ${special ? 'checked' : ''}>
+      <span>Special</span>
+    </label>
     <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Delete Row">
       <span class="material-symbols-outlined">delete</span>
     </button>
@@ -2396,21 +2417,21 @@ function addDishInputRow(id = '', name = '', description = '', price = null) {
   // Bind delete action
   div.querySelector('.btn-delete-row').addEventListener('click', () => {
     div.remove();
-    if (adminMenuList.children.length === 0) {
-      addDishInputRow();
+    if (container.children.length === 0) {
+      addDishInputRow(container);
     }
   });
 
-  adminMenuList.appendChild(div);
+  container.appendChild(div);
 }
 
 // A "catalog pick" row: read-only (thumbnail/name/price sourced from the
 // catalog dish, snapshotted onto the daily menu item at save time), with
-// just a remove button — editing the underlying values happens in the
-// Manage Catalog modal, not here.
-function addCatalogPickRow(dish, existingDailyItemId = null) {
-  if (adminMenuList.querySelector(`.admin-dish-row-catalog[data-catalog-dish-id="${dish.id}"]`)) return;
-  removeEmptyPlaceholderRow();
+// a "Special" flag and a remove button — editing the underlying dish
+// values happens in the Manage Catalog modal, not here.
+function addCatalogPickRow(container, dish, existingDailyItemId = null, special = false) {
+  if (container.querySelector(`.admin-dish-row-catalog[data-catalog-dish-id="${dish.id}"]`)) return;
+  removeEmptyPlaceholderRow(container);
 
   const div = document.createElement('div');
   div.className = 'admin-dish-row admin-dish-row-catalog';
@@ -2423,6 +2444,10 @@ function addCatalogPickRow(dish, existingDailyItemId = null) {
       <strong>${escapeHtml(dish.name)}</strong>
       ${typeof dish.price === 'number' ? `<span class="menu-card-price">${formatPrice(dish.price)}</span>` : ''}
     </div>
+    <label class="special-flag-toggle">
+      <input type="checkbox" class="dish-special-input" ${special ? 'checked' : ''}>
+      <span>Special</span>
+    </label>
     <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Remove">
       <span class="material-symbols-outlined">delete</span>
     </button>
@@ -2430,12 +2455,12 @@ function addCatalogPickRow(dish, existingDailyItemId = null) {
 
   div.querySelector('.btn-delete-row').addEventListener('click', () => {
     div.remove();
-    if (adminMenuList.children.length === 0) {
-      addDishInputRow();
+    if (container.children.length === 0) {
+      addDishInputRow(container);
     }
   });
 
-  adminMenuList.appendChild(div);
+  container.appendChild(div);
 }
 
 // Save Daily Menu layout to server
@@ -2449,8 +2474,10 @@ async function saveAdminMenu() {
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
 
+    const special = row.querySelector('.dish-special-input')?.checked || false;
+
     if (row.dataset.catalogDishId) {
-      menuItems.push({ id: row.dataset.id || null, catalogDishId: row.dataset.catalogDishId });
+      menuItems.push({ id: row.dataset.id || null, catalogDishId: row.dataset.catalogDishId, special });
       continue;
     }
 
@@ -2470,7 +2497,8 @@ async function saveAdminMenu() {
       id: row.dataset.id || null, // Keep same ID if editing, else make new
       name,
       description,
-      price: priceVal ? Number(priceVal) : null
+      price: priceVal ? Number(priceVal) : null,
+      special
     });
   }
 
@@ -2504,13 +2532,17 @@ async function loadCatalogPicker() {
     console.error('Error loading dish catalog:', err);
     catalogDishes = [];
   }
-  renderCatalogChips();
+  renderCatalogChips(catalogPickerChips, adminMenuList);
 }
 
-function renderCatalogChips() {
-  catalogPickerChips.innerHTML = '';
+// chipsContainer: where the clickable chips render. targetContainer: where
+// clicking a chip adds a row (Today's Menu Builder vs. the Weekly Template
+// modal's active-day list) — shared by both so the chip-rendering logic
+// only lives in one place.
+function renderCatalogChips(chipsContainer, targetContainer) {
+  chipsContainer.innerHTML = '';
   if (catalogDishes.length === 0) {
-    catalogPickerChips.innerHTML = '<span class="catalog-chip-empty">No dishes in your catalog yet — use Manage Catalog to add some.</span>';
+    chipsContainer.innerHTML = '<span class="catalog-chip-empty">No dishes in your catalog yet — use Manage Catalog to add some.</span>';
     return;
   }
   catalogDishes.forEach(dish => {
@@ -2520,8 +2552,8 @@ function renderCatalogChips() {
       <img src="${getDishImage(dish)}" alt="" loading="lazy">
       <span>${escapeHtml(dish.name)}${typeof dish.price === 'number' ? ` · ${formatPrice(dish.price)}` : ''}</span>
     `;
-    chip.addEventListener('click', () => addCatalogPickRow(dish));
-    catalogPickerChips.appendChild(chip);
+    chip.addEventListener('click', () => addCatalogPickRow(targetContainer, dish));
+    chipsContainer.appendChild(chip);
   });
 }
 
@@ -2682,6 +2714,188 @@ async function handleCatalogDishDelete(dish) {
     renderCatalogList();
   } catch (err) {
     showAlert(err.message || 'Failed to remove dish.');
+  }
+}
+
+// --- Special Dishes ---
+// A dish the admin configures once per weekday, auto-ADDED on top of
+// whatever's already on that day's menu at rollover (see
+// applyMenuTemplateForNewDate in server.js) — the day's menu already
+// behaves as the "permanent" base on its own (it carries over day to day
+// until an admin changes it), so this only ever appends to it, never
+// replaces it. Flow: pick a dish, pick day(s), Add — one action, no
+// per-day save step, no "Special" checkbox (everything here is inherently
+// a special addition).
+
+const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+let menuTemplate = null; // { companyId, days: { "0": [...], ..., "6": [...] } }
+let selectedTemplateDish = null; // { catalogDishId } or { name, description, price }
+let selectedTemplateWeekdays = new Set();
+
+async function openMenuTemplateModal() {
+  menuTemplateStatus.textContent = '';
+  selectedTemplateDish = null;
+  selectedTemplateWeekdays = new Set();
+  menuTemplateOneoffFields.classList.add('hidden');
+  clearSelectedTemplateDish();
+
+  try {
+    menuTemplate = await apiCall('/api/menu-template');
+  } catch (err) {
+    showAlert(err.message || 'Failed to load special dishes.');
+    return;
+  }
+  renderTemplateCatalogChips();
+  renderMenuTemplateWeekdayPicker();
+  renderSpecialDishList();
+  menuTemplateModalOverlay.classList.remove('hidden');
+}
+
+function closeMenuTemplateModal() {
+  menuTemplateModalOverlay.classList.add('hidden');
+}
+
+function renderTemplateCatalogChips() {
+  menuTemplateCatalogChips.innerHTML = '';
+  if (catalogDishes.length === 0) {
+    menuTemplateCatalogChips.innerHTML = '<span class="catalog-chip-empty">No dishes in your catalog yet — use "type a custom dish" below, or add some via Manage Catalog.</span>';
+    return;
+  }
+  catalogDishes.forEach(dish => {
+    const chip = document.createElement('div');
+    chip.className = 'catalog-chip';
+    chip.innerHTML = `
+      <img src="${getDishImage(dish)}" alt="" loading="lazy">
+      <span>${escapeHtml(dish.name)}${typeof dish.price === 'number' ? ` · ${formatPrice(dish.price)}` : ''}</span>
+    `;
+    chip.addEventListener('click', () => selectTemplateDish({ catalogDishId: dish.id, name: dish.name }));
+    menuTemplateCatalogChips.appendChild(chip);
+  });
+}
+
+function selectTemplateDish(dish) {
+  selectedTemplateDish = dish;
+  menuTemplateOneoffFields.classList.add('hidden');
+  menuTemplateSelectedDish.classList.remove('hidden');
+  menuTemplateSelectedDish.innerHTML = `
+    <span>Selected: <strong>${escapeHtml(dish.name)}</strong></span>
+    <button type="button" class="btn-clear-selected">Clear</button>
+  `;
+  menuTemplateSelectedDish.querySelector('.btn-clear-selected').addEventListener('click', clearSelectedTemplateDish);
+}
+
+function clearSelectedTemplateDish() {
+  selectedTemplateDish = null;
+  menuTemplateSelectedDish.classList.add('hidden');
+  menuTemplateSelectedDish.innerHTML = '';
+}
+
+function renderMenuTemplateWeekdayPicker() {
+  menuTemplateWeekdayPicker.innerHTML = WEEKDAY_LABELS.map((label, weekday) => `
+    <button type="button" class="week-day-tab" data-weekday="${weekday}">${label}</button>
+  `).join('');
+
+  menuTemplateWeekdayPicker.querySelectorAll('.week-day-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const weekday = Number(btn.dataset.weekday);
+      if (selectedTemplateWeekdays.has(weekday)) {
+        selectedTemplateWeekdays.delete(weekday);
+        btn.classList.remove('active');
+      } else {
+        selectedTemplateWeekdays.add(weekday);
+        btn.classList.add('active');
+      }
+    });
+  });
+}
+
+// Flattens menuTemplate.days into one list, most relevant for a quick scan
+// of everything currently configured, each removable independently.
+function renderSpecialDishList() {
+  const rows = [];
+  WEEKDAY_LABELS.forEach((label, weekday) => {
+    const items = menuTemplate?.days?.[String(weekday)] || [];
+    items.forEach(item => {
+      rows.push({ weekday, label, item });
+    });
+  });
+
+  if (rows.length === 0) {
+    menuTemplateSpecialList.innerHTML = '<p class="help-text">No special dishes configured yet.</p>';
+    return;
+  }
+
+  menuTemplateSpecialList.innerHTML = rows.map(({ weekday, label, item }) => `
+    <div class="special-list-row">
+      <span class="special-list-row-day">${label}</span>
+      <span class="special-list-row-name">${escapeHtml(item.name || '(dish removed from catalog)')}</span>
+      <button type="button" class="btn btn-icon btn-logout btn-remove-special" data-weekday="${weekday}" data-item-id="${item.id}" title="Remove">
+        <span class="material-symbols-outlined">delete</span>
+      </button>
+    </div>
+  `).join('');
+
+  menuTemplateSpecialList.querySelectorAll('.btn-remove-special').forEach(btn => {
+    btn.addEventListener('click', () => removeSpecialDish(Number(btn.dataset.weekday), btn.dataset.itemId));
+  });
+}
+
+async function addSpecialDish() {
+  menuTemplateStatus.className = 'status-msg-inline';
+
+  const oneoffName = menuTemplateOneoffName.value.trim();
+  const dish = selectedTemplateDish || (oneoffName ? { name: oneoffName } : null);
+  if (!dish) {
+    menuTemplateStatus.className = 'status-msg-inline error-text';
+    menuTemplateStatus.textContent = 'Pick a dish first.';
+    return;
+  }
+  if (selectedTemplateWeekdays.size === 0) {
+    menuTemplateStatus.className = 'status-msg-inline error-text';
+    menuTemplateStatus.textContent = 'Pick at least one day.';
+    return;
+  }
+
+  const newItem = dish.catalogDishId
+    ? { catalogDishId: dish.catalogDishId }
+    : { name: dish.name, description: menuTemplateOneoffDesc.value.trim(), price: menuTemplateOneoffPrice.value.trim() ? Number(menuTemplateOneoffPrice.value.trim()) : null };
+
+  menuTemplateStatus.textContent = 'Adding...';
+  try {
+    await Promise.all([...selectedTemplateWeekdays].map(async weekday => {
+      const existing = menuTemplate.days?.[String(weekday)] || [];
+      const result = await apiCall(`/api/menu-template/${weekday}`, 'PUT', { items: [...existing, newItem] });
+      menuTemplate.days = { ...menuTemplate.days, [String(weekday)]: result.items };
+    }));
+
+    menuTemplateStatus.className = 'status-msg-inline success';
+    menuTemplateStatus.style.color = 'var(--status-in-office)';
+    menuTemplateStatus.textContent = 'Special dish added.';
+
+    // Reset the form for the next entry
+    clearSelectedTemplateDish();
+    menuTemplateOneoffFields.classList.add('hidden');
+    menuTemplateOneoffName.value = '';
+    menuTemplateOneoffDesc.value = '';
+    menuTemplateOneoffPrice.value = '';
+    selectedTemplateWeekdays = new Set();
+    renderMenuTemplateWeekdayPicker();
+    renderSpecialDishList();
+  } catch (err) {
+    menuTemplateStatus.className = 'status-msg-inline error-text';
+    menuTemplateStatus.textContent = err.message || 'Failed to add special dish.';
+  }
+}
+
+async function removeSpecialDish(weekday, itemId) {
+  const existing = menuTemplate.days?.[String(weekday)] || [];
+  const updated = existing.filter(item => item.id !== itemId);
+  try {
+    const result = await apiCall(`/api/menu-template/${weekday}`, 'PUT', { items: updated });
+    menuTemplate.days = { ...menuTemplate.days, [String(weekday)]: result.items };
+    renderSpecialDishList();
+  } catch (err) {
+    showAlert(err.message || 'Failed to remove special dish.');
   }
 }
 
@@ -4325,12 +4539,20 @@ function setupEventListeners() {
   });
 
   // Admin Setup Menu buttons
-  btnAdminAddDish.addEventListener('click', () => addDishInputRow('', '', '', null));
+  btnAdminAddDish.addEventListener('click', () => addDishInputRow(adminMenuList));
   btnAdminSaveMenu.addEventListener('click', saveAdminMenu);
 
   // Dish Catalog
   btnManageCatalog.addEventListener('click', openCatalogModal);
   btnCatalogModalClose.addEventListener('click', closeCatalogModal);
+  btnManageMenuTemplate.addEventListener('click', openMenuTemplateModal);
+  btnMenuTemplateModalClose.addEventListener('click', closeMenuTemplateModal);
+  btnMenuTemplateAddOneoff.addEventListener('click', () => {
+    clearSelectedTemplateDish();
+    menuTemplateOneoffFields.classList.remove('hidden');
+    menuTemplateOneoffName.focus();
+  });
+  btnAddSpecialDish.addEventListener('click', addSpecialDish);
   btnCatalogDishCancel.addEventListener('click', resetCatalogDishForm);
   catalogDishForm.addEventListener('submit', handleCatalogDishFormSubmit);
   adminPublishToggle.addEventListener('change', handlePublishToggle);

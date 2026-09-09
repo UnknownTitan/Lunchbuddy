@@ -35,6 +35,7 @@ async function ensureIndexes() {
   await db.collection('dishes').createIndex({ companyId: 1, active: 1 });
   await db.collection('dishImages').createIndex({ companyId: 1 });
   await db.collection('branches').createIndex({ companyId: 1 });
+  await db.collection('menuTemplates').createIndex({ companyId: 1 }, { unique: true, sparse: true });
   await db.collection('companySettings').createIndex({ companyId: 1 }, { unique: true, sparse: true });
   await db.collection('scheduledNotifications').createIndex({ companyId: 1, status: 1, sendAt: 1 });
   await db.collection('notificationHistory').createIndex({ companyId: 1, sentAt: -1 });
@@ -398,6 +399,35 @@ export async function deleteDishImage(companyId, imageId) {
   requireCompanyId(companyId, 'deleteDishImage');
   if (!imageId) return;
   await db.collection('dishImages').deleteOne({ _id: imageId, companyId });
+}
+
+// ---- menuTemplates ----
+// One document per company: { companyId, days: { "0": [...], ..., "6": [...] } }
+// (0=Sun..6=Sat) — special dishes that auto-add to a given weekday's menu
+// at daily rollover (see applyMenuTemplateForNewDate in server.js), on top
+// of whatever's already there (the day's menu itself already behaves as
+// the "permanent" base, since it carries over day to day until an admin
+// changes it — no separate template needed for that). Editing a weekday's
+// list here never retroactively changes an already-built day, same "not a
+// live reference" principle as the Dish Catalog snapshot in POST /api/menu.
+
+export async function getMenuTemplate(companyId) {
+  requireCompanyId(companyId, 'getMenuTemplate');
+  const doc = await db.collection('menuTemplates').findOne({ companyId });
+  if (!doc) return { companyId, days: {} };
+  const { _id, ...rest } = doc;
+  return rest;
+}
+
+// Dot-path $set on just one weekday, so saving Tuesday's list can never
+// clobber a concurrent edit to Wednesday's (two admins, or two tabs).
+export async function setMenuTemplateDay(companyId, weekday, items) {
+  requireCompanyId(companyId, 'setMenuTemplateDay');
+  await db.collection('menuTemplates').updateOne(
+    { companyId },
+    { $set: { [`days.${weekday}`]: items, updatedAt: Date.now() } },
+    { upsert: true }
+  );
 }
 
 // ---- branches ----

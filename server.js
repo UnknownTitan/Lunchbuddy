@@ -39,6 +39,8 @@ import {
   createDish,
   updateDish,
   setDishActive,
+  getMenuTemplate,
+  setMenuTemplateDay,
   saveDishImage,
   getDishImageById,
   deleteDishImage,
@@ -884,6 +886,55 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
   return true;
 }
 
+// Helper: on a brand-new business day, ADD that weekday's special dishes on
+// top of whatever menu already carried over — never a replacement. The
+// day's menu already behaves as the "permanent" base on its own (it
+// carries over day to day until an admin changes it — see below); this
+// only ever appends, so there's no way for a special-dish configuration to
+// accidentally wipe out the regular menu. Skips any special dish already
+// present in the carried-over menu (matched by catalogDishId, or by
+// normalized name for a free-text one) — otherwise the SAME special dish
+// would pile up a fresh duplicate every time its weekday recurs, since the
+// previous week's copy is still sitting in the menu that carried over.
+// No-ops entirely if this date's menu has already been touched today (by
+// an earlier admin edit, or a prior run of this same function — tracked
+// via dailyState.menuSetDate): template edits are never retroactive,
+// matching the Dish Catalog's snapshot-at-build-time precedent. NOTE:
+// dailyState.menu is never cleared on rollover, so menuSetDate, not "menu
+// is empty", is what distinguishes "already set for today" from "just
+// carried over from yesterday."
+// Mutates dailyState.menu/menuPublished/menuSetDate in place; caller saves
+// dailyState either way (mirrors applyWeeklyPlansForDate's contract).
+async function applyMenuTemplateForNewDate(companyId, dailyState) {
+  if (!dailyState.date || dailyState.menuSetDate === dailyState.date) return;
+
+  const weekday = getBusinessDateWeekday(dailyState);
+  const template = await getMenuTemplate(companyId);
+  const dayItems = template.days?.[String(weekday)];
+  if (!Array.isArray(dayItems) || dayItems.length === 0) return; // no special dishes configured for this weekday — leave the carried-over menu untouched
+
+  try {
+    const carriedOver = dailyState.menu || [];
+    const existingCatalogIds = new Set(carriedOver.filter(i => i.catalogDishId).map(i => i.catalogDishId));
+    const existingNames = new Set(carriedOver.map(i => normalizeDishName(i.name)));
+    const newDayItems = dayItems.filter(item => item.catalogDishId
+      ? !existingCatalogIds.has(item.catalogDishId)
+      : !existingNames.has(normalizeDishName(item.name)));
+    if (newDayItems.length === 0) return; // this weekday's specials are already present — nothing to add
+
+    const specials = await resolveMenuItems(companyId, newDayItems);
+    dailyState.menu = [...carriedOver, ...specials];
+  } catch (err) {
+    // A special-dish entry references a catalog dish that's since gone
+    // inactive/deleted — don't break rollover for every request; just skip
+    // adding specials for today and leave the carried-over menu as-is.
+    console.error(`[menuTemplate] failed to apply special dishes for company ${companyId}, weekday ${weekday}:`, err.message);
+    return;
+  }
+  dailyState.menuPublished = false; // a day that just gained a new special dish always starts unpublished — admin reviews first
+  dailyState.menuSetDate = dailyState.date;
+}
+
 // Paths that never need the per-company daily rollover — either genuinely
 // global (VAPID key), or pre-company-resolution / platform-scoped, where
 // there's no per-company dailyState to roll over in the first place.
@@ -916,6 +967,7 @@ async function handleDailyResetMiddleware(req, res, next) {
 
     if (!dailyState.date) {
       dailyState.date = businessDate;
+      await applyMenuTemplateForNewDate(companyId, dailyState); // before weekly plans, so they match against the final menu
       await applyWeeklyPlansForDate(companyId, dailyState);
       await saveDailyState(companyId, dailyState);
     } else if (dailyState.date !== businessDate) {
@@ -929,8 +981,10 @@ async function handleDailyResetMiddleware(req, res, next) {
       dailyState.cutoffExtensionMinutes = 0; // clear any extra time granted yesterday
       dailyState.foodArrival = null; // clear yesterday's "food's in" broadcast
       dailyState.autoReminderFiredMinutes = []; // let today's checkpoints fire fresh
-      // Retain menu, menuPublished, cutoffTime and archiveTime — the menu
-      // carries over day to day until an admin changes it
+      // Menu/menuPublished carry over day to day until an admin changes
+      // them (or the weekly template auto-fills a fresh one below) —
+      // cutoffTime and archiveTime are retained too.
+      await applyMenuTemplateForNewDate(companyId, dailyState); // before weekly plans, so they match against the final menu
       await applyWeeklyPlansForDate(companyId, dailyState); // must run after orders={} above
       await saveDailyState(companyId, dailyState);
     } else if (dailyState.weeklyPlansAppliedDate !== businessDate) {
@@ -1763,6 +1817,120 @@ app.get('/api/dish-images/:imageId', async (req, res) => {
   res.send(image.data.buffer ? Buffer.from(image.data.buffer) : image.data);
 });
 
+// --- Special Dishes ---
+// Dishes the admin configures once per weekday, auto-ADDED on top of
+// whatever's already on that day's menu at rollover (see
+// applyMenuTemplateForNewDate below) — never a replacement, so there's no
+// way this can wipe out the regular menu. The day's menu already behaves
+// as the "permanent" base on its own (it carries over day to day until an
+// admin changes it); this only ever appends to it. Editing this never
+// retroactively changes a day that's already been set (same principle as
+// the Dish Catalog snapshot in POST /api/menu below).
+
+app.get('/api/menu-template', authMiddleware, requireAdmin, async (req, res) => {
+  const template = await getMenuTemplate(req.user.companyId);
+  res.json(template);
+});
+
+// Shape-validates and normalizes a raw special-dish item list — same rules
+// resolveMenuItems enforces at apply-time. Deliberately does NOT resolve/
+// snapshot catalog data here: an item should always resolve fresh against
+// the catalog at the moment it seeds a real day, not at save time. Every
+// item here is inherently a special addition (see comment above) — always
+// stamped special:true, regardless of what the caller sends. Throws
+// { status, message } on a bad item.
+function cleanTemplateItems(items) {
+  for (const item of items) {
+    if (!item.catalogDishId && !item.name) {
+      const err = new Error('Each item needs a catalogDishId or a name.');
+      err.status = 400;
+      throw err;
+    }
+  }
+  return items.map(item => ({
+    id: item.id || `tpl-item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    ...(item.catalogDishId
+      ? { catalogDishId: item.catalogDishId }
+      : { name: item.name, description: item.description || '', price: Number.isFinite(item.price) ? item.price : null }),
+    special: true
+  }));
+}
+
+app.put('/api/menu-template/:weekday', authMiddleware, requireAdmin, async (req, res) => {
+  const weekday = Number(req.params.weekday);
+  if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+    return res.status(400).json({ error: 'weekday must be 0 (Sun) through 6 (Sat).' });
+  }
+  const { items } = req.body;
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: 'items must be an array.' });
+  }
+  let cleaned;
+  try {
+    cleaned = cleanTemplateItems(items);
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+  await setMenuTemplateDay(req.user.companyId, weekday, cleaned);
+  res.json({ success: true, weekday, items: cleaned });
+});
+
+// Resolves a raw menu-item list (catalog picks + free-text one-offs) into
+// fully snapshotted dailyState.menu items — name/description/price/imageId
+// frozen from the catalog dish RIGHT NOW, never a live reference — so a
+// later catalog price edit never retroactively changes an already-built day
+// (this is also what makes archiveCurrentDay's later verbatim copy into
+// `history` correct with no changes needed there). Shared by POST /api/menu
+// (admin-authored) and applyMenuTemplateForNewDate (template-authored,
+// below) so both paths freeze data identically from one place.
+// Throws { status, message } on a bad catalog reference or missing name —
+// callers translate that into their own error handling.
+async function resolveMenuItems(companyId, rawItems) {
+  const catalogIds = rawItems.filter(item => item.catalogDishId).map(item => item.catalogDishId);
+  const catalogById = new Map();
+  if (catalogIds.length > 0) {
+    (await getDishes(companyId)).forEach(d => catalogById.set(d.id, d));
+  }
+
+  const resolved = [];
+  for (const item of rawItems) {
+    const id = item.id || `dish-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+    if (item.catalogDishId) {
+      const dish = catalogById.get(item.catalogDishId);
+      if (!dish) {
+        const err = new Error('A selected catalog dish was not found or is no longer active.');
+        err.status = 400;
+        throw err;
+      }
+      resolved.push({
+        id,
+        name: dish.name,
+        description: dish.description || '',
+        price: typeof dish.price === 'number' ? dish.price : null,
+        catalogDishId: dish.id,
+        imageId: dish.imageId || null,
+        special: !!item.special
+      });
+    } else {
+      if (!item.name) {
+        const err = new Error('Each menu item needs a name.');
+        err.status = 400;
+        throw err;
+      }
+      resolved.push({
+        id,
+        name: item.name,
+        description: item.description || '',
+        price: Number.isFinite(item.price) ? item.price : null,
+        catalogDishId: null,
+        imageId: null,
+        special: !!item.special
+      });
+    }
+  }
+  return resolved;
+}
+
 // Admin: Set daily menu
 app.post('/api/menu', authMiddleware, requireAdmin, async (req, res) => {
   const { menu } = req.body;
@@ -1776,48 +1944,17 @@ app.post('/api/menu', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Cutoff time has passed. Menu is locked.' });
   }
 
-  // Items picked from the catalog get their name/description/price/imageId
-  // SNAPSHOTTED from the catalog dish right now — not a live reference — so
-  // a later catalog price edit never retroactively changes an already-built
-  // day (this is also what makes archiveCurrentDay's later verbatim copy
-  // into `history` correct with no changes needed there).
-  const catalogIds = menu.filter(item => item.catalogDishId).map(item => item.catalogDishId);
-  const catalogById = new Map();
-  if (catalogIds.length > 0) {
-    (await getDishes(companyId)).forEach(d => catalogById.set(d.id, d));
-  }
-
-  const newMenu = [];
-  for (const item of menu) {
-    const id = item.id || `dish-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
-    if (item.catalogDishId) {
-      const dish = catalogById.get(item.catalogDishId);
-      if (!dish) {
-        return res.status(400).json({ error: 'A selected catalog dish was not found or is no longer active.' });
-      }
-      newMenu.push({
-        id,
-        name: dish.name,
-        description: dish.description || '',
-        price: typeof dish.price === 'number' ? dish.price : null,
-        catalogDishId: dish.id,
-        imageId: dish.imageId || null
-      });
-    } else {
-      if (!item.name) {
-        return res.status(400).json({ error: 'Each menu item needs a name.' });
-      }
-      newMenu.push({
-        id,
-        name: item.name,
-        description: item.description || '',
-        price: Number.isFinite(item.price) ? item.price : null,
-        catalogDishId: null,
-        imageId: null
-      });
-    }
+  let newMenu;
+  try {
+    newMenu = await resolveMenuItems(companyId, menu);
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
   }
   dailyState.menu = newMenu;
+  // Marks this business date as deliberately set — the weekly-template
+  // auto-fill (see applyMenuTemplateForNewDate) checks this so it never
+  // overwrites a day the admin has already touched.
+  dailyState.menuSetDate = dailyState.date;
 
   await saveDailyState(companyId, dailyState);
   res.json({ success: true, menu: dailyState.menu });
