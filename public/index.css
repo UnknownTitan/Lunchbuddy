@@ -1892,6 +1892,16 @@ select {
 .assign-note-input::placeholder {
   color: var(--text-muted);
 }
+.assign-note-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-assign-dish {
+  align-self: flex-end;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.7rem;
+}
 
 .distribution-row {
   display: flex;

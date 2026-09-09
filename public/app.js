@@ -2107,16 +2107,33 @@ function renderDetailedBreakdownList() {
         <option value="">Assign dish…</option>
         ${menuOptions}
       </select>
-      <input type="text" class="assign-note-input" data-user-id="${member.userId}" placeholder="Note (optional)" maxlength="140">
+      <input type="text" class="assign-note-input" data-user-id="${member.userId}" placeholder="Note (optional)" maxlength="140" disabled>
+      <button type="button" class="btn btn-sm btn-primary btn-assign-dish" data-user-id="${member.userId}" disabled>Assign</button>
     </div>
   `).join('');
 
-  summaryUnconfirmed.querySelectorAll('.assign-dish-select').forEach(select => {
+  // Selecting a dish no longer submits right away — it only unlocks the note
+  // field and the Assign button, so there's time to type a note first.
+  // Submitting (button click, or Enter in the note field) sends both together.
+  summaryUnconfirmed.querySelectorAll('.unconfirmed-row').forEach(row => {
+    const userId = row.querySelector('.assign-dish-select').dataset.userId;
+    const select = row.querySelector('.assign-dish-select');
+    const noteInput = row.querySelector('.assign-note-input');
+    const button = row.querySelector('.btn-assign-dish');
+
     select.addEventListener('change', () => {
-      const userId = select.dataset.userId;
-      const itemId = select.value;
-      const noteInput = summaryUnconfirmed.querySelector(`.assign-note-input[data-user-id="${userId}"]`);
-      if (itemId) assignDishToMember(userId, itemId, noteInput ? noteInput.value : '');
+      const hasDish = !!select.value;
+      noteInput.disabled = !hasDish;
+      button.disabled = !hasDish;
+    });
+
+    const submit = () => {
+      if (!select.value) return;
+      assignDishToMember(userId, select.value, noteInput.value);
+    };
+    button.addEventListener('click', submit);
+    noteInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
     });
   });
 }
