@@ -2021,6 +2021,25 @@ function renderSummaryView() {
 
 function renderDetailedBreakdownList() {
   if (!dailyState) return;
+
+  // This runs on every ~10s auto-refresh poll, which would otherwise wipe
+  // an admin's in-progress dish pick / note in the unconfirmed list mid-
+  // keystroke. Snapshot each row's state (and which field has focus) before
+  // rebuilding, then restore it below.
+  const pendingEdits = new Map();
+  summaryUnconfirmed.querySelectorAll('.unconfirmed-row').forEach(row => {
+    const select = row.querySelector('.assign-dish-select');
+    const noteInput = row.querySelector('.assign-note-input');
+    if (select.value || noteInput.value) {
+      pendingEdits.set(select.dataset.userId, {
+        itemId: select.value,
+        note: noteInput.value,
+        focused: document.activeElement === noteInput ? 'note' : (document.activeElement === select ? 'select' : null),
+        selectionStart: noteInput.selectionStart
+      });
+    }
+  });
+
   summaryGroups.innerHTML = '';
   summaryUnconfirmed.innerHTML = '';
 
@@ -2135,6 +2154,21 @@ function renderDetailedBreakdownList() {
     noteInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') submit();
     });
+
+    const edit = pendingEdits.get(userId);
+    if (edit) {
+      select.value = edit.itemId;
+      const hasDish = !!edit.itemId;
+      noteInput.disabled = !hasDish;
+      button.disabled = !hasDish;
+      noteInput.value = edit.note;
+      if (edit.focused === 'note') {
+        noteInput.focus();
+        noteInput.setSelectionRange(edit.selectionStart, edit.selectionStart);
+      } else if (edit.focused === 'select') {
+        select.focus();
+      }
+    }
   });
 }
 
