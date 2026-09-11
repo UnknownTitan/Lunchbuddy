@@ -2405,7 +2405,7 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
     <input type="text" class="dish-name-input" placeholder="Dish Name (e.g. Sushi)" value="${escapeHtml(name)}" required>
     <input type="text" class="dish-desc-input" placeholder="Optional description" value="${escapeHtml(description)}">
     <input type="number" class="dish-price-input" placeholder="Price (optional)" min="0" step="0.01" value="${price != null ? price : ''}">
-    <label class="special-flag-toggle">
+    <label class="special-flag-toggle" title="Only shows today — auto-removed at the next rollover unless also configured in Special Dishes.">
       <input type="checkbox" class="dish-special-input" ${special ? 'checked' : ''}>
       <span>Special</span>
     </label>
@@ -2444,7 +2444,7 @@ function addCatalogPickRow(container, dish, existingDailyItemId = null, special 
       <strong>${escapeHtml(dish.name)}</strong>
       ${typeof dish.price === 'number' ? `<span class="menu-card-price">${formatPrice(dish.price)}</span>` : ''}
     </div>
-    <label class="special-flag-toggle">
+    <label class="special-flag-toggle" title="Only shows today — auto-removed at the next rollover unless also configured in Special Dishes.">
       <input type="checkbox" class="dish-special-input" ${special ? 'checked' : ''}>
       <span>Special</span>
     </label>
@@ -2723,9 +2723,10 @@ async function handleCatalogDishDelete(dish) {
 // applyMenuTemplateForNewDate in server.js) — the day's menu already
 // behaves as the "permanent" base on its own (it carries over day to day
 // until an admin changes it), so this only ever appends to it, never
-// replaces it. Flow: pick a dish, pick day(s), Add — one action, no
-// per-day save step, no "Special" checkbox (everything here is inherently
-// a special addition).
+// replaces it. Unlike the regular menu, it's day-scoped: it disappears
+// again the next day unless that day is also configured for it. Flow: pick
+// a dish, pick day(s), Add — one action, no per-day save step, no
+// "Special" checkbox (everything here is inherently a special addition).
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 let menuTemplate = null; // { companyId, days: { "0": [...], ..., "6": [...] } }

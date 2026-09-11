@@ -886,16 +886,16 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
   return true;
 }
 
-// Helper: on a brand-new business day, ADD that weekday's special dishes on
-// top of whatever menu already carried over — never a replacement. The
-// day's menu already behaves as the "permanent" base on its own (it
-// carries over day to day until an admin changes it — see below); this
-// only ever appends, so there's no way for a special-dish configuration to
-// accidentally wipe out the regular menu. Skips any special dish already
-// present in the carried-over menu (matched by catalogDishId, or by
-// normalized name for a free-text one) — otherwise the SAME special dish
-// would pile up a fresh duplicate every time its weekday recurs, since the
-// previous week's copy is still sitting in the menu that carried over.
+// Helper: on a brand-new business day, make special dishes strictly
+// day-scoped — strip EVERY special-flagged item out of whatever menu
+// carried over (whether it came from a prior day's Special Dishes auto-add
+// or was hand-flagged "Special" in Today's Menu Builder), then add back
+// only today's weekday's configured special dishes. Regular (non-special)
+// items are untouched and keep carrying over exactly as before — this is
+// purely about specials never bleeding into a day they weren't configured
+// for. Because everything special is stripped before re-adding, there's no
+// separate dedup step needed: a recurring special dish is removed and
+// re-added fresh every time its weekday comes around, never accumulating.
 // No-ops entirely if this date's menu has already been touched today (by
 // an earlier admin edit, or a prior run of this same function — tracked
 // via dailyState.menuSetDate): template edits are never retroactive,
@@ -910,28 +910,24 @@ async function applyMenuTemplateForNewDate(companyId, dailyState) {
 
   const weekday = getBusinessDateWeekday(dailyState);
   const template = await getMenuTemplate(companyId);
-  const dayItems = template.days?.[String(weekday)];
-  if (!Array.isArray(dayItems) || dayItems.length === 0) return; // no special dishes configured for this weekday — leave the carried-over menu untouched
+  const dayItems = Array.isArray(template.days?.[String(weekday)]) ? template.days[String(weekday)] : [];
+
+  const carriedOver = dailyState.menu || [];
+  const nonSpecialCarryOver = carriedOver.filter(item => !item.special);
+  const hadStaleSpecials = nonSpecialCarryOver.length !== carriedOver.length;
+  if (dayItems.length === 0 && !hadStaleSpecials) return; // nothing to add, nothing stale to strip — true no-op
 
   try {
-    const carriedOver = dailyState.menu || [];
-    const existingCatalogIds = new Set(carriedOver.filter(i => i.catalogDishId).map(i => i.catalogDishId));
-    const existingNames = new Set(carriedOver.map(i => normalizeDishName(i.name)));
-    const newDayItems = dayItems.filter(item => item.catalogDishId
-      ? !existingCatalogIds.has(item.catalogDishId)
-      : !existingNames.has(normalizeDishName(item.name)));
-    if (newDayItems.length === 0) return; // this weekday's specials are already present — nothing to add
-
-    const specials = await resolveMenuItems(companyId, newDayItems);
-    dailyState.menu = [...carriedOver, ...specials];
+    const specials = dayItems.length > 0 ? await resolveMenuItems(companyId, dayItems) : [];
+    dailyState.menu = [...nonSpecialCarryOver, ...specials];
   } catch (err) {
     // A special-dish entry references a catalog dish that's since gone
     // inactive/deleted — don't break rollover for every request; just skip
-    // adding specials for today and leave the carried-over menu as-is.
+    // today's change and leave the carried-over menu (specials included) as-is.
     console.error(`[menuTemplate] failed to apply special dishes for company ${companyId}, weekday ${weekday}:`, err.message);
     return;
   }
-  dailyState.menuPublished = false; // a day that just gained a new special dish always starts unpublished — admin reviews first
+  dailyState.menuPublished = false; // a day whose specials just changed always starts unpublished — admin reviews first
   dailyState.menuSetDate = dailyState.date;
 }
 
@@ -1823,7 +1819,11 @@ app.get('/api/dish-images/:imageId', async (req, res) => {
 // applyMenuTemplateForNewDate below) — never a replacement, so there's no
 // way this can wipe out the regular menu. The day's menu already behaves
 // as the "permanent" base on its own (it carries over day to day until an
-// admin changes it); this only ever appends to it. Editing this never
+// admin changes it); this only ever appends to it. Unlike the regular
+// menu, though, anything flagged `special: true` — whether it came from
+// here or was hand-flagged "Special" in Today's Menu Builder — is strictly
+// day-scoped: it's stripped out again at the next rollover unless that new
+// day's weekday configuration says to add it back. Editing this list never
 // retroactively changes a day that's already been set (same principle as
 // the Dish Catalog snapshot in POST /api/menu below).
 
