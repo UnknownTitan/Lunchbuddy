@@ -210,6 +210,9 @@ const menuStatusMsg = document.getElementById('menu-status-msg');
 const menuItemsGrid = document.getElementById('menu-items-grid');
 const orderSubmitStatus = document.getElementById('order-submit-status');
 const orderNoteInput = document.getElementById('order-note');
+const orderVariantSection = document.getElementById('order-variant-section');
+const orderVariantLabel = document.getElementById('order-variant-label');
+const orderVariantSelect = document.getElementById('order-variant-select');
 const confirmationCard = document.getElementById('confirmation-card');
 const confirmationText = document.getElementById('confirmation-text');
 const btnChangeOrder = document.getElementById('btn-change-order');
@@ -244,37 +247,23 @@ const btnAdminSaveMenu = document.getElementById('btn-admin-save-menu');
 const adminPublishToggle = document.getElementById('admin-publish-toggle');
 const adminMenuStatus = document.getElementById('admin-menu-status');
 const catalogPickerChips = document.getElementById('catalog-picker-chips');
-const btnManageCatalog = document.getElementById('btn-manage-catalog');
 
-// Special Dishes Modal
-const btnManageMenuTemplate = document.getElementById('btn-manage-menu-template');
-const menuTemplateModalOverlay = document.getElementById('menu-template-modal-overlay');
-const btnMenuTemplateModalClose = document.getElementById('btn-menu-template-modal-close');
-const menuTemplateCatalogChips = document.getElementById('menu-template-catalog-chips');
-const btnMenuTemplateAddOneoff = document.getElementById('btn-menu-template-add-oneoff');
-const menuTemplateOneoffFields = document.getElementById('menu-template-oneoff-fields');
-const menuTemplateOneoffName = document.getElementById('menu-template-oneoff-name');
-const menuTemplateOneoffDesc = document.getElementById('menu-template-oneoff-desc');
-const menuTemplateOneoffPrice = document.getElementById('menu-template-oneoff-price');
-const menuTemplateSelectedDish = document.getElementById('menu-template-selected-dish');
-const menuTemplateWeekdayPicker = document.getElementById('menu-template-weekday-picker');
-const btnAddSpecialDish = document.getElementById('btn-add-special-dish');
-const menuTemplateStatus = document.getElementById('menu-template-status');
-const menuTemplateSpecialList = document.getElementById('menu-template-special-list');
-
-// Dish Catalog Modal
+// Add/Edit Dish Modal
 const catalogModalOverlay = document.getElementById('catalog-modal-overlay');
+const catalogModalTitle = document.getElementById('catalog-modal-title');
 const btnCatalogModalClose = document.getElementById('btn-catalog-modal-close');
-const catalogList = document.getElementById('catalog-list');
 const catalogDishForm = document.getElementById('catalog-dish-form');
 const catalogDishId = document.getElementById('catalog-dish-id');
 const catalogDishName = document.getElementById('catalog-dish-name');
 const catalogDishDesc = document.getElementById('catalog-dish-desc');
 const catalogDishPrice = document.getElementById('catalog-dish-price');
+const catalogDishVariantLabel = document.getElementById('catalog-dish-variant-label');
+const catalogDishVariantOptions = document.getElementById('catalog-dish-variant-options');
 const catalogDishImageInput = document.getElementById('catalog-dish-image');
 const catalogDishImagePreview = document.getElementById('catalog-dish-image-preview');
 const btnCatalogDishSubmit = document.getElementById('btn-catalog-dish-submit');
 const btnCatalogDishCancel = document.getElementById('btn-catalog-dish-cancel');
+const btnCatalogDishRemove = document.getElementById('btn-catalog-dish-remove');
 const catalogDishStatus = document.getElementById('catalog-dish-status');
 const adminCutoffTime = document.getElementById('admin-cutoff-time');
 const btnSaveCutoff = document.getElementById('btn-save-cutoff');
@@ -356,6 +345,16 @@ const trendsPopularityChartCanvas = document.getElementById('trends-popularity-c
 
 // My Orders Tab
 const myOrdersContainer = document.getElementById('my-orders-container');
+
+// Catch the Food mini-game
+const gameCanvas = document.getElementById('game-canvas');
+const gameCanvasWrap = document.querySelector('.game-canvas-wrap');
+const gameOverlay = document.getElementById('game-overlay');
+const gameOverlayText = document.getElementById('game-overlay-text');
+const btnGameStart = document.getElementById('btn-game-start');
+const gameScoreEl = document.getElementById('game-score');
+const gameBestScoreEl = document.getElementById('game-best-score');
+const gameLivesEl = document.getElementById('game-lives');
 const myTrendsCard = document.getElementById('my-trends-card');
 const myTrendsStats = document.getElementById('my-trends-stats');
 const myTrendsChartCanvas = document.getElementById('my-trends-chart');
@@ -1041,6 +1040,8 @@ function onTabLoad(tabId) {
     loadScheduledNotifications();
     loadCheckpoints();
     loadNotificationHistory();
+  } else if (tabId === 'game-tab') {
+    initGameCanvas();
   }
 }
 
@@ -1701,6 +1702,18 @@ function renderWeeklyPlan() {
         `<option value="${escapeHtml(item.name)}" ${item.name === day.dishName ? 'selected' : ''}>${escapeHtml(item.name)}</option>`
       )).join('');
 
+    // A dish with variants (e.g. Fufu's soup type) needs a second select
+    // before the day counts as fully picked — hidden entirely for dishes
+    // that don't have any configured.
+    const matchedMenuItem = (weekPlan.menu || []).find(item => item.name === day.dishName);
+    const dayVariantOptions = matchedMenuItem?.variantOptions || [];
+    const variantHtml = dayVariantOptions.length > 0
+      ? `<select class="week-day-variant" aria-label="${escapeHtml(matchedMenuItem.variantLabel)} for ${escapeHtml(day.dayName)}" ${disabled}>
+          <option value="">Select ${escapeHtml(matchedMenuItem.variantLabel)}…</option>
+          ${dayVariantOptions.map(o => `<option value="${escapeHtml(o)}" ${o === day.variant ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}
+        </select>`
+      : `<select class="week-day-variant hidden"></select>`;
+
     card.innerHTML = `
       <div class="week-day-head">
         <span class="week-day-name">${escapeHtml(day.dayName)}</span>
@@ -1709,9 +1722,10 @@ function renderWeeklyPlan() {
       </div>
       <div class="week-day-thumb"><img src="${getDishImage(day)}" alt="" loading="lazy"></div>
       <select class="week-day-select" aria-label="Dish for ${escapeHtml(day.dayName)}" ${disabled}>${optionsHtml}</select>
+      ${variantHtml}
       ${warning}
       <input type="text" class="week-day-note" maxlength="140" placeholder="Note (optional)" value="${escapeHtml(day.note || '')}" ${disabled}>
-      ${(day.editable && day.dishName) ? `
+      ${(day.editable && day.dishName && dayVariantOptions.length === 0) ? `
         <button type="button" class="btn btn-secondary btn-sm week-day-repeat">
           <span class="material-symbols-outlined">repeat</span>
           <span>Use for rest of week</span>
@@ -1723,9 +1737,30 @@ function renderWeeklyPlan() {
 
 async function handleWeekDishChange(date, dishName) {
   weekPlanDirtyDates.add(date);
+
+  // A dish with variants (soup type, sauce, etc.) can't be saved yet — show
+  // the picker and wait for handleWeekVariantChange instead of PUTing with
+  // no variant, which the server would reject.
+  const card = weekGrid.querySelector(`.week-day-card[data-date="${date}"]`);
+  const variantSelect = card?.querySelector('.week-day-variant');
+  const matched = (weekPlan?.menu || []).find(item => item.name === dishName);
+  const options = matched?.variantOptions || [];
+  if (dishName && options.length > 0 && variantSelect) {
+    variantSelect.classList.remove('hidden');
+    variantSelect.disabled = false;
+    variantSelect.innerHTML = `<option value="">Select ${escapeHtml(matched.variantLabel)}…</option>`
+      + options.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+    variantSelect.focus();
+    return;
+  }
+  if (variantSelect) {
+    variantSelect.classList.add('hidden');
+    variantSelect.value = '';
+  }
+
   try {
     const res = dishName
-      ? await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName })
+      ? await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName, variant: '' })
       : await apiCall(`/api/week-plan/${date}`, 'DELETE');
     patchWeekDay(res.day);
     weeklyPlanStatus.className = 'status-msg-inline success';
@@ -1739,11 +1774,30 @@ async function handleWeekDishChange(date, dishName) {
   }
 }
 
+// Fires once a variant is picked for a dish that needs one — the dish
+// change itself was held back (see handleWeekDishChange) until this completes.
+async function handleWeekVariantChange(date, dishName, variant) {
+  if (!variant) return;
+  weekPlanDirtyDates.add(date);
+  try {
+    const res = await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName, variant });
+    patchWeekDay(res.day);
+    weeklyPlanStatus.className = 'status-msg-inline success';
+    weeklyPlanStatus.textContent = 'Saved!';
+    if (date === weekPlan?.businessDate) await fetchDailyState();
+  } catch (err) {
+    weekPlanDirtyDates.delete(date);
+    weeklyPlanStatus.className = 'status-msg-inline error-text';
+    weeklyPlanStatus.textContent = err.message || 'Failed to save.';
+    renderWeeklyPlan();
+  }
+}
+
 async function handleWeekNoteCommit(date, note) {
   const day = weekPlan?.days.find(d => d.date === date);
   if (!day || !day.dishName) { weekPlanDirtyDates.delete(date); return; } // nothing to attach a note to
   try {
-    const res = await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName: day.dishName, note });
+    const res = await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName: day.dishName, note, variant: day.variant || '' });
     patchWeekDay(res.day);
     if (date === weekPlan?.businessDate) await fetchDailyState();
   } catch (err) {
@@ -1869,6 +1923,26 @@ function updateOrderGreeting() {
   }
 }
 
+// Rebuilds the variant <select>'s options for whichever dish is currently
+// selected, and shows/hides the whole section. Deliberately does NOT touch
+// .value itself — callers decide what the post-rebuild value should be
+// (preserved across polls, prefilled from a saved order, or reset to blank
+// on a fresh dish pick), same division of responsibility as orderNoteInput.
+function updateOrderVariantOptions(item) {
+  const options = Array.isArray(item?.variantOptions) ? item.variantOptions : [];
+  if (options.length === 0) {
+    orderVariantSection.classList.add('hidden');
+    orderVariantSelect.required = false;
+    orderVariantSelect.innerHTML = '<option value="">Select…</option>';
+    return;
+  }
+  orderVariantSection.classList.remove('hidden');
+  orderVariantSelect.required = true;
+  orderVariantLabel.textContent = `Choose a ${item.variantLabel}`;
+  orderVariantSelect.innerHTML = '<option value="">Select…</option>'
+    + options.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+}
+
 function renderFoodOrderForm() {
   if (!dailyState) return;
   if (dailyState.isOperationalToday === false) return;
@@ -1885,10 +1959,11 @@ function renderFoodOrderForm() {
 
   if (userOrder) {
     confirmationCard.classList.remove('hidden');
+    const variantText = userOrder.variant ? ` (${escapeHtml(userOrder.variant)})` : '';
     const noteText = userOrder.note
       ? `<br><span class="text-muted">Note: ${escapeHtml(userOrder.note)}</span>`
       : '';
-    confirmationText.innerHTML = `Selected dish: <strong>${escapeHtml(userOrder.itemName)}</strong>${noteText}`;
+    confirmationText.innerHTML = `Selected dish: <strong>${escapeHtml(userOrder.itemName)}${variantText}</strong>${noteText}`;
     btnChangeOrder.classList.toggle('hidden', showForm || dailyState.isLocked);
     btnCancelOrder.classList.toggle('hidden', showForm || dailyState.isLocked || userOrder.served);
 
@@ -1910,6 +1985,12 @@ function renderFoodOrderForm() {
     ? orderForm.querySelector('input[name="lunch-selection"]:checked')?.value
     : null;
   orderNoteInput.value = orderFormDirty ? orderNoteInput.value : (userOrder?.note || '');
+
+  const priorVariantValue = orderVariantSelect.value;
+  const selectedItemId = preservedSelection || userOrder?.itemId || null;
+  const selectedItem = selectedItemId ? dailyState.menu.find(m => m.id === selectedItemId) : null;
+  updateOrderVariantOptions(selectedItem);
+  orderVariantSelect.value = orderFormDirty ? priorVariantValue : (userOrder?.variant || '');
 
   // Check if menu is published
   if (!dailyState.menuPublished) {
@@ -1940,7 +2021,7 @@ function renderFoodOrderForm() {
         <div class="menu-card-body">
           <div class="menu-card-header">
             <span class="menu-card-title">${escapeHtml(item.name)}</span>
-            ${item.special ? '<span class="special-badge">Special</span>' : ''}
+            ${item.special ? '<span class="special-badge">Today Only</span>' : ''}
           </div>
           <p class="menu-card-desc">${escapeHtml(item.description)}</p>
         </div>
@@ -1956,6 +2037,10 @@ function renderFoodOrderForm() {
         document.querySelectorAll('.menu-card').forEach(c => c.classList.remove('selected'));
         card.classList.add('selected');
         if (orderHeroArtImg) orderHeroArtImg.src = getDishImage(item);
+        // Switching dishes clears any variant pick from the dish just
+        // deselected — a soup type chosen for Fufu has no meaning for Jollof.
+        updateOrderVariantOptions(item);
+        orderVariantSelect.value = '';
       }
     });
 
@@ -1977,8 +2062,14 @@ async function handleOrderSubmit(e) {
     return;
   }
 
+  if (!orderVariantSection.classList.contains('hidden') && !orderVariantSelect.value) {
+    orderSubmitStatus.className = 'status-indicator error';
+    orderSubmitStatus.textContent = `${orderVariantLabel.textContent} is required.`;
+    return;
+  }
+
   try {
-    await apiCall('/api/order', 'POST', { itemId: dish, note: orderNoteInput.value.trim() });
+    await apiCall('/api/order', 'POST', { itemId: dish, note: orderNoteInput.value.trim(), variant: orderVariantSelect.value });
     orderSubmitStatus.className = 'status-indicator success';
     orderSubmitStatus.textContent = 'Selection submitted!';
     isEditingOrder = false;
@@ -2023,10 +2114,14 @@ function renderSummaryView() {
     activeDishTotals.forEach(dish => {
       const card = document.createElement('div');
       card.className = 'dish-total-card';
+      const variantsHtml = (dish.variants || []).length > 0
+        ? `<div class="dish-total-variants">${dish.variants.map(v => `<span>${escapeHtml(v.label)}: ${v.count}</span>`).join('')}</div>`
+        : '';
       card.innerHTML = `
         <span class="material-symbols-outlined">restaurant</span>
         <span class="dish-total-count">${dish.count}</span>
         <span class="dish-total-name">${escapeHtml(dish.name)}</span>
+        ${variantsHtml}
       `;
       summaryDishTotals.appendChild(card);
     });
@@ -2046,10 +2141,12 @@ function renderDetailedBreakdownList() {
   const pendingEdits = new Map();
   summaryUnconfirmed.querySelectorAll('.unconfirmed-row').forEach(row => {
     const select = row.querySelector('.assign-dish-select');
+    const variantSelect = row.querySelector('.assign-variant-select');
     const noteInput = row.querySelector('.assign-note-input');
-    if (select.value || noteInput.value) {
+    if (select.value || variantSelect.value || noteInput.value) {
       pendingEdits.set(select.dataset.userId, {
         itemId: select.value,
+        variant: variantSelect.value,
         note: noteInput.value,
         focused: document.activeElement === noteInput ? 'note' : (document.activeElement === select ? 'select' : null),
         selectionStart: noteInput.selectionStart
@@ -2089,13 +2186,16 @@ function renderDetailedBreakdownList() {
         const assignedTag = member.assignedBy
           ? `<span class="text-muted"> (added by ${escapeHtml(member.assignedBy)})</span>`
           : '';
+        const variantTag = member.variant
+          ? `<span class="text-muted"> — ${escapeHtml(member.variant)}</span>`
+          : '';
         const noteRow = member.note
           ? `<div class="member-row-note">${escapeHtml(member.note)}</div>`
           : '';
         return `
           <div class="summary-member-row">
             <div class="member-row-main">
-              <span>${escapeHtml(member.name)}${assignedTag}</span>
+              <span>${escapeHtml(member.name)}${variantTag}${assignedTag}</span>
               <button type="button" class="btn btn-icon btn-remove-order" data-user-id="${member.userId}" data-user-name="${escapeHtml(member.name)}" title="Remove this order">
                 <span class="material-symbols-outlined">close</span>
               </button>
@@ -2143,29 +2243,51 @@ function renderDetailedBreakdownList() {
         <option value="">Assign dish…</option>
         ${menuOptions}
       </select>
+      <select class="assign-variant-select hidden" data-user-id="${member.userId}">
+        <option value="">Select…</option>
+      </select>
       <input type="text" class="assign-note-input" data-user-id="${member.userId}" placeholder="Note (optional)" maxlength="140" disabled>
       <button type="button" class="btn btn-sm btn-primary btn-assign-dish" data-user-id="${member.userId}" disabled>Assign</button>
     </div>
   `).join('');
 
   // Selecting a dish no longer submits right away — it only unlocks the note
-  // field and the Assign button, so there's time to type a note first.
-  // Submitting (button click, or Enter in the note field) sends both together.
+  // field and the Assign button, so there's time to type a note first. If
+  // the chosen dish has variants (e.g. Fufu's soup type), a second select
+  // appears and the button/note stay locked until that's picked too.
+  // Submitting (button click, or Enter in the note field) sends it all together.
   summaryUnconfirmed.querySelectorAll('.unconfirmed-row').forEach(row => {
     const userId = row.querySelector('.assign-dish-select').dataset.userId;
     const select = row.querySelector('.assign-dish-select');
+    const variantSelect = row.querySelector('.assign-variant-select');
     const noteInput = row.querySelector('.assign-note-input');
     const button = row.querySelector('.btn-assign-dish');
 
+    const refreshUnlockState = () => {
+      const item = dailyState.menu.find(m => m.id === select.value);
+      const needsVariant = (item?.variantOptions || []).length > 0;
+      if (needsVariant) {
+        variantSelect.classList.remove('hidden');
+        variantSelect.innerHTML = '<option value="">Select…</option>'
+          + item.variantOptions.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+      } else {
+        variantSelect.classList.add('hidden');
+        variantSelect.value = '';
+      }
+      const ready = !!select.value && (!needsVariant || !!variantSelect.value);
+      noteInput.disabled = !ready;
+      button.disabled = !ready;
+    };
+
     select.addEventListener('change', () => {
-      const hasDish = !!select.value;
-      noteInput.disabled = !hasDish;
-      button.disabled = !hasDish;
+      variantSelect.value = ''; // dish changed — any prior variant pick no longer applies
+      refreshUnlockState();
     });
+    variantSelect.addEventListener('change', refreshUnlockState);
 
     const submit = () => {
       if (!select.value) return;
-      assignDishToMember(userId, select.value, noteInput.value);
+      assignDishToMember(userId, select.value, noteInput.value, variantSelect.value);
     };
     button.addEventListener('click', submit);
     noteInput.addEventListener('keydown', (e) => {
@@ -2175,9 +2297,9 @@ function renderDetailedBreakdownList() {
     const edit = pendingEdits.get(userId);
     if (edit) {
       select.value = edit.itemId;
-      const hasDish = !!edit.itemId;
-      noteInput.disabled = !hasDish;
-      button.disabled = !hasDish;
+      refreshUnlockState();
+      if (edit.variant) variantSelect.value = edit.variant;
+      refreshUnlockState();
       noteInput.value = edit.note;
       if (edit.focused === 'note') {
         noteInput.focus();
@@ -2193,9 +2315,9 @@ function renderDetailedBreakdownList() {
 // their own but let a coordinator know their choice ahead of time. `note`
 // carries along anything the coordinator was told (protein choice,
 // allergies, etc.) — same free-text note a self-serve order can carry.
-async function assignDishToMember(userId, itemId, note = '') {
+async function assignDishToMember(userId, itemId, note = '', variant = '') {
   try {
-    await apiCall('/api/order/assign', 'POST', { userId, itemId, note });
+    await apiCall('/api/order/assign', 'POST', { userId, itemId, note, variant });
     showExportFeedback('Order assigned!');
     await fetchDailyState();
   } catch (err) {
@@ -2231,6 +2353,9 @@ function copyWhatsAppSummary() {
   } else {
     activeDishTotals.forEach(d => {
       text += `• ${d.name}: *${d.count}*\n`;
+      (d.variants || []).forEach(v => {
+        text += `   - ${v.label}: ${v.count}\n`;
+      });
     });
   }
 
@@ -2238,14 +2363,14 @@ function copyWhatsAppSummary() {
   text += `\n*OVERVIEW:*\n`;
   text += `• Ordered: ${dailyState.stats.ordered} of ${dailyState.stats.total}\n`;
 
-  // Per-person breakdown, grouped by dish — only people who left a note
-  // (protein choice, allergies, etc.) are listed, since that's the only
-  // detail the vendor actually needs beyond the dish quantities above.
+  // Per-person breakdown, grouped by dish — only people with a variant
+  // choice (soup type, sauce, etc.) or a note are listed, since that's the
+  // only detail the vendor actually needs beyond the dish quantities above.
   const orderedList = dailyState.orders.ordered || [];
-  const withNotes = orderedList.filter(item => item.note);
-  if (withNotes.length > 0) {
+  const withDetails = orderedList.filter(item => item.note || item.variant);
+  if (withDetails.length > 0) {
     const byDish = new Map();
-    withNotes.forEach(item => {
+    withDetails.forEach(item => {
       if (!byDish.has(item.itemName)) byDish.set(item.itemName, []);
       byDish.get(item.itemName).push(item);
     });
@@ -2254,7 +2379,8 @@ function copyWhatsAppSummary() {
     byDish.forEach((members, dishName) => {
       text += `\n*${dishName}:*\n`;
       members.forEach(m => {
-        text += `- ${m.name} (${m.note})\n`;
+        const bits = [m.variant, m.note].filter(Boolean).join(' — ');
+        text += `- ${m.name}${bits ? ` (${bits})` : ''}\n`;
       });
     });
   }
@@ -2323,7 +2449,7 @@ function exportCsvSummary() {
   const byDish = new Map();
   (dailyState.orders.ordered || []).forEach(item => {
     if (!byDish.has(item.itemName)) byDish.set(item.itemName, []);
-    byDish.get(item.itemName).push(item.name);
+    byDish.get(item.itemName).push(item.variant ? `${item.name} (${item.variant})` : item.name);
   });
 
   const columns = dailyState.dishTotals
@@ -2365,10 +2491,14 @@ function exportCsvSummary() {
 
 // --- Tab: Admin Menu Setup ---
 
-function loadAdminMenuBuilder() {
+async function loadAdminMenuBuilder() {
   if (!dailyState) return;
 
   adminMenuList.innerHTML = '';
+
+  // Needed before rows render so each catalog dish's row can show which
+  // weekdays it's already configured to recur on.
+  await loadMenuTemplate();
 
   if (dailyState.menu.length === 0) {
     addDishInputRow(adminMenuList);
@@ -2405,9 +2535,9 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
     <input type="text" class="dish-name-input" placeholder="Dish Name (e.g. Sushi)" value="${escapeHtml(name)}" required>
     <input type="text" class="dish-desc-input" placeholder="Optional description" value="${escapeHtml(description)}">
     <input type="number" class="dish-price-input" placeholder="Price (optional)" min="0" step="0.01" value="${price != null ? price : ''}">
-    <label class="special-flag-toggle" title="Only shows today — auto-removed at the next rollover unless also configured in Special Dishes.">
+    <label class="special-flag-toggle" title="Only shows today — auto-removed at the next rollover unless also set up as a Weekly Repeat.">
       <input type="checkbox" class="dish-special-input" ${special ? 'checked' : ''}>
-      <span>Special</span>
+      <span>Today Only</span>
     </label>
     <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Delete Row">
       <span class="material-symbols-outlined">delete</span>
@@ -2426,9 +2556,10 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
 }
 
 // A "catalog pick" row: read-only (thumbnail/name/price sourced from the
-// catalog dish, snapshotted onto the daily menu item at save time), with
-// a "Special" flag and a remove button — editing the underlying dish
-// values happens in the Manage Catalog modal, not here.
+// catalog dish, snapshotted onto the daily menu item at save time), with a
+// "Special" flag, a recurring-weekday toggle, a variants shortcut, and a
+// remove button — editing the underlying dish values happens in the Manage
+// Catalog modal, not here.
 function addCatalogPickRow(container, dish, existingDailyItemId = null, special = false) {
   if (container.querySelector(`.admin-dish-row-catalog[data-catalog-dish-id="${dish.id}"]`)) return;
   removeEmptyPlaceholderRow(container);
@@ -2438,20 +2569,69 @@ function addCatalogPickRow(container, dish, existingDailyItemId = null, special 
   div.dataset.catalogDishId = dish.id;
   div.dataset.id = existingDailyItemId || '';
 
+  const recurringDays = WEEKDAY_LABELS.map((label, weekday) =>
+    (menuTemplate?.days?.[String(weekday)] || []).some(item => item.catalogDishId === dish.id)
+  );
+  const recurringCount = recurringDays.filter(Boolean).length;
+  const recurringBadge = recurringCount > 0 ? `<span class="recurring-count-badge">${recurringCount}</span>` : '';
+
   div.innerHTML = `
     <img src="${getDishImage(dish)}" class="admin-dish-row-thumb" alt="" loading="lazy">
     <div class="admin-dish-row-info">
       <strong>${escapeHtml(dish.name)}</strong>
       ${typeof dish.price === 'number' ? `<span class="menu-card-price">${formatPrice(dish.price)}</span>` : ''}
     </div>
-    <label class="special-flag-toggle" title="Only shows today — auto-removed at the next rollover unless also configured in Special Dishes.">
+    <label class="special-flag-toggle" title="Only shows today — auto-removed at the next rollover unless also set up as a Weekly Repeat.">
       <input type="checkbox" class="dish-special-input" ${special ? 'checked' : ''}>
-      <span>Special</span>
+      <span>Today Only</span>
     </label>
+    <button type="button" class="btn btn-icon btn-toggle-recurring ${recurringCount > 0 ? 'has-recurring' : ''}" title="Repeat this dish automatically on specific weekdays">
+      <span class="material-symbols-outlined">event_repeat</span>
+      ${recurringBadge}
+    </button>
+    <button type="button" class="btn btn-icon btn-edit-variants" title="Edit variant options (e.g. soup type, sauce)">
+      <span class="material-symbols-outlined">tune</span>
+    </button>
     <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Remove">
       <span class="material-symbols-outlined">delete</span>
     </button>
+    <div class="admin-dish-row-recurring hidden">
+      <span class="help-text">Repeats every week on:</span>
+      <div class="week-day-tabs inline-week-day-tabs">
+        ${WEEKDAY_LABELS.map((label, weekday) => `
+          <button type="button" class="week-day-tab ${recurringDays[weekday] ? 'active' : ''}" data-weekday="${weekday}">${label}</button>
+        `).join('')}
+      </div>
+    </div>
   `;
+
+  div.querySelector('.btn-toggle-recurring').addEventListener('click', () => {
+    div.querySelector('.admin-dish-row-recurring').classList.toggle('hidden');
+  });
+
+  div.querySelectorAll('.admin-dish-row-recurring .week-day-tab').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const weekday = Number(btn.dataset.weekday);
+      btn.disabled = true;
+      const ok = await toggleRecurringDay(dish.id, weekday);
+      btn.disabled = false;
+      if (!ok) return;
+
+      btn.classList.toggle('active');
+      const count = div.querySelectorAll('.admin-dish-row-recurring .week-day-tab.active').length;
+      const toggleBtn = div.querySelector('.btn-toggle-recurring');
+      toggleBtn.classList.toggle('has-recurring', count > 0);
+      const existingBadge = toggleBtn.querySelector('.recurring-count-badge');
+      if (count > 0) {
+        if (existingBadge) existingBadge.textContent = count;
+        else toggleBtn.insertAdjacentHTML('beforeend', `<span class="recurring-count-badge">${count}</span>`);
+      } else {
+        existingBadge?.remove();
+      }
+    });
+  });
+
+  div.querySelector('.btn-edit-variants').addEventListener('click', () => editDishVariants(dish.id));
 
   div.querySelector('.btn-delete-row').addEventListener('click', () => {
     div.remove();
@@ -2461,6 +2641,19 @@ function addCatalogPickRow(container, dish, existingDailyItemId = null, special 
   });
 
   container.appendChild(div);
+}
+
+// Jumps straight to a catalog dish's edit form (Manage Catalog modal),
+// scrolled to the variant fields — the one-click path from a meal row in
+// Today's Menu Builder, instead of making the admin hunt for it in the
+// catalog list themselves.
+function editDishVariants(catalogDishId) {
+  const dish = catalogDishes.find(d => d.id === catalogDishId);
+  if (!dish) return;
+  openCatalogModal();
+  populateCatalogDishForm(dish);
+  catalogDishVariantLabel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  catalogDishVariantLabel.focus();
 }
 
 // Save Daily Menu layout to server
@@ -2536,9 +2729,7 @@ async function loadCatalogPicker() {
 }
 
 // chipsContainer: where the clickable chips render. targetContainer: where
-// clicking a chip adds a row (Today's Menu Builder vs. the Weekly Template
-// modal's active-day list) — shared by both so the chip-rendering logic
-// only lives in one place.
+// clicking a chip adds a row (Today's Menu Builder's dish list).
 function renderCatalogChips(chipsContainer, targetContainer) {
   chipsContainer.innerHTML = '';
   if (catalogDishes.length === 0) {
@@ -2557,40 +2748,22 @@ function renderCatalogChips(chipsContainer, targetContainer) {
   });
 }
 
-function openCatalogModal() {
+// True while the catalog modal was opened from Today's Menu Builder's
+// "Add New Dish" button rather than "Manage Catalog" — in that mode,
+// saving a brand-new dish also drops it straight onto today's menu and
+// closes the modal, instead of leaving it open for more catalog edits.
+let addNewDishToTodaysMenu = false;
+
+function openCatalogModal(addToTodaysMenu = false) {
+  addNewDishToTodaysMenu = addToTodaysMenu;
   resetCatalogDishForm();
-  renderCatalogList();
   catalogModalOverlay.classList.remove('hidden');
+  if (addToTodaysMenu) catalogDishName.focus();
 }
 
 function closeCatalogModal() {
+  addNewDishToTodaysMenu = false;
   catalogModalOverlay.classList.add('hidden');
-}
-
-function renderCatalogList() {
-  catalogList.innerHTML = '';
-  if (catalogDishes.length === 0) {
-    catalogList.innerHTML = '<p class="help-text">No dishes yet — add your first one below.</p>';
-    return;
-  }
-  catalogDishes.forEach(dish => {
-    const row = document.createElement('div');
-    row.className = 'catalog-list-row';
-    row.innerHTML = `
-      <img src="${getDishImage(dish)}" alt="" loading="lazy">
-      <div class="catalog-list-row-info">
-        <strong>${escapeHtml(dish.name)}</strong>
-        <span class="help-text">${typeof dish.price === 'number' ? formatPrice(dish.price) : 'No price set'}</span>
-      </div>
-      <div class="catalog-list-row-actions">
-        <button type="button" class="btn btn-secondary btn-sm btn-catalog-edit">Edit</button>
-        <button type="button" class="btn btn-danger btn-sm btn-catalog-delete">Remove</button>
-      </div>
-    `;
-    row.querySelector('.btn-catalog-edit').addEventListener('click', () => populateCatalogDishForm(dish));
-    row.querySelector('.btn-catalog-delete').addEventListener('click', () => handleCatalogDishDelete(dish));
-    catalogList.appendChild(row);
-  });
 }
 
 function resetCatalogDishForm() {
@@ -2598,11 +2771,15 @@ function resetCatalogDishForm() {
   catalogDishName.value = '';
   catalogDishDesc.value = '';
   catalogDishPrice.value = '';
+  catalogDishVariantLabel.value = '';
+  catalogDishVariantOptions.value = '';
   catalogDishImageInput.value = '';
   catalogDishImagePreview.classList.add('hidden');
   catalogDishImagePreview.dataset.pendingUpload = '';
   catalogDishStatus.textContent = '';
+  catalogModalTitle.textContent = 'Add New Dish';
   btnCatalogDishSubmit.textContent = 'Save Dish';
+  btnCatalogDishRemove.classList.add('hidden');
 }
 
 function populateCatalogDishForm(dish) {
@@ -2610,6 +2787,8 @@ function populateCatalogDishForm(dish) {
   catalogDishName.value = dish.name;
   catalogDishDesc.value = dish.description || '';
   catalogDishPrice.value = dish.price != null ? dish.price : '';
+  catalogDishVariantLabel.value = dish.variantLabel || '';
+  catalogDishVariantOptions.value = (dish.variantOptions || []).join(', ');
   catalogDishImageInput.value = '';
   catalogDishImagePreview.dataset.pendingUpload = '';
   if (dish.imageId) {
@@ -2619,7 +2798,9 @@ function populateCatalogDishForm(dish) {
     catalogDishImagePreview.classList.add('hidden');
   }
   catalogDishStatus.textContent = '';
+  catalogModalTitle.textContent = 'Edit Dish';
   btnCatalogDishSubmit.textContent = 'Update Dish';
+  btnCatalogDishRemove.classList.remove('hidden');
 }
 
 // Resizes/compresses an uploaded image client-side (max 800x800) before it
@@ -2675,6 +2856,8 @@ async function handleCatalogDishFormSubmit(e) {
   const description = catalogDishDesc.value.trim();
   const priceVal = catalogDishPrice.value.trim();
   const price = priceVal ? Number(priceVal) : null;
+  const variantLabel = catalogDishVariantLabel.value.trim();
+  const variantOptions = catalogDishVariantOptions.value.split(',').map(o => o.trim()).filter(Boolean);
   const pendingImage = catalogDishImagePreview.dataset.pendingUpload || '';
 
   if (!name) {
@@ -2683,220 +2866,102 @@ async function handleCatalogDishFormSubmit(e) {
     return;
   }
 
+  const isNewDish = !id;
+
   try {
     let dish;
     if (id) {
-      dish = await apiCall(`/api/dishes/${id}`, 'PUT', { name, description, price });
+      dish = await apiCall(`/api/dishes/${id}`, 'PUT', { name, description, price, variantLabel, variantOptions });
     } else {
-      dish = await apiCall('/api/dishes', 'POST', { name, description, price });
+      dish = await apiCall('/api/dishes', 'POST', { name, description, price, variantLabel, variantOptions });
     }
     if (pendingImage) {
-      await apiCall(`/api/dishes/${dish.id}/image`, 'POST', { imageData: pendingImage });
+      const imageResult = await apiCall(`/api/dishes/${dish.id}/image`, 'POST', { imageData: pendingImage });
+      dish = { ...dish, imageId: imageResult.imageId };
     }
     await loadCatalogPicker();
-    resetCatalogDishForm();
-    renderCatalogList();
-    catalogDishStatus.className = 'status-msg-inline success';
-    catalogDishStatus.style.color = 'var(--status-in-office)';
-    catalogDishStatus.textContent = 'Dish saved!';
+
+    // The point of this form is always to finish with the dish in hand —
+    // for a brand-new dish from "Add New Dish" that means dropping it onto
+    // today's menu too; either way, close rather than linger on a form with
+    // nowhere left to browse to.
+    if (isNewDish && addNewDishToTodaysMenu) {
+      addCatalogPickRow(adminMenuList, dish);
+      closeCatalogModal();
+      showExportFeedback(`${dish.name} added to today's menu!`);
+    } else {
+      closeCatalogModal();
+      showExportFeedback('Dish saved!');
+    }
   } catch (err) {
     catalogDishStatus.className = 'status-msg-inline error-text';
     catalogDishStatus.textContent = err.message || 'Failed to save dish.';
   }
 }
 
-async function handleCatalogDishDelete(dish) {
-  const ok = await confirmDialog(`Remove "${dish.name}" from your catalog? Days that already used it keep their own record.`);
+// Removes the dish currently open in the Add/Edit Dish form from the
+// catalog entirely (soft delete server-side — any day that already used it
+// keeps its own frozen record).
+async function handleCatalogDishRemove() {
+  const id = catalogDishId.value;
+  const name = catalogDishName.value.trim() || 'this dish';
+  if (!id) return; // only ever shown while editing an existing dish
+
+  const ok = await confirmDialog(`Remove "${name}" from your catalog? Days that already used it keep their own record.`);
   if (!ok) return;
   try {
-    await apiCall(`/api/dishes/${dish.id}`, 'DELETE');
+    await apiCall(`/api/dishes/${id}`, 'DELETE');
     await loadCatalogPicker();
-    renderCatalogList();
+    closeCatalogModal();
+    showExportFeedback(`${name} removed from catalog.`);
   } catch (err) {
     showAlert(err.message || 'Failed to remove dish.');
   }
 }
 
-// --- Special Dishes ---
+// --- Weekly Repeats ---
 // A dish the admin configures once per weekday, auto-ADDED on top of
 // whatever's already on that day's menu at rollover (see
 // applyMenuTemplateForNewDate in server.js) — the day's menu already
 // behaves as the "permanent" base on its own (it carries over day to day
 // until an admin changes it), so this only ever appends to it, never
 // replaces it. Unlike the regular menu, it's day-scoped: it disappears
-// again the next day unless that day is also configured for it. Flow: pick
-// a dish, pick day(s), Add — one action, no per-day save step, no
-// "Special" checkbox (everything here is inherently a special addition).
+// again the next day unless that day is also configured for it. The modal
+// below covers scheduling a dish that ISN'T currently on today's menu; for
+// one already on today's menu, the repeat-icon toggle on its row in Today's
+// Menu Builder does the same thing in one click (see toggleRecurringDay).
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 let menuTemplate = null; // { companyId, days: { "0": [...], ..., "6": [...] } }
-let selectedTemplateDish = null; // { catalogDishId } or { name, description, price }
-let selectedTemplateWeekdays = new Set();
 
-async function openMenuTemplateModal() {
-  menuTemplateStatus.textContent = '';
-  selectedTemplateDish = null;
-  selectedTemplateWeekdays = new Set();
-  menuTemplateOneoffFields.classList.add('hidden');
-  clearSelectedTemplateDish();
-
+// Loads the recurring-dish template so each catalog row in Today's Menu
+// Builder can show/toggle which weekdays it repeats on.
+async function loadMenuTemplate() {
   try {
     menuTemplate = await apiCall('/api/menu-template');
   } catch (err) {
-    showAlert(err.message || 'Failed to load special dishes.');
-    return;
-  }
-  renderTemplateCatalogChips();
-  renderMenuTemplateWeekdayPicker();
-  renderSpecialDishList();
-  menuTemplateModalOverlay.classList.remove('hidden');
-}
-
-function closeMenuTemplateModal() {
-  menuTemplateModalOverlay.classList.add('hidden');
-}
-
-function renderTemplateCatalogChips() {
-  menuTemplateCatalogChips.innerHTML = '';
-  if (catalogDishes.length === 0) {
-    menuTemplateCatalogChips.innerHTML = '<span class="catalog-chip-empty">No dishes in your catalog yet — use "type a custom dish" below, or add some via Manage Catalog.</span>';
-    return;
-  }
-  catalogDishes.forEach(dish => {
-    const chip = document.createElement('div');
-    chip.className = 'catalog-chip';
-    chip.innerHTML = `
-      <img src="${getDishImage(dish)}" alt="" loading="lazy">
-      <span>${escapeHtml(dish.name)}${typeof dish.price === 'number' ? ` · ${formatPrice(dish.price)}` : ''}</span>
-    `;
-    chip.addEventListener('click', () => selectTemplateDish({ catalogDishId: dish.id, name: dish.name }));
-    menuTemplateCatalogChips.appendChild(chip);
-  });
-}
-
-function selectTemplateDish(dish) {
-  selectedTemplateDish = dish;
-  menuTemplateOneoffFields.classList.add('hidden');
-  menuTemplateSelectedDish.classList.remove('hidden');
-  menuTemplateSelectedDish.innerHTML = `
-    <span>Selected: <strong>${escapeHtml(dish.name)}</strong></span>
-    <button type="button" class="btn-clear-selected">Clear</button>
-  `;
-  menuTemplateSelectedDish.querySelector('.btn-clear-selected').addEventListener('click', clearSelectedTemplateDish);
-}
-
-function clearSelectedTemplateDish() {
-  selectedTemplateDish = null;
-  menuTemplateSelectedDish.classList.add('hidden');
-  menuTemplateSelectedDish.innerHTML = '';
-}
-
-function renderMenuTemplateWeekdayPicker() {
-  menuTemplateWeekdayPicker.innerHTML = WEEKDAY_LABELS.map((label, weekday) => `
-    <button type="button" class="week-day-tab" data-weekday="${weekday}">${label}</button>
-  `).join('');
-
-  menuTemplateWeekdayPicker.querySelectorAll('.week-day-tab').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const weekday = Number(btn.dataset.weekday);
-      if (selectedTemplateWeekdays.has(weekday)) {
-        selectedTemplateWeekdays.delete(weekday);
-        btn.classList.remove('active');
-      } else {
-        selectedTemplateWeekdays.add(weekday);
-        btn.classList.add('active');
-      }
-    });
-  });
-}
-
-// Flattens menuTemplate.days into one list, most relevant for a quick scan
-// of everything currently configured, each removable independently.
-function renderSpecialDishList() {
-  const rows = [];
-  WEEKDAY_LABELS.forEach((label, weekday) => {
-    const items = menuTemplate?.days?.[String(weekday)] || [];
-    items.forEach(item => {
-      rows.push({ weekday, label, item });
-    });
-  });
-
-  if (rows.length === 0) {
-    menuTemplateSpecialList.innerHTML = '<p class="help-text">No special dishes configured yet.</p>';
-    return;
-  }
-
-  menuTemplateSpecialList.innerHTML = rows.map(({ weekday, label, item }) => `
-    <div class="special-list-row">
-      <span class="special-list-row-day">${label}</span>
-      <span class="special-list-row-name">${escapeHtml(item.name || '(dish removed from catalog)')}</span>
-      <button type="button" class="btn btn-icon btn-logout btn-remove-special" data-weekday="${weekday}" data-item-id="${item.id}" title="Remove">
-        <span class="material-symbols-outlined">delete</span>
-      </button>
-    </div>
-  `).join('');
-
-  menuTemplateSpecialList.querySelectorAll('.btn-remove-special').forEach(btn => {
-    btn.addEventListener('click', () => removeSpecialDish(Number(btn.dataset.weekday), btn.dataset.itemId));
-  });
-}
-
-async function addSpecialDish() {
-  menuTemplateStatus.className = 'status-msg-inline';
-
-  const oneoffName = menuTemplateOneoffName.value.trim();
-  const dish = selectedTemplateDish || (oneoffName ? { name: oneoffName } : null);
-  if (!dish) {
-    menuTemplateStatus.className = 'status-msg-inline error-text';
-    menuTemplateStatus.textContent = 'Pick a dish first.';
-    return;
-  }
-  if (selectedTemplateWeekdays.size === 0) {
-    menuTemplateStatus.className = 'status-msg-inline error-text';
-    menuTemplateStatus.textContent = 'Pick at least one day.';
-    return;
-  }
-
-  const newItem = dish.catalogDishId
-    ? { catalogDishId: dish.catalogDishId }
-    : { name: dish.name, description: menuTemplateOneoffDesc.value.trim(), price: menuTemplateOneoffPrice.value.trim() ? Number(menuTemplateOneoffPrice.value.trim()) : null };
-
-  menuTemplateStatus.textContent = 'Adding...';
-  try {
-    await Promise.all([...selectedTemplateWeekdays].map(async weekday => {
-      const existing = menuTemplate.days?.[String(weekday)] || [];
-      const result = await apiCall(`/api/menu-template/${weekday}`, 'PUT', { items: [...existing, newItem] });
-      menuTemplate.days = { ...menuTemplate.days, [String(weekday)]: result.items };
-    }));
-
-    menuTemplateStatus.className = 'status-msg-inline success';
-    menuTemplateStatus.style.color = 'var(--status-in-office)';
-    menuTemplateStatus.textContent = 'Special dish added.';
-
-    // Reset the form for the next entry
-    clearSelectedTemplateDish();
-    menuTemplateOneoffFields.classList.add('hidden');
-    menuTemplateOneoffName.value = '';
-    menuTemplateOneoffDesc.value = '';
-    menuTemplateOneoffPrice.value = '';
-    selectedTemplateWeekdays = new Set();
-    renderMenuTemplateWeekdayPicker();
-    renderSpecialDishList();
-  } catch (err) {
-    menuTemplateStatus.className = 'status-msg-inline error-text';
-    menuTemplateStatus.textContent = err.message || 'Failed to add special dish.';
+    console.error('Error loading recurring dish template:', err);
+    menuTemplate = menuTemplate || { days: {} };
   }
 }
 
-async function removeSpecialDish(weekday, itemId) {
-  const existing = menuTemplate.days?.[String(weekday)] || [];
-  const updated = existing.filter(item => item.id !== itemId);
+// Toggles one catalog dish's membership in one weekday's recurring list —
+// called from the repeat-icon toggle on its row in Today's Menu Builder.
+// Returns true on success so the caller knows whether to flip its own UI state.
+async function toggleRecurringDay(catalogDishId, weekday) {
+  const existing = menuTemplate?.days?.[String(weekday)] || [];
+  const isOn = existing.some(item => item.catalogDishId === catalogDishId);
+  const updated = isOn
+    ? existing.filter(item => item.catalogDishId !== catalogDishId)
+    : [...existing, { catalogDishId }];
+
   try {
     const result = await apiCall(`/api/menu-template/${weekday}`, 'PUT', { items: updated });
     menuTemplate.days = { ...menuTemplate.days, [String(weekday)]: result.items };
-    renderSpecialDishList();
+    return true;
   } catch (err) {
-    showAlert(err.message || 'Failed to remove special dish.');
+    showAlert(err.message || 'Failed to update recurring days.');
+    return false;
   }
 }
 
@@ -3757,15 +3822,15 @@ function buildChecklistData(source, isLive) {
     const byDish = new Map();
     ordered.forEach(o => {
       if (!byDish.has(o.itemName)) byDish.set(o.itemName, []);
-      byDish.get(o.itemName).push({ userId: o.userId, name: o.name, served: !!o.served, note: o.note || '' });
+      byDish.get(o.itemName).push({ userId: o.userId, name: o.name, served: !!o.served, note: o.note || '', variant: o.variant || '' });
     });
     const columns = source.menu
       .map(d => ({ title: d.name, members: byDish.get(d.name) || [] }))
       .filter(c => c.members.length > 0);
 
     const rosterRows = [
-      ...ordered.map(o => ({ name: o.name, status: 'Ordered', dish: o.itemName })),
-      ...pending.map(p => ({ name: p.name, status: 'Unconfirmed', dish: '—' }))
+      ...ordered.map(o => ({ name: o.name, status: 'Ordered', dish: o.itemName, variant: o.variant || '' })),
+      ...pending.map(p => ({ name: p.name, status: 'Unconfirmed', dish: '—', variant: '' }))
     ];
 
     return {
@@ -3800,10 +3865,10 @@ function buildChecklistData(source, isLive) {
       if (o.itemId) dishTotals[o.itemId] = (dishTotals[o.itemId] || 0) + 1;
       const dishName = archive.menu.find(m => m.id === o.itemId)?.name || 'Unknown Dish';
       if (!byDish.has(dishName)) byDish.set(dishName, []);
-      byDish.get(dishName).push({ userId, name: u.name, served: !!o.served });
-      rosterRows.push({ name: u.name, status: 'Ordered', dish: dishName });
+      byDish.get(dishName).push({ userId, name: u.name, served: !!o.served, variant: o.variant || '' });
+      rosterRows.push({ name: u.name, status: 'Ordered', dish: dishName, variant: o.variant || '' });
     } else {
-      rosterRows.push({ name: u.name, status: 'Unconfirmed', dish: '—' });
+      rosterRows.push({ name: u.name, status: 'Unconfirmed', dish: '—', variant: '' });
     }
   });
 
@@ -3927,7 +3992,7 @@ function renderHistoryChecklistGrid() {
     const rows = col.members.map(member => `
       <button type="button" class="summary-member-row distribution-row ${member.served ? 'served' : ''}" data-user-id="${member.userId}">
         <span class="material-symbols-outlined">${member.served ? 'check_box' : 'check_box_outline_blank'}</span>
-        <span>${escapeHtml(member.name)}${member.note ? `<span class="text-muted"> — ${escapeHtml(member.note)}</span>` : ''}</span>
+        <span>${escapeHtml(member.name)}${member.variant ? `<span class="text-muted"> — ${escapeHtml(member.variant)}</span>` : ''}${member.note ? `<span class="text-muted"> — ${escapeHtml(member.note)}</span>` : ''}</span>
       </button>
     `).join('');
 
@@ -4012,8 +4077,8 @@ function exportHistoryCsv(data) {
     ['Dish', 'Quantity'],
     ...data.dishTotals.filter(d => d.count > 0).map(d => [d.name, String(d.count)]),
     [],
-    ['Name', 'Status', 'Dish Selection'],
-    ...data.rosterRows.map(r => [r.name, r.status, r.dish])
+    ['Name', 'Status', 'Dish Selection', 'Variant'],
+    ...data.rosterRows.map(r => [r.name, r.status, r.dish, r.variant || ''])
   ];
 
   const csvContent = "data:text/csv;charset=utf-8,"
@@ -4357,6 +4422,162 @@ function renderMyOrders(records) {
   });
 }
 
+// --- Tab: Catch the Food (mini-game) ---
+// A small distraction for while people wait on lunch — not persisted
+// server-side at all, just a canvas game with a per-browser high score.
+
+const GAME_FOOD_EMOJIS = ['🍚', '🍛', '🍗', '🥘', '🍲', '🧆', '🍜', '🥗', '🍖', '🍤'];
+const GAME_BASKET_EMOJI = '🧺';
+const GAME_ASPECT_RATIO = 0.75; // height = width * this
+
+let gameCtx = null;
+let gameRunning = false;
+let gameAnimHandle = null;
+let gameLastTimestamp = 0;
+let gameSpawnAccumulator = 0;
+let gameWidth = 0;
+let gameHeight = 0;
+let gameBasketX = 0;
+const GAME_BASKET_SIZE = 44;
+let gameKeyDir = 0; // -1 left, 1 right, 0 none — held-key continuous movement
+let gameItems = []; // { x, y, emoji, speed }
+let gameScore = 0;
+let gameLives = 3;
+
+function gameHighScoreKey() {
+  return `lunchsync_game_best_${currentUser?.id || 'anon'}`;
+}
+
+function getGameBestScore() {
+  return Number(localStorage.getItem(gameHighScoreKey())) || 0;
+}
+
+// Sizes the canvas's actual drawing buffer to match its displayed width
+// (CSS alone only stretches the default 300x150 buffer, which looks
+// blurry/squashed) — called on first opening the tab and on resize.
+function initGameCanvas() {
+  gameWidth = Math.round(gameCanvasWrap.clientWidth);
+  gameHeight = Math.round(gameWidth * GAME_ASPECT_RATIO);
+  gameCanvas.width = gameWidth;
+  gameCanvas.height = gameHeight;
+  gameCtx = gameCanvas.getContext('2d');
+  gameBasketX = gameWidth / 2;
+  gameBestScoreEl.textContent = getGameBestScore();
+  drawGameFrame(); // paint an empty board behind the "Start Game" overlay
+}
+
+function resetGameState() {
+  gameScore = 0;
+  gameLives = 3;
+  gameItems = [];
+  gameSpawnAccumulator = 0;
+  gameBasketX = gameWidth / 2;
+  gameScoreEl.textContent = '0';
+  gameLivesEl.textContent = '❤️❤️❤️';
+}
+
+function startGame() {
+  resetGameState();
+  gameOverlay.classList.add('hidden');
+  gameRunning = true;
+  gameLastTimestamp = performance.now();
+  gameAnimHandle = requestAnimationFrame(gameLoop);
+}
+
+function endGame() {
+  gameRunning = false;
+  if (gameAnimHandle) cancelAnimationFrame(gameAnimHandle);
+
+  const best = getGameBestScore();
+  if (gameScore > best) {
+    localStorage.setItem(gameHighScoreKey(), String(gameScore));
+    gameBestScoreEl.textContent = gameScore;
+  }
+
+  gameOverlayText.textContent = gameScore > best
+    ? `New best! You scored ${gameScore}.`
+    : `Game over — you scored ${gameScore}.`;
+  btnGameStart.innerHTML = '<span class="material-symbols-outlined">replay</span><span>Play Again</span>';
+  gameOverlay.classList.remove('hidden');
+}
+
+function gameLoop(timestamp) {
+  if (!gameRunning) return;
+  const dt = Math.min(timestamp - gameLastTimestamp, 50); // clamp to avoid huge jumps after a tab switch
+  gameLastTimestamp = timestamp;
+
+  // Continuous keyboard movement
+  if (gameKeyDir !== 0) {
+    gameBasketX += gameKeyDir * 0.5 * dt;
+  }
+  const halfBasket = GAME_BASKET_SIZE / 2;
+  gameBasketX = Math.max(halfBasket, Math.min(gameWidth - halfBasket, gameBasketX));
+
+  // Spawn new falling items, faster as the score climbs (floor so it never
+  // becomes unplayably frequent)
+  const spawnInterval = Math.max(450, 1000 - gameScore * 10);
+  gameSpawnAccumulator += dt;
+  if (gameSpawnAccumulator >= spawnInterval) {
+    gameSpawnAccumulator = 0;
+    gameItems.push({
+      x: GAME_BASKET_SIZE / 2 + Math.random() * (gameWidth - GAME_BASKET_SIZE),
+      y: -20,
+      emoji: GAME_FOOD_EMOJIS[Math.floor(Math.random() * GAME_FOOD_EMOJIS.length)],
+      speed: 0.08 + Math.min(0.12, gameScore * 0.002) + Math.random() * 0.03
+    });
+  }
+
+  // Update items — catch, miss, or still falling
+  const basketY = gameHeight - 30;
+  const remaining = [];
+  for (const item of gameItems) {
+    item.y += item.speed * dt;
+    const caught = item.y >= basketY - 10 && item.y <= basketY + 15
+      && Math.abs(item.x - gameBasketX) <= halfBasket;
+    if (caught) {
+      gameScore += 10;
+      gameScoreEl.textContent = gameScore;
+      continue;
+    }
+    if (item.y > gameHeight + 20) {
+      gameLives--;
+      gameLivesEl.textContent = '❤️'.repeat(Math.max(0, gameLives));
+      if (gameLives <= 0) {
+        endGame();
+        return;
+      }
+      continue;
+    }
+    remaining.push(item);
+  }
+  gameItems = remaining;
+
+  drawGameFrame();
+  gameAnimHandle = requestAnimationFrame(gameLoop);
+}
+
+function drawGameFrame() {
+  gameCtx.clearRect(0, 0, gameWidth, gameHeight);
+  gameCtx.font = '28px serif';
+  gameCtx.textAlign = 'center';
+  gameCtx.textBaseline = 'middle';
+
+  gameItems.forEach(item => {
+    gameCtx.fillText(item.emoji, item.x, item.y);
+  });
+
+  gameCtx.font = `${GAME_BASKET_SIZE}px serif`;
+  gameCtx.fillText(GAME_BASKET_EMOJI, gameBasketX, gameHeight - 30);
+}
+
+function gameSetBasketFromPointer(clientX) {
+  const rect = gameCanvas.getBoundingClientRect();
+  const scale = gameWidth / rect.width; // CSS can scale the canvas down from its buffer size
+  const x = (clientX - rect.left) * scale;
+  const halfBasket = GAME_BASKET_SIZE / 2;
+  gameBasketX = Math.max(halfBasket, Math.min(gameWidth - halfBasket, x));
+}
+
 // --- Event Listeners ---
 
 function setupEventListeners() {
@@ -4479,6 +4700,9 @@ function setupEventListeners() {
     const date = card.dataset.date;
     if (e.target.classList.contains('week-day-select')) {
       handleWeekDishChange(date, e.target.value);
+    } else if (e.target.classList.contains('week-day-variant')) {
+      const dishSelect = card.querySelector('.week-day-select');
+      handleWeekVariantChange(date, dishSelect.value, e.target.value);
     }
   });
   weekGrid.addEventListener('input', (e) => {
@@ -4540,21 +4764,13 @@ function setupEventListeners() {
   });
 
   // Admin Setup Menu buttons
-  btnAdminAddDish.addEventListener('click', () => addDishInputRow(adminMenuList));
+  btnAdminAddDish.addEventListener('click', () => openCatalogModal(true));
   btnAdminSaveMenu.addEventListener('click', saveAdminMenu);
 
-  // Dish Catalog
-  btnManageCatalog.addEventListener('click', openCatalogModal);
+  // Add/Edit Dish modal
   btnCatalogModalClose.addEventListener('click', closeCatalogModal);
-  btnManageMenuTemplate.addEventListener('click', openMenuTemplateModal);
-  btnMenuTemplateModalClose.addEventListener('click', closeMenuTemplateModal);
-  btnMenuTemplateAddOneoff.addEventListener('click', () => {
-    clearSelectedTemplateDish();
-    menuTemplateOneoffFields.classList.remove('hidden');
-    menuTemplateOneoffName.focus();
-  });
-  btnAddSpecialDish.addEventListener('click', addSpecialDish);
-  btnCatalogDishCancel.addEventListener('click', resetCatalogDishForm);
+  btnCatalogDishCancel.addEventListener('click', closeCatalogModal);
+  btnCatalogDishRemove.addEventListener('click', handleCatalogDishRemove);
   catalogDishForm.addEventListener('submit', handleCatalogDishFormSubmit);
   adminPublishToggle.addEventListener('change', handlePublishToggle);
 
@@ -4615,6 +4831,30 @@ function setupEventListeners() {
     const result = document.getElementById('bulk-import-result');
     result.classList.add('hidden');
     result.innerHTML = '';
+  });
+
+  // Catch the Food mini-game
+  btnGameStart.addEventListener('click', startGame);
+  gameCanvas.addEventListener('mousemove', (e) => {
+    if (gameRunning) gameSetBasketFromPointer(e.clientX);
+  });
+  gameCanvas.addEventListener('touchmove', (e) => {
+    if (gameRunning && e.touches[0]) {
+      gameSetBasketFromPointer(e.touches[0].clientX);
+      e.preventDefault(); // don't let the page scroll while playing
+    }
+  }, { passive: false });
+  document.addEventListener('keydown', (e) => {
+    if (activeTab !== 'game-tab' || !gameRunning) return;
+    if (e.key === 'ArrowLeft') { gameKeyDir = -1; e.preventDefault(); }
+    else if (e.key === 'ArrowRight') { gameKeyDir = 1; e.preventDefault(); }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.key === 'ArrowLeft' && gameKeyDir === -1) gameKeyDir = 0;
+    else if (e.key === 'ArrowRight' && gameKeyDir === 1) gameKeyDir = 0;
+  });
+  window.addEventListener('resize', () => {
+    if (activeTab === 'game-tab' && !gameRunning) initGameCanvas();
   });
 }
 

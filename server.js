@@ -501,6 +501,21 @@ function findMenuItemByName(menu, dishName) {
   return (menu || []).find(m => normalizeDishName(m.name) === key) || null;
 }
 
+// Helper: validate a submitted variant choice (e.g. Fufu's soup type,
+// Banku's sauce) against the menu item it's being ordered for. A dish with
+// no configured variantOptions has nothing to validate — variant is simply
+// forced to ''. A dish that DOES have options requires an exact (trimmed)
+// match against one of them; anything else is rejected rather than silently
+// dropped, since an unrecognized variant usually means the menu changed out
+// from under a stale client. Returns the normalized variant string on
+// success, or null if invalid/missing-when-required.
+function validateOrderVariant(menuItem, variant) {
+  const options = Array.isArray(menuItem?.variantOptions) ? menuItem.variantOptions : [];
+  if (options.length === 0) return '';
+  const trimmed = typeof variant === 'string' ? variant.trim() : '';
+  return options.includes(trimmed) ? trimmed : null;
+}
+
 // Helper: write a real order for a user on the given (already-loaded)
 // dailyState. Shared by the self-serve endpoint, the admin assign endpoint's
 // "today" path, and the weekly-plan rollover applier — one place that
@@ -868,8 +883,14 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
         // A manual pick always wins over a plan, so only apply if the user
         // hasn't already placed a real order for today some other way.
         const matched = findMenuItemByName(dailyState.menu, entry.dishName);
-        if (matched) {
-          writeOrderForUser(dailyState, userId, matched.id, entry.note, { viaWeeklyPlan: true });
+        // A dish that now requires a variant the plan never captured (e.g.
+        // variants were added to the catalog after this plan was saved) is
+        // treated the same as "dish gone from menu" — drop it and let the
+        // person pick manually, rather than silently applying an invalid
+        // or unintended variant.
+        const normalizedVariant = matched ? validateOrderVariant(matched, entry.variant) : null;
+        if (matched && normalizedVariant !== null) {
+          writeOrderForUser(dailyState, userId, matched.id, entry.note, { viaWeeklyPlan: true, variant: normalizedVariant });
         }
       }
       delete plan.entries[dailyState.date];
@@ -903,8 +924,14 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
 // dailyState.menu is never cleared on rollover, so menuSetDate, not "menu
 // is empty", is what distinguishes "already set for today" from "just
 // carried over from yesterday."
-// Mutates dailyState.menu/menuPublished/menuSetDate in place; caller saves
-// dailyState either way (mirrors applyWeeklyPlansForDate's contract).
+// menuPublished is deliberately left untouched here — it carries over
+// day to day exactly like the menu itself, so a weekday with a recurring
+// special dish (e.g. every Monday) auto-publishes instead of making the
+// admin manually re-publish each time that weekday comes around. If a
+// special dish ever needs a manual review step before going live, publish
+// it as a regular Today's Menu Builder item instead of a template special.
+// Mutates dailyState.menu/menuSetDate in place; caller saves dailyState
+// either way (mirrors applyWeeklyPlansForDate's contract).
 async function applyMenuTemplateForNewDate(companyId, dailyState) {
   if (!dailyState.date || dailyState.menuSetDate === dailyState.date) return;
 
@@ -927,7 +954,6 @@ async function applyMenuTemplateForNewDate(companyId, dailyState) {
     console.error(`[menuTemplate] failed to apply special dishes for company ${companyId}, weekday ${weekday}:`, err.message);
     return;
   }
-  dailyState.menuPublished = false; // a day whose specials just changed always starts unpublished — admin reviews first
   dailyState.menuSetDate = dailyState.date;
 }
 
@@ -1562,6 +1588,7 @@ app.get('/api/daily', authMiddleware, requireCompanyUser, async (req, res) => {
   const pending = [];
 
   const dishTotals = {};
+  const dishVariantTotals = {}; // itemId -> { variantString: count }
   dailyState.menu.forEach(item => {
     dishTotals[item.id] = 0;
   });
@@ -1578,10 +1605,15 @@ app.get('/api/daily', authMiddleware, requireCompanyUser, async (req, res) => {
         assignedBy: userOrder.assignedBy || null,
         served: !!userOrder.served,
         note: userOrder.note || '',
+        variant: userOrder.variant || '',
         viaWeeklyPlan: !!userOrder.viaWeeklyPlan
       });
       if (userOrder.itemId) {
         dishTotals[userOrder.itemId] = (dishTotals[userOrder.itemId] || 0) + 1;
+        if (userOrder.variant) {
+          dishVariantTotals[userOrder.itemId] = dishVariantTotals[userOrder.itemId] || {};
+          dishVariantTotals[userOrder.itemId][userOrder.variant] = (dishVariantTotals[userOrder.itemId][userOrder.variant] || 0) + 1;
+        }
       }
     } else {
       pending.push({
@@ -1641,7 +1673,8 @@ app.get('/api/daily', authMiddleware, requireCompanyUser, async (req, res) => {
       return {
         itemId: id,
         name: dish ? dish.name : 'Unknown Dish',
-        count
+        count,
+        variants: Object.entries(dishVariantTotals[id] || {}).map(([label, variantCount]) => ({ label, count: variantCount }))
       };
     })
   });
@@ -1656,6 +1689,35 @@ app.get('/api/daily', authMiddleware, requireCompanyUser, async (req, res) => {
 
 const MAX_DISH_IMAGE_BYTES = 300 * 1024; // original file size, pre-base64
 const ALLOWED_DISH_IMAGE_TYPES = new Set(['image/webp', 'image/jpeg', 'image/png']);
+const MAX_VARIANT_OPTIONS = 8;
+
+// Helper: shape-validate and normalize a dish's optional variant config
+// (e.g. Fufu's "Soup Type": Groundnut/Palmnut/Light, or Banku's "Sauce":
+// Okro/Pepper). variantOptions is the source of truth — a dish "has
+// variants" iff this array is non-empty; variantLabel just defaults to
+// "Option" so the order form always has something to show as the field
+// label even if the admin didn't bother naming it. Returns
+// { variantLabel, variantOptions } or throws { status, message }.
+function normalizeVariantConfig(variantLabel, variantOptions) {
+  if (variantOptions === undefined) return undefined; // caller didn't touch variants at all
+  if (!Array.isArray(variantOptions)) {
+    const err = new Error('variantOptions must be an array of strings.');
+    err.status = 400;
+    throw err;
+  }
+  const cleaned = [...new Set(
+    variantOptions.map(o => (typeof o === 'string' ? o.trim() : '')).filter(Boolean)
+  )];
+  if (cleaned.length > MAX_VARIANT_OPTIONS) {
+    const err = new Error(`A dish can have at most ${MAX_VARIANT_OPTIONS} variant options.`);
+    err.status = 400;
+    throw err;
+  }
+  return {
+    variantOptions: cleaned,
+    variantLabel: cleaned.length > 0 ? (String(variantLabel || '').trim() || 'Option') : null
+  };
+}
 
 app.get('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
   const dishes = await getDishes(req.user.companyId, { includeInactive: req.query.includeInactive === 'true' });
@@ -1663,12 +1725,19 @@ app.get('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
 });
 
 app.post('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
-  const { name, description, price } = req.body;
+  const { name, description, price, variantLabel, variantOptions } = req.body;
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'Dish name is required.' });
   }
   if (price !== undefined && price !== null && (!Number.isFinite(price) || price < 0)) {
     return res.status(400).json({ error: 'Price must be a non-negative number.' });
+  }
+
+  let variantConfig;
+  try {
+    variantConfig = normalizeVariantConfig(variantLabel, variantOptions) || { variantLabel: null, variantOptions: [] };
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
   }
 
   const companyId = req.user.companyId;
@@ -1679,6 +1748,7 @@ app.post('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
     description: description || '',
     price: Number.isFinite(price) ? price : null,
     imageId: null,
+    ...variantConfig,
     active: true,
     createdAt: Date.now(),
     updatedAt: Date.now()
@@ -1698,7 +1768,7 @@ app.post('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
 
 app.put('/api/dishes/:id', authMiddleware, requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const { name, description, price } = req.body;
+  const { name, description, price, variantLabel, variantOptions } = req.body;
   const companyId = req.user.companyId;
 
   const existing = await getDishById(companyId, id);
@@ -1709,6 +1779,13 @@ app.put('/api/dishes/:id', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Price must be a non-negative number.' });
   }
 
+  let variantConfig;
+  try {
+    variantConfig = normalizeVariantConfig(variantLabel, variantOptions);
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+
   const patch = { updatedAt: Date.now() };
   if (name !== undefined) {
     if (!name.trim()) return res.status(400).json({ error: 'Dish name is required.' });
@@ -1717,6 +1794,7 @@ app.put('/api/dishes/:id', authMiddleware, requireAdmin, async (req, res) => {
   }
   if (description !== undefined) patch.description = description;
   if (price !== undefined) patch.price = Number.isFinite(price) ? price : null;
+  if (variantConfig !== undefined) Object.assign(patch, variantConfig);
 
   try {
     await updateDish(companyId, id, patch);
@@ -1909,7 +1987,9 @@ async function resolveMenuItems(companyId, rawItems) {
         price: typeof dish.price === 'number' ? dish.price : null,
         catalogDishId: dish.id,
         imageId: dish.imageId || null,
-        special: !!item.special
+        special: !!item.special,
+        variantLabel: dish.variantLabel || null,
+        variantOptions: Array.isArray(dish.variantOptions) ? dish.variantOptions : []
       });
     } else {
       if (!item.name) {
@@ -1924,7 +2004,9 @@ async function resolveMenuItems(companyId, rawItems) {
         price: Number.isFinite(item.price) ? item.price : null,
         catalogDishId: null,
         imageId: null,
-        special: !!item.special
+        special: !!item.special,
+        variantLabel: null,
+        variantOptions: []
       });
     }
   }
@@ -2079,7 +2161,7 @@ app.post('/api/operational-days', authMiddleware, requireAdmin, async (req, res)
 
 // Team Member: Place daily dish order
 app.post('/api/order', authMiddleware, requireCompanyUser, async (req, res) => {
-  const { itemId, note } = req.body;
+  const { itemId, note, variant } = req.body;
   const userId = req.user.id;
   const companyId = req.user.companyId;
 
@@ -2099,12 +2181,16 @@ app.post('/api/order', authMiddleware, requireCompanyUser, async (req, res) => {
   if (!itemId) {
     return res.status(400).json({ error: 'A dish selection is required.' });
   }
-  const dishExists = dailyState.menu.some(m => m.id === itemId);
-  if (!dishExists) {
+  const menuItem = dailyState.menu.find(m => m.id === itemId);
+  if (!menuItem) {
     return res.status(400).json({ error: 'Dish is not on today\'s menu.' });
   }
+  const normalizedVariant = validateOrderVariant(menuItem, variant);
+  if (normalizedVariant === null) {
+    return res.status(400).json({ error: `Please choose a ${menuItem.variantLabel} for ${menuItem.name}.` });
+  }
 
-  const order = writeOrderForUser(dailyState, userId, itemId, note);
+  const order = writeOrderForUser(dailyState, userId, itemId, note, { variant: normalizedVariant });
 
   await saveDailyState(companyId, dailyState);
   res.json({ success: true, order });
@@ -2138,7 +2224,7 @@ app.delete('/api/order', authMiddleware, requireCompanyUser, async (req, res) =>
 // same cutoff as self-serve orders — an admin needing more room to add
 // stragglers should grant extra time via /api/cutoff/extend instead.
 app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req, res) => {
-  const { userId, itemId, note } = req.body;
+  const { userId, itemId, note, variant } = req.body;
   if (!userId || !itemId) {
     return res.status(400).json({ error: 'userId and itemId are required.' });
   }
@@ -2163,9 +2249,13 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
   if (!dailyState.menuPublished) {
     return res.status(400).json({ error: 'Today\'s menu has not been published yet.' });
   }
-  const dishExists = dailyState.menu.some(m => m.id === itemId);
-  if (!dishExists) {
+  const menuItem = dailyState.menu.find(m => m.id === itemId);
+  if (!menuItem) {
     return res.status(400).json({ error: 'Dish is not on today\'s menu.' });
+  }
+  const normalizedVariant = validateOrderVariant(menuItem, variant);
+  if (normalizedVariant === null) {
+    return res.status(400).json({ error: `Please choose a ${menuItem.variantLabel} for ${menuItem.name}.` });
   }
 
   dailyState.orders = dailyState.orders || {};
@@ -2173,7 +2263,8 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
     itemId,
     timestamp: Date.now(),
     assignedBy: req.user.name,
-    note: sanitizeOrderNote(note)
+    note: sanitizeOrderNote(note),
+    variant: normalizedVariant
   };
 
   await saveDailyState(companyId, dailyState);
@@ -2205,6 +2296,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
   let source = 'none';
   let dishName = null;
   let note = '';
+  let variant = '';
   let served = false;
   let viaWeeklyPlan = false;
   let dishStillOnMenu = null;
@@ -2218,6 +2310,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
       dishName = dish?.name || null;
       imageId = dish?.imageId || null;
       note = pastOrder.note || '';
+      variant = pastOrder.variant || '';
       served = !!pastOrder.served;
       viaWeeklyPlan = !!pastOrder.viaWeeklyPlan;
     }
@@ -2229,6 +2322,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
       dishName = dish?.name || null;
       imageId = dish?.imageId || null;
       note = order.note || '';
+      variant = order.variant || '';
       served = !!order.served;
       viaWeeklyPlan = !!order.viaWeeklyPlan;
     }
@@ -2238,6 +2332,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
       source = 'plan';
       dishName = planEntry.dishName;
       note = planEntry.note || '';
+      variant = planEntry.variant || '';
       const matched = findMenuItemByName(dailyState.menu, planEntry.dishName);
       dishStillOnMenu = !!matched;
       imageId = matched?.imageId || null;
@@ -2246,7 +2341,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
 
   return {
     date, weekday, dayName, isToday, isPast, isOperational, isLocked,
-    cutoffTimestamp, source, dishName, note, served, viaWeeklyPlan, dishStillOnMenu, imageId,
+    cutoffTimestamp, source, dishName, note, variant, served, viaWeeklyPlan, dishStillOnMenu, imageId,
     editable: !isLocked && isOperational && !!dailyState.menuPublished
   };
 }
@@ -2282,7 +2377,7 @@ app.get('/api/week-plan', authMiddleware, requireCompanyUser, async (req, res) =
 // never a "plan", it's the live order.
 app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, res) => {
   const { date } = req.params;
-  const { dishName, note } = req.body;
+  const { dishName, note, variant } = req.body;
   const userId = req.user.id;
   const companyId = req.user.companyId;
 
@@ -2310,12 +2405,16 @@ app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, 
   if (!matched) {
     return res.status(400).json({ error: 'Dish is not on the menu.' });
   }
+  const normalizedVariant = validateOrderVariant(matched, variant);
+  if (normalizedVariant === null) {
+    return res.status(400).json({ error: `Please choose a ${matched.variantLabel} for ${matched.name}.` });
+  }
 
   const plan = await getWeeklyPlan(companyId, userId);
   plan.entries = plan.entries || {};
 
   if (date === dailyState.date) {
-    writeOrderForUser(dailyState, userId, matched.id, note);
+    writeOrderForUser(dailyState, userId, matched.id, note, { variant: normalizedVariant });
     await saveDailyState(companyId, dailyState);
     // A real order now exists for today — drop any lingering plan entry so
     // the two stores never disagree about what "today" means.
@@ -2327,6 +2426,7 @@ app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, 
     plan.entries[date] = {
       dishName: matched.name,
       note: sanitizeOrderNote(note),
+      variant: normalizedVariant,
       updatedAt: Date.now(),
       source: 'manual'
     };
@@ -2403,6 +2503,17 @@ app.post('/api/week-plan/repeat', authMiddleware, requireCompanyUser, async (req
   const matched = findMenuItemByName(dailyState.menu, dishName);
   if (!matched) {
     return res.status(400).json({ error: 'Dish is not on the menu.' });
+  }
+  if (matched.variantOptions?.length > 0) {
+    // This endpoint deliberately fans one pick across several days with no
+    // per-day customization (same as it drops the note) — a dish needing a
+    // variant has no single answer that's right for every day, so repeating
+    // it isn't offered at all rather than silently guessing or applying an
+    // arbitrary option. Set each day individually from the weekly planner
+    // instead, or from Order Lunch for today.
+    return res.status(400).json({
+      error: `${matched.name} needs a ${matched.variantLabel} choice each day, so it can't be repeated across the week — set it individually per day instead.`
+    });
   }
 
   const plan = await getWeeklyPlan(companyId, userId);

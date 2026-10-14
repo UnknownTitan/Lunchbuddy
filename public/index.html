@@ -346,6 +346,10 @@
           <span class="material-symbols-outlined">receipt_long</span>
           <span>My Orders</span>
         </button>
+        <button class="nav-tab" data-target="game-tab" id="nav-tab-game">
+          <span class="material-symbols-outlined">sports_esports</span>
+          <span>Catch the Food</span>
+        </button>
         <button class="nav-tab platform-admin-only hidden" data-target="companies-tab">
           <span class="material-symbols-outlined">domain</span>
           <span>Companies</span>
@@ -449,6 +453,13 @@
                 <div class="menu-grid hidden" id="menu-items-grid">
                   <!-- Populated by JS -->
                 </div>
+              </div>
+
+              <div class="form-group hidden" id="order-variant-section">
+                <label for="order-variant-select" id="order-variant-label">Choose an option</label>
+                <select id="order-variant-select">
+                  <option value="">Select…</option>
+                </select>
               </div>
 
               <div class="form-group" id="order-note-section">
@@ -620,19 +631,7 @@
               </div>
               
               <div class="catalog-picker-section">
-                <div class="catalog-picker-header-row">
-                  <label>Pick from your catalog</label>
-                  <div class="catalog-picker-header-actions">
-                    <button type="button" class="btn btn-secondary btn-sm" id="btn-manage-menu-template">
-                      <span class="material-symbols-outlined">auto_awesome</span>
-                      <span>Special Dishes</span>
-                    </button>
-                    <button type="button" class="btn btn-secondary btn-sm" id="btn-manage-catalog">
-                      <span class="material-symbols-outlined">restaurant_menu</span>
-                      <span>Manage Catalog</span>
-                    </button>
-                  </div>
-                </div>
+                <label>Pick from your catalog</label>
                 <div class="catalog-picker-chips" id="catalog-picker-chips">
                   <!-- Populated by JS -->
                 </div>
@@ -644,7 +643,7 @@
 
               <button class="btn btn-secondary btn-sm" id="btn-admin-add-dish">
                 <span class="material-symbols-outlined">add</span>
-                <span>Add One-Off Dish</span>
+                <span>Add New Dish</span>
               </button>
 
               <hr class="divider">
@@ -665,24 +664,18 @@
               <p id="admin-menu-status" class="status-msg-inline"></p>
             </div>
 
-            <!-- Dish Catalog Modal -->
+            <!-- Add/Edit Dish Modal -->
             <div class="modal-overlay hidden" id="catalog-modal-overlay">
               <div class="panel-card modal-card">
                 <div class="card-header modal-header">
                   <div>
-                    <h2>Dish Catalog</h2>
-                    <p>Manage reusable dishes with pricing and photos.</p>
+                    <h2 id="catalog-modal-title">Add New Dish</h2>
+                    <p>Reusable in your catalog — pricing and photo included.</p>
                   </div>
                   <button type="button" class="btn btn-icon" id="btn-catalog-modal-close" title="Close">
                     <span class="material-symbols-outlined">close</span>
                   </button>
                 </div>
-
-                <div class="catalog-list" id="catalog-list">
-                  <!-- Populated by JS -->
-                </div>
-
-                <hr class="divider">
 
                 <form id="catalog-dish-form">
                   <input type="hidden" id="catalog-dish-id" value="">
@@ -708,66 +701,22 @@
                     <img id="catalog-dish-image-preview" class="catalog-dish-image-preview hidden" alt="">
                   </div>
 
+                  <div class="form-group">
+                    <div class="label-with-help">
+                      <label for="catalog-dish-variant-label">Variant Options (Optional)</label>
+                      <span class="help-text">e.g. let people choose a soup type or sauce for this dish</span>
+                    </div>
+                    <input type="text" id="catalog-dish-variant-label" placeholder="Option label, e.g. Soup Type">
+                    <input type="text" id="catalog-dish-variant-options" placeholder="Comma-separated choices, e.g. Groundnut soup, Palmnut soup, Light soup" style="margin-top:0.5rem">
+                  </div>
+
                   <div class="roster-form-actions">
                     <button type="submit" class="btn btn-primary" id="btn-catalog-dish-submit">Save Dish</button>
                     <button type="button" class="btn btn-secondary" id="btn-catalog-dish-cancel">Cancel</button>
+                    <button type="button" class="btn btn-danger hidden" id="btn-catalog-dish-remove">Remove from Catalog</button>
                   </div>
                   <p id="catalog-dish-status" class="status-msg-inline"></p>
                 </form>
-              </div>
-            </div>
-
-            <!-- Special Dishes Modal -->
-            <div class="modal-overlay hidden" id="menu-template-modal-overlay">
-              <div class="panel-card modal-card">
-                <div class="card-header modal-header">
-                  <div>
-                    <h2>Special Dishes</h2>
-                    <p>Pick a dish, pick which day(s) of the week it should show up, and add it — it'll automatically appear on top of the regular menu on those days, every week, and disappear again on days it isn't configured for.</p>
-                  </div>
-                  <button type="button" class="btn btn-icon" id="btn-menu-template-modal-close" title="Close">
-                    <span class="material-symbols-outlined">close</span>
-                  </button>
-                </div>
-
-                <div class="catalog-picker-section">
-                  <label>1. Pick a dish</label>
-                  <div class="catalog-picker-chips" id="menu-template-catalog-chips">
-                    <!-- Populated by JS -->
-                  </div>
-                  <button type="button" class="btn btn-secondary btn-sm" id="btn-menu-template-add-oneoff">
-                    <span class="material-symbols-outlined">add</span>
-                    <span>Or type a custom dish</span>
-                  </button>
-                  <div id="menu-template-oneoff-fields" class="menu-template-oneoff-fields hidden">
-                    <input type="text" id="menu-template-oneoff-name" placeholder="Dish name">
-                    <input type="text" id="menu-template-oneoff-desc" placeholder="Optional description">
-                    <input type="number" id="menu-template-oneoff-price" min="0" step="0.01" placeholder="Price (optional)">
-                  </div>
-                  <div id="menu-template-selected-dish" class="menu-template-selected-dish hidden"></div>
-                </div>
-
-                <div class="catalog-picker-section">
-                  <label>2. Which day(s)?</label>
-                  <div class="week-day-tabs" id="menu-template-weekday-picker">
-                    <!-- Populated by JS: Sun..Sat, multi-select toggles -->
-                  </div>
-                </div>
-
-                <button class="btn btn-primary" id="btn-add-special-dish">
-                  <span class="material-symbols-outlined">add_circle</span>
-                  <span>Add Special Dish</span>
-                </button>
-                <p id="menu-template-status" class="status-msg-inline"></p>
-
-                <hr class="divider">
-
-                <div class="card-header">
-                  <h3>Configured Special Dishes</h3>
-                </div>
-                <div id="menu-template-special-list" class="menu-template-special-list">
-                  <!-- Populated by JS -->
-                </div>
               </div>
             </div>
 
@@ -1462,6 +1411,33 @@
             </div>
             <div class="trends-chart-wrap trends-chart-wrap-sm">
               <canvas id="my-trends-chart"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <!-- TAB: CATCH THE FOOD (MINI GAME) -->
+        <section class="tab-panel" id="game-tab">
+          <div class="panel-card game-card">
+            <div class="card-header">
+              <h2>Catch the Food</h2>
+              <p>Something to do while you wait for lunch to arrive.</p>
+            </div>
+
+            <div class="game-stats-row">
+              <span>Score: <strong id="game-score">0</strong></span>
+              <span>Best: <strong id="game-best-score">0</strong></span>
+              <span id="game-lives">❤️❤️❤️</span>
+            </div>
+
+            <div class="game-canvas-wrap">
+              <canvas id="game-canvas"></canvas>
+              <div class="game-overlay" id="game-overlay">
+                <p id="game-overlay-text">Catch the falling food — use ← → or drag, or swipe on mobile.</p>
+                <button type="button" class="btn btn-primary" id="btn-game-start">
+                  <span class="material-symbols-outlined">play_arrow</span>
+                  <span>Start Game</span>
+                </button>
+              </div>
             </div>
           </div>
         </section>
