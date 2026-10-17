@@ -349,12 +349,12 @@ const myOrdersContainer = document.getElementById('my-orders-container');
 // Catch the Food mini-game
 const gameCanvas = document.getElementById('game-canvas');
 const gameCanvasWrap = document.querySelector('.game-canvas-wrap');
+const gameCountdownEl = document.getElementById('game-countdown');
 const gameOverlay = document.getElementById('game-overlay');
 const gameOverlayText = document.getElementById('game-overlay-text');
 const btnGameStart = document.getElementById('btn-game-start');
 const gameScoreEl = document.getElementById('game-score');
 const gameBestScoreEl = document.getElementById('game-best-score');
-const gameLivesEl = document.getElementById('game-lives');
 const myTrendsCard = document.getElementById('my-trends-card');
 const myTrendsStats = document.getElementById('my-trends-stats');
 const myTrendsChartCanvas = document.getElementById('my-trends-chart');
@@ -2178,6 +2178,17 @@ function renderDetailedBreakdownList() {
     members: byDish.get(dish.name) || []
   }));
 
+  // Safety net: anyone whose ordered dish name doesn't match a current menu
+  // column (e.g. that dish was removed from today's menu after they
+  // ordered it) still gets a column instead of silently disappearing from
+  // the breakdown while still counting toward "Ordered" in the stats above.
+  const coveredNames = new Set(columns.map(c => c.title));
+  byDish.forEach((members, itemName) => {
+    if (!coveredNames.has(itemName)) {
+      columns.push({ title: itemName, members });
+    }
+  });
+
   if (columns.length === 0) {
     summaryGroups.innerHTML = '<div class="no-results">No dishes on today\'s menu yet.</div>';
   } else {
@@ -2459,6 +2470,15 @@ function exportCsvSummary() {
       title: `${dish.name} (${dish.count})`,
       names: (byDish.get(dish.name) || []).slice().sort((a, b) => a.localeCompare(b))
     }));
+
+  // Safety net: don't silently drop anyone whose dish name doesn't match a
+  // current menu column (e.g. removed from today's menu after they ordered).
+  const coveredDishNames = new Set(dailyState.dishTotals.map(d => d.name));
+  byDish.forEach((names, itemName) => {
+    if (!coveredDishNames.has(itemName)) {
+      columns.push({ title: `${itemName} (${names.length})`, names: names.slice().sort((a, b) => a.localeCompare(b)) });
+    }
+  });
 
   const pendingList = dailyState.orders.pending || [];
   if (pendingList.length > 0) {
@@ -3828,6 +3848,14 @@ function buildChecklistData(source, isLive) {
       .map(d => ({ title: d.name, members: byDish.get(d.name) || [] }))
       .filter(c => c.members.length > 0);
 
+    // Safety net: anyone whose dish isn't on today's current menu (e.g. it
+    // was removed after they ordered) still gets a column instead of
+    // silently disappearing from the handout checklist.
+    const coveredDishNames = new Set(columns.map(c => c.title));
+    byDish.forEach((members, itemName) => {
+      if (!coveredDishNames.has(itemName)) columns.push({ title: itemName, members });
+    });
+
     const rosterRows = [
       ...ordered.map(o => ({ name: o.name, status: 'Ordered', dish: o.itemName, variant: o.variant || '' })),
       ...pending.map(p => ({ name: p.name, status: 'Unconfirmed', dish: '—', variant: '' }))
@@ -3875,6 +3903,13 @@ function buildChecklistData(source, isLive) {
   const columns = archive.menu
     .map(d => ({ title: d.name, members: byDish.get(d.name) || [] }))
     .filter(c => c.members.length > 0);
+
+  // Safety net: a dish removed from the menu before that day's archive was
+  // taken would otherwise drop its orderer from view entirely.
+  const archiveCoveredNames = new Set(columns.map(c => c.title));
+  byDish.forEach((members, dishName) => {
+    if (!archiveCoveredNames.has(dishName)) columns.push({ title: dishName, members });
+  });
 
   return {
     date: archive.date,
@@ -4422,64 +4457,222 @@ function renderMyOrders(records) {
   });
 }
 
-// --- Tab: Catch the Food (mini-game) ---
+// --- Tab: Lunch Run (3D mini-game) ---
 // A small distraction for while people wait on lunch — not persisted
-// server-side at all, just a canvas game with a per-browser high score.
+// server-side, just a Three.js endless runner with a per-browser high
+// score. Three.js itself is lazy-loaded on first visit to this tab (same
+// pattern as loadChartJs() for the Trends tab) so it never costs anything
+// on the far more common Order Lunch page load.
+//
+// Mechanics: 4 lanes, the world scrolls toward the camera rather than the
+// player moving through it (simpler endless-spawn logic). Obstacles come in
+// three flavors — 'block' (full lane, must switch lanes), 'low' (must
+// jump), 'high' (must slide) — and every spawned row guarantees at least
+// one clear lane so a run is never unwinnable by bad luck. Food items are
+// optional bonus pickups, always placed in a lane that's clear that row.
+// Collision is resolved by game state (is the player jumping/sliding/in the
+// right lane), not literal 3D mesh intersection — simpler and more
+// reliable for a fast-reaction game than physics-accurate hit-testing.
 
-const GAME_FOOD_EMOJIS = ['🍚', '🍛', '🍗', '🥘', '🍲', '🧆', '🍜', '🥗', '🍖', '🍤'];
-const GAME_BASKET_EMOJI = '🧺';
-const GAME_ASPECT_RATIO = 0.75; // height = width * this
+let THREE = null;
+let threeJsLoadPromise = null;
+function loadThreeJs() {
+  if (!threeJsLoadPromise) {
+    threeJsLoadPromise = import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js')
+      .then(mod => { THREE = mod; });
+  }
+  return threeJsLoadPromise;
+}
 
-let gameCtx = null;
+const GAME_LANE_COUNT = 4;
+const GAME_LANE_WIDTH = 2;
+const GAME_ROAD_WIDTH = GAME_LANE_COUNT * GAME_LANE_WIDTH;
+const GAME_LANE_CENTERS = Array.from({ length: GAME_LANE_COUNT }, (_, i) =>
+  -GAME_ROAD_WIDTH / 2 + GAME_LANE_WIDTH * (i + 0.5)
+);
+const GAME_SPAWN_Z = -60;
+const GAME_REMOVE_Z = 8;
+const GAME_PLAYER_GROUND_Y = 0.6;
+const GAME_JUMP_VELOCITY = 7;
+const GAME_GRAVITY = 20;
+const GAME_JUMP_CLEAR_HEIGHT = 0.45; // player.y above this clears a 'low' obstacle
+const GAME_SLIDE_DURATION_MS = 600;
+const GAME_COLLISION_WINDOW = 0.9; // how close (in z) an obstacle must be to the player to resolve
+const GAME_BASE_SPEED = 9; // units/sec
+const GAME_MAX_SPEED = 22;
+const GAME_FOOD_EMOJIS = ['🍚', '🍛', '🍗', '🥘', '🍲', '🧆', '🍜', '🥗'];
+const GAME_LANE_KEY_COOLDOWN_MS = 150;
+
+let gameRenderer = null;
+let gameScene = null;
+let gameCamera = null;
+let gamePlayerMesh = null;
+let gameRoadTexture = null;
+let gameObjects = []; // { mesh, lane, kind: 'block'|'low'|'high'|'food', resolved }
 let gameRunning = false;
+let gamePhase = 'playing'; // 'countdown' | 'playing'
 let gameAnimHandle = null;
 let gameLastTimestamp = 0;
+let gameCountdownEndAt = 0;
+let gameDistance = 0; // drives score + speed ramp
 let gameSpawnAccumulator = 0;
-let gameWidth = 0;
-let gameHeight = 0;
-let gameBasketX = 0;
-const GAME_BASKET_SIZE = 44;
-let gameKeyDir = 0; // -1 left, 1 right, 0 none — held-key continuous movement
-let gameItems = []; // { x, y, emoji, speed }
+let gameNextSpawnDistance = 10;
+let gamePlayerLane = Math.floor(GAME_LANE_COUNT / 2);
+let gamePlayerX = 0;
+let gamePlayerY = 0;
+let gamePlayerVY = 0;
+let gameIsJumping = false;
+let gameIsSliding = false;
+let gameSlideEndAt = 0;
+let gameLastLaneKeyAt = 0;
 let gameScore = 0;
-let gameLives = 3;
+let gameAudioCtx = null;
 
 function gameHighScoreKey() {
-  return `lunchsync_game_best_${currentUser?.id || 'anon'}`;
+  return `lunchsync_runner_best_${currentUser?.id || 'anon'}`;
 }
 
 function getGameBestScore() {
   return Number(localStorage.getItem(gameHighScoreKey())) || 0;
 }
 
-// Sizes the canvas's actual drawing buffer to match its displayed width
-// (CSS alone only stretches the default 300x150 buffer, which looks
-// blurry/squashed) — called on first opening the tab and on resize.
-function initGameCanvas() {
-  gameWidth = Math.round(gameCanvasWrap.clientWidth);
-  gameHeight = Math.round(gameWidth * GAME_ASPECT_RATIO);
-  gameCanvas.width = gameWidth;
-  gameCanvas.height = gameHeight;
-  gameCtx = gameCanvas.getContext('2d');
-  gameBasketX = gameWidth / 2;
+// Renders an emoji onto a small canvas and wraps it as a camera-facing
+// sprite — the cheapest way to get thematic "food" visuals in 3D without
+// shipping/loading real model assets.
+function gameMakeEmojiSprite(emoji, size = 64) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.font = `${Math.round(size * 0.8)}px serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(emoji, size / 2, size / 2 + size * 0.05);
+  const texture = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true }));
+  sprite.scale.set(0.9, 0.9, 0.9);
+  return sprite;
+}
+
+// A simple striped lane-divider texture, scrolled each frame to sell the
+// sense of forward motion even though the road plane itself never moves.
+function gameMakeRoadTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#33415c';
+  ctx.fillRect(0, 0, 64, 256);
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([22, 18]);
+  for (let i = 1; i < GAME_LANE_COUNT; i++) {
+    const x = (64 / GAME_LANE_COUNT) * i;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, 256);
+    ctx.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 30);
+  return texture;
+}
+
+// Builds the renderer/scene/camera/road once Three.js is loaded, then
+// paints a static first frame — called on first opening the tab and on
+// resize (only while not mid-run, so a resize never disrupts a game).
+async function initGameCanvas() {
+  try {
+    await loadThreeJs();
+  } catch (err) {
+    console.error('Failed to load 3D engine:', err);
+    gameOverlayText.textContent = "Couldn't load the 3D engine — check your connection and reopen this tab.";
+    return;
+  }
+
+  const width = Math.round(gameCanvasWrap.clientWidth);
+  const height = Math.round(width * 0.6);
+
+  if (!gameRenderer) {
+    try {
+      gameRenderer = new THREE.WebGLRenderer({ canvas: gameCanvas, antialias: true });
+    } catch (err) {
+      console.error('WebGL unavailable:', err);
+      gameOverlayText.textContent = '3D isn\'t supported in this browser.';
+      return;
+    }
+    gameRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+    gameScene = new THREE.Scene();
+    gameScene.background = new THREE.Color(0xffdca8);
+    gameScene.fog = new THREE.Fog(0xffdca8, 20, 55);
+
+    gameCamera = new THREE.PerspectiveCamera(62, width / height, 0.1, 200);
+
+    gameScene.add(new THREE.AmbientLight(0xffffff, 0.75));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.7);
+    sun.position.set(4, 10, 6);
+    gameScene.add(sun);
+
+    gameRoadTexture = gameMakeRoadTexture();
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(GAME_ROAD_WIDTH, 240),
+      new THREE.MeshStandardMaterial({ map: gameRoadTexture })
+    );
+    road.rotation.x = -Math.PI / 2;
+    road.position.set(0, 0, -90);
+    gameScene.add(road);
+
+    gamePlayerMesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.4, 0.7, 4, 8),
+      new THREE.MeshStandardMaterial({ color: 0x6366f1 })
+    );
+    gameScene.add(gamePlayerMesh);
+  }
+
+  gameRenderer.setSize(width, height, false);
+  gameCamera.aspect = width / height;
+  gameCamera.updateProjectionMatrix();
+
   gameBestScoreEl.textContent = getGameBestScore();
-  drawGameFrame(); // paint an empty board behind the "Start Game" overlay
+  gamePlayerLane = Math.floor(GAME_LANE_COUNT / 2);
+  gamePlayerX = GAME_LANE_CENTERS[gamePlayerLane];
+  gamePlayerY = 0;
+  gameUpdatePlayerMesh();
+  gameUpdateCamera();
+  gameRenderer.render(gameScene, gameCamera); // paint a static frame behind the "Start Game" overlay
+}
+
+function gameClearObjects() {
+  gameObjects.forEach(obj => gameScene.remove(obj.mesh));
+  gameObjects = [];
 }
 
 function resetGameState() {
   gameScore = 0;
-  gameLives = 3;
-  gameItems = [];
+  gameDistance = 0;
   gameSpawnAccumulator = 0;
-  gameBasketX = gameWidth / 2;
+  gameNextSpawnDistance = 10;
+  gamePlayerLane = Math.floor(GAME_LANE_COUNT / 2);
+  gamePlayerX = GAME_LANE_CENTERS[gamePlayerLane];
+  gamePlayerY = 0;
+  gamePlayerVY = 0;
+  gameIsJumping = false;
+  gameIsSliding = false;
+  gameClearObjects();
+  gameUpdatePlayerMesh();
   gameScoreEl.textContent = '0';
-  gameLivesEl.textContent = '❤️❤️❤️';
 }
 
 function startGame() {
+  if (!gameRenderer) return; // 3D engine failed to load — nothing to start
   resetGameState();
+  gameEnsureAudio();
   gameOverlay.classList.add('hidden');
   gameRunning = true;
+  gamePhase = 'countdown';
+  gameCountdownEndAt = performance.now() + 3000;
   gameLastTimestamp = performance.now();
   gameAnimHandle = requestAnimationFrame(gameLoop);
 }
@@ -4487,6 +4680,7 @@ function startGame() {
 function endGame() {
   gameRunning = false;
   if (gameAnimHandle) cancelAnimationFrame(gameAnimHandle);
+  gamePlayGameOverChime();
 
   const best = getGameBestScore();
   if (gameScore > best) {
@@ -4501,81 +4695,233 @@ function endGame() {
   gameOverlay.classList.remove('hidden');
 }
 
+function gameChangeLane(dir) {
+  const now = performance.now();
+  if (now - gameLastLaneKeyAt < GAME_LANE_KEY_COOLDOWN_MS) return;
+  gameLastLaneKeyAt = now;
+  gamePlayerLane = Math.max(0, Math.min(GAME_LANE_COUNT - 1, gamePlayerLane + dir));
+}
+
+function gameJump() {
+  if (gameIsJumping || gameIsSliding) return;
+  gameIsJumping = true;
+  gamePlayerVY = GAME_JUMP_VELOCITY;
+  gamePlayTone(480, 0.08, 'sine', 0.05);
+}
+
+function gameSlide() {
+  if (gameIsJumping || gameIsSliding) return;
+  gameIsSliding = true;
+  gameSlideEndAt = performance.now() + GAME_SLIDE_DURATION_MS;
+  gamePlayTone(300, 0.08, 'triangle', 0.05);
+}
+
+function gameUpdatePlayerMesh() {
+  gamePlayerMesh.position.x = gamePlayerX;
+  gamePlayerMesh.position.y = GAME_PLAYER_GROUND_Y + gamePlayerY;
+  gamePlayerMesh.scale.y = gameIsSliding ? 0.5 : 1;
+  gamePlayerMesh.position.y -= gameIsSliding ? 0.25 : 0; // keep feet on the ground while flattened
+}
+
+function gameUpdateCamera() {
+  gameCamera.position.set(gamePlayerX * 0.6, 3.2, 6);
+  gameCamera.lookAt(gamePlayerX * 0.3, 1, -8);
+}
+
 function gameLoop(timestamp) {
   if (!gameRunning) return;
-  const dt = Math.min(timestamp - gameLastTimestamp, 50); // clamp to avoid huge jumps after a tab switch
+  const dtMs = Math.min(timestamp - gameLastTimestamp, 50); // clamp to avoid huge jumps after a tab switch
+  const dt = dtMs / 1000;
   gameLastTimestamp = timestamp;
 
-  // Continuous keyboard movement
-  if (gameKeyDir !== 0) {
-    gameBasketX += gameKeyDir * 0.5 * dt;
-  }
-  const halfBasket = GAME_BASKET_SIZE / 2;
-  gameBasketX = Math.max(halfBasket, Math.min(gameWidth - halfBasket, gameBasketX));
+  // Lane position eases toward its target for a smooth slide-between-lanes feel
+  const targetX = GAME_LANE_CENTERS[gamePlayerLane];
+  gamePlayerX += (targetX - gamePlayerX) * Math.min(1, 12 * dt);
 
-  // Spawn new falling items, faster as the score climbs (floor so it never
-  // becomes unplayably frequent)
-  const spawnInterval = Math.max(450, 1000 - gameScore * 10);
-  gameSpawnAccumulator += dt;
-  if (gameSpawnAccumulator >= spawnInterval) {
-    gameSpawnAccumulator = 0;
-    gameItems.push({
-      x: GAME_BASKET_SIZE / 2 + Math.random() * (gameWidth - GAME_BASKET_SIZE),
-      y: -20,
-      emoji: GAME_FOOD_EMOJIS[Math.floor(Math.random() * GAME_FOOD_EMOJIS.length)],
-      speed: 0.08 + Math.min(0.12, gameScore * 0.002) + Math.random() * 0.03
-    });
-  }
-
-  // Update items — catch, miss, or still falling
-  const basketY = gameHeight - 30;
-  const remaining = [];
-  for (const item of gameItems) {
-    item.y += item.speed * dt;
-    const caught = item.y >= basketY - 10 && item.y <= basketY + 15
-      && Math.abs(item.x - gameBasketX) <= halfBasket;
-    if (caught) {
-      gameScore += 10;
-      gameScoreEl.textContent = gameScore;
-      continue;
+  if (gameIsJumping) {
+    gamePlayerY += gamePlayerVY * dt;
+    gamePlayerVY -= GAME_GRAVITY * dt;
+    if (gamePlayerY <= 0) {
+      gamePlayerY = 0;
+      gameIsJumping = false;
     }
-    if (item.y > gameHeight + 20) {
-      gameLives--;
-      gameLivesEl.textContent = '❤️'.repeat(Math.max(0, gameLives));
-      if (gameLives <= 0) {
+  }
+  if (gameIsSliding && performance.now() > gameSlideEndAt) {
+    gameIsSliding = false;
+  }
+
+  gameUpdatePlayerMesh();
+  gameUpdateCamera();
+  gameRoadTexture.offset.y -= dt * 0.8;
+
+  if (gamePhase === 'countdown') {
+    const remainingMs = gameCountdownEndAt - timestamp;
+    if (remainingMs <= 0) {
+      gamePhase = 'playing';
+      gameCountdownEl.classList.add('hidden');
+    } else {
+      gameCountdownEl.classList.remove('hidden');
+      gameCountdownEl.textContent = String(Math.ceil(remainingMs / 1000));
+    }
+    gameRenderer.render(gameScene, gameCamera);
+    gameAnimHandle = requestAnimationFrame(gameLoop);
+    return;
+  }
+
+  const speed = Math.min(GAME_MAX_SPEED, GAME_BASE_SPEED + gameDistance * 0.03);
+  gameDistance += speed * dt;
+  gameScore = Math.floor(gameDistance);
+  gameScoreEl.textContent = gameScore;
+
+  if (gameDistance >= gameNextSpawnDistance) {
+    gameNextSpawnDistance = gameDistance + 8 + Math.random() * 6;
+    gameSpawnRow();
+  }
+
+  const remaining = [];
+  for (const obj of gameObjects) {
+    obj.mesh.position.z += speed * dt;
+    const z = obj.mesh.position.z;
+
+    if (!obj.resolved && Math.abs(z) < GAME_COLLISION_WINDOW && obj.lane === gamePlayerLane) {
+      obj.resolved = true;
+      if (obj.kind === 'food') {
+        gameScore += 5;
+        gameScoreEl.textContent = gameScore;
+        gamePlayTone(640, 0.07, 'sine', 0.05);
+        gameScene.remove(obj.mesh);
+        continue;
+      }
+      const dodged = (obj.kind === 'low' && gamePlayerY > GAME_JUMP_CLEAR_HEIGHT)
+        || (obj.kind === 'high' && gameIsSliding);
+      if (!dodged) {
+        gameScene.remove(obj.mesh);
         endGame();
         return;
       }
+    }
+
+    if (z > GAME_REMOVE_Z) {
+      gameScene.remove(obj.mesh);
       continue;
     }
-    remaining.push(item);
+    remaining.push(obj);
   }
-  gameItems = remaining;
+  gameObjects = remaining;
 
-  drawGameFrame();
+  gameRenderer.render(gameScene, gameCamera);
   gameAnimHandle = requestAnimationFrame(gameLoop);
 }
 
-function drawGameFrame() {
-  gameCtx.clearRect(0, 0, gameWidth, gameHeight);
-  gameCtx.font = '28px serif';
-  gameCtx.textAlign = 'center';
-  gameCtx.textBaseline = 'middle';
+// Spawns one row of obstacles/food across all 4 lanes, guaranteeing at
+// least one lane stays fully clear so a run is never unwinnable by luck.
+function gameSpawnRow() {
+  const laneKinds = [];
+  for (let lane = 0; lane < GAME_LANE_COUNT; lane++) {
+    const roll = Math.random();
+    laneKinds.push(roll < 0.45 ? 'clear' : roll < 0.65 ? 'block' : roll < 0.83 ? 'low' : 'high');
+  }
+  if (!laneKinds.includes('clear')) {
+    laneKinds[Math.floor(Math.random() * GAME_LANE_COUNT)] = 'clear';
+  }
 
-  gameItems.forEach(item => {
-    gameCtx.fillText(item.emoji, item.x, item.y);
+  laneKinds.forEach((kind, lane) => {
+    if (kind === 'clear') {
+      if (Math.random() < 0.6) gameSpawnFood(lane);
+      return;
+    }
+    gameSpawnObstacle(lane, kind);
   });
-
-  gameCtx.font = `${GAME_BASKET_SIZE}px serif`;
-  gameCtx.fillText(GAME_BASKET_EMOJI, gameBasketX, gameHeight - 30);
 }
 
-function gameSetBasketFromPointer(clientX) {
-  const rect = gameCanvas.getBoundingClientRect();
-  const scale = gameWidth / rect.width; // CSS can scale the canvas down from its buffer size
-  const x = (clientX - rect.left) * scale;
-  const halfBasket = GAME_BASKET_SIZE / 2;
-  gameBasketX = Math.max(halfBasket, Math.min(gameWidth - halfBasket, x));
+function gameSpawnObstacle(lane, kind) {
+  const laneX = GAME_LANE_CENTERS[lane];
+  let mesh;
+  if (kind === 'block') {
+    mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 1.4, 0.8),
+      new THREE.MeshStandardMaterial({ color: 0xef4444 })
+    );
+    mesh.position.set(laneX, 0.7, GAME_SPAWN_Z);
+  } else if (kind === 'low') {
+    mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 0.5, 0.8),
+      new THREE.MeshStandardMaterial({ color: 0xf59e0b })
+    );
+    mesh.position.set(laneX, 0.25, GAME_SPAWN_Z);
+  } else {
+    mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 0.4, 0.6),
+      new THREE.MeshStandardMaterial({ color: 0x38bdf8 })
+    );
+    mesh.position.set(laneX, 1.3, GAME_SPAWN_Z);
+  }
+  gameScene.add(mesh);
+  gameObjects.push({ mesh, lane, kind, resolved: false });
+}
+
+function gameSpawnFood(lane) {
+  const emoji = GAME_FOOD_EMOJIS[Math.floor(Math.random() * GAME_FOOD_EMOJIS.length)];
+  const mesh = gameMakeEmojiSprite(emoji);
+  mesh.position.set(GAME_LANE_CENTERS[lane], 1, GAME_SPAWN_Z);
+  gameScene.add(mesh);
+  gameObjects.push({ mesh, lane, kind: 'food', resolved: false });
+}
+
+function gameSetupSwipeControls() {
+  let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+  gameCanvas.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    touchStartX = t.clientX;
+    touchStartY = t.clientY;
+    touchStartTime = performance.now();
+  }, { passive: true });
+  gameCanvas.addEventListener('touchend', (e) => {
+    if (!gameRunning) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchStartX;
+    const dy = t.clientY - touchStartY;
+    if (performance.now() - touchStartTime > 600) return; // too slow to be a swipe
+    if (Math.abs(dx) > Math.abs(dy)) {
+      if (Math.abs(dx) > 30) gameChangeLane(dx > 0 ? 1 : -1);
+    } else if (dy < -30) {
+      gameJump();
+    } else if (dy > 30) {
+      gameSlide();
+    }
+  });
+}
+
+// Procedural sound effects via Web Audio — no audio files to ship or load.
+// The context is created/resumed inside startGame(), which only ever runs
+// from a real click, satisfying browsers' autoplay-requires-a-gesture rule.
+function gameEnsureAudio() {
+  try {
+    if (!gameAudioCtx) gameAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    else if (gameAudioCtx.state === 'suspended') gameAudioCtx.resume();
+  } catch (err) {
+    gameAudioCtx = null; // Web Audio unavailable — game still works silently
+  }
+}
+
+function gamePlayTone(freq, duration = 0.09, type = 'sine', gain = 0.06) {
+  if (!gameAudioCtx) return;
+  const osc = gameAudioCtx.createOscillator();
+  const g = gameAudioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  g.gain.value = gain;
+  osc.connect(g).connect(gameAudioCtx.destination);
+  const t0 = gameAudioCtx.currentTime;
+  osc.start(t0);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
+  osc.stop(t0 + duration);
+}
+
+function gamePlayGameOverChime() {
+  [420, 340, 260].forEach((freq, i) => {
+    setTimeout(() => gamePlayTone(freq, 0.18, 'triangle', 0.06), i * 140);
+  });
 }
 
 // --- Event Listeners ---
@@ -4833,25 +5179,15 @@ function setupEventListeners() {
     result.innerHTML = '';
   });
 
-  // Catch the Food mini-game
+  // Lunch Run mini-game
   btnGameStart.addEventListener('click', startGame);
-  gameCanvas.addEventListener('mousemove', (e) => {
-    if (gameRunning) gameSetBasketFromPointer(e.clientX);
-  });
-  gameCanvas.addEventListener('touchmove', (e) => {
-    if (gameRunning && e.touches[0]) {
-      gameSetBasketFromPointer(e.touches[0].clientX);
-      e.preventDefault(); // don't let the page scroll while playing
-    }
-  }, { passive: false });
+  gameSetupSwipeControls();
   document.addEventListener('keydown', (e) => {
     if (activeTab !== 'game-tab' || !gameRunning) return;
-    if (e.key === 'ArrowLeft') { gameKeyDir = -1; e.preventDefault(); }
-    else if (e.key === 'ArrowRight') { gameKeyDir = 1; e.preventDefault(); }
-  });
-  document.addEventListener('keyup', (e) => {
-    if (e.key === 'ArrowLeft' && gameKeyDir === -1) gameKeyDir = 0;
-    else if (e.key === 'ArrowRight' && gameKeyDir === 1) gameKeyDir = 0;
+    if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { gameChangeLane(-1); e.preventDefault(); }
+    else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { gameChangeLane(1); e.preventDefault(); }
+    else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') { gameJump(); e.preventDefault(); }
+    else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') { gameSlide(); e.preventDefault(); }
   });
   window.addEventListener('resize', () => {
     if (activeTab === 'game-tab' && !gameRunning) initGameCanvas();

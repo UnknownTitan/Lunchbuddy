@@ -347,8 +347,8 @@
           <span>My Orders</span>
         </button>
         <button class="nav-tab" data-target="game-tab" id="nav-tab-game">
-          <span class="material-symbols-outlined">sports_esports</span>
-          <span>Catch the Food</span>
+          <span class="material-symbols-outlined">directions_run</span>
+          <span>Lunch Run</span>
         </button>
         <button class="nav-tab platform-admin-only hidden" data-target="companies-tab">
           <span class="material-symbols-outlined">domain</span>
@@ -1415,24 +1415,27 @@
           </div>
         </section>
 
-        <!-- TAB: CATCH THE FOOD (MINI GAME) -->
+        <!-- TAB: LUNCH RUN (3D MINI GAME) -->
         <section class="tab-panel" id="game-tab">
           <div class="panel-card game-card">
             <div class="card-header">
-              <h2>Catch the Food</h2>
+              <h2>Lunch Run</h2>
               <p>Something to do while you wait for lunch to arrive.</p>
             </div>
 
             <div class="game-stats-row">
               <span>Score: <strong id="game-score">0</strong></span>
               <span>Best: <strong id="game-best-score">0</strong></span>
-              <span id="game-lives">❤️❤️❤️</span>
             </div>
 
             <div class="game-canvas-wrap">
               <canvas id="game-canvas"></canvas>
+              <div class="game-countdown hidden" id="game-countdown"></div>
               <div class="game-overlay" id="game-overlay">
-                <p id="game-overlay-text">Catch the falling food — use ← → or drag, or swipe on mobile.</p>
+                <p id="game-overlay-text">
+                  4 lanes — switch with ← →, jump low obstacles with ↑, slide under high ones with ↓.
+                  Dodge full blockers by changing lanes. Grab food for bonus points. On mobile: swipe.
+                </p>
                 <button type="button" class="btn btn-primary" id="btn-game-start">
                   <span class="material-symbols-outlined">play_arrow</span>
                   <span>Start Game</span>

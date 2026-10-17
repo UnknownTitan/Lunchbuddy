@@ -1600,7 +1600,7 @@ app.get('/api/daily', authMiddleware, requireCompanyUser, async (req, res) => {
         userId: user.id,
         name: user.name,
         itemId: userOrder.itemId,
-        itemName: dailyState.menu.find(m => m.id === userOrder.itemId)?.name || 'None',
+        itemName: dailyState.menu.find(m => m.id === userOrder.itemId)?.name || 'Unknown Dish',
         timestamp: userOrder.timestamp,
         assignedBy: userOrder.assignedBy || null,
         served: !!userOrder.served,
