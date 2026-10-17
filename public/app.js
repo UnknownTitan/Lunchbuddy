@@ -357,6 +357,8 @@ const gameScoreEl = document.getElementById('game-score');
 const gameBestScoreEl = document.getElementById('game-best-score');
 const gameStageLabelEl = document.getElementById('game-stage-label');
 const gameStageToastEl = document.getElementById('game-stage-toast');
+const gameHitFlashEl = document.getElementById('game-hit-flash');
+const gamePopupLayerEl = document.getElementById('game-popup-layer');
 const myTrendsCard = document.getElementById('my-trends-card');
 const myTrendsStats = document.getElementById('my-trends-stats');
 const myTrendsChartCanvas = document.getElementById('my-trends-chart');
@@ -4515,6 +4517,35 @@ const GAME_STAGES = [
   { name: 'Last Call', minDistance: 600, speed: 21, clearChance: 0.3, skyTop: '#9586d1', skyBottom: '#6a5acd', fog: 0x6a5acd }
 ];
 
+// Curated row layouts rather than independently-rolled-per-lane randomness —
+// hand-designed patterns read as intentional challenges instead of noise,
+// and let us guarantee interesting variety (zigzags, walls, mixed rows).
+// Every pattern keeps at least one 'C' (clear) lane. Later stages unlock
+// busier/trickier patterns via minStage, layered on top of the per-stage
+// clearChance already used for food-spawn odds.
+const GAME_ROW_PATTERNS = [
+  { minStage: 0, pattern: ['C', 'C', 'C', 'C'] },
+  { minStage: 0, pattern: ['B', 'C', 'C', 'C'] },
+  { minStage: 0, pattern: ['C', 'B', 'C', 'C'] },
+  { minStage: 0, pattern: ['C', 'C', 'B', 'C'] },
+  { minStage: 0, pattern: ['C', 'C', 'C', 'B'] },
+  { minStage: 0, pattern: ['L', 'L', 'L', 'C'] },
+  { minStage: 0, pattern: ['C', 'L', 'L', 'L'] },
+  { minStage: 1, pattern: ['H', 'H', 'H', 'C'] },
+  { minStage: 1, pattern: ['C', 'H', 'H', 'H'] },
+  { minStage: 1, pattern: ['B', 'C', 'B', 'C'] },
+  { minStage: 1, pattern: ['C', 'B', 'C', 'B'] },
+  { minStage: 2, pattern: ['L', 'C', 'H', 'C'] },
+  { minStage: 2, pattern: ['C', 'H', 'C', 'L'] },
+  { minStage: 2, pattern: ['B', 'L', 'C', 'H'] },
+  { minStage: 3, pattern: ['H', 'C', 'L', 'B'] },
+  { minStage: 3, pattern: ['B', 'H', 'C', 'B'] },
+  { minStage: 3, pattern: ['L', 'B', 'C', 'L'] }
+];
+const GAME_PATTERN_KIND = { C: 'clear', B: 'block', L: 'low', H: 'high' };
+const GAME_FOOD_STREAK_WINDOW_MS = 4000; // consecutive catches within this gap keep the combo alive
+const GAME_HIT_STUN_MS = 350; // freeze + shake/flash this long before the real game-over fires
+
 let gameRenderer = null;
 let gameScene = null;
 let gameCamera = null;
@@ -4545,6 +4576,12 @@ let gameSlideEndAt = 0;
 let gameLastLaneKeyAt = 0;
 let gameScore = 0;
 let gameAudioCtx = null;
+let gameDustTexture = null;
+let gameDustParticles = []; // { sprite, vx, vy, life, maxLife }
+let gameLandBounceAt = -Infinity; // timestamp of last landing, drives the squash-and-stretch
+let gameFoodStreak = 0;
+let gameLastFoodCatchAt = -Infinity;
+let gameHitEndAt = 0;
 
 function gameHighScoreKey() {
   return `lunchsync_runner_best_${currentUser?.id || 'anon'}`;
@@ -4625,6 +4662,50 @@ function gameMakeSceneryMesh() {
   return mesh;
 }
 
+// A soft radial-gradient dot used for both landing-dust puffs — one shared
+// texture, many cheap sprite instances.
+function gameMakeDustTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 32;
+  const ctx = canvas.getContext('2d');
+  const gradient = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  gradient.addColorStop(0, 'rgba(255,255,255,0.85)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 32, 32);
+  return new THREE.CanvasTexture(canvas);
+}
+
+// A short puff of dust at the player's feet on landing — classic cheap trick
+// that sells "impact" far better than the squash-and-stretch alone.
+function gameSpawnDust(x) {
+  for (let i = 0; i < 5; i++) {
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: gameDustTexture, transparent: true, opacity: 0.6, depthWrite: false
+    }));
+    sprite.scale.set(0.35, 0.35, 0.35);
+    sprite.position.set(x + (Math.random() - 0.5) * 0.5, 0.05, (Math.random() - 0.5) * 0.3);
+    gameScene.add(sprite);
+    gameDustParticles.push({
+      sprite,
+      vx: (Math.random() - 0.5) * 1.4,
+      vy: 0.5 + Math.random() * 0.6,
+      life: 0,
+      maxLife: 0.35 + Math.random() * 0.2
+    });
+  }
+}
+
+// A brief floating text cue (near-miss, combo) layered over the canvas —
+// plain DOM is simpler and cheaper than world-space 3D text for this.
+function gameShowPopup(text, variant) {
+  const el = document.createElement('div');
+  el.className = variant ? `game-popup ${variant}` : 'game-popup';
+  el.textContent = text;
+  gamePopupLayerEl.appendChild(el);
+  setTimeout(() => el.remove(), 950);
+}
+
 function gameSpawnScenery() {
   [-1, 1].forEach(side => {
     const mesh = gameMakeSceneryMesh();
@@ -4672,6 +4753,7 @@ async function initGameCanvas() {
     sun.position.set(4, 10, 6);
     gameScene.add(sun);
 
+    gameDustTexture = gameMakeDustTexture();
     gameRoadTexture = gameMakeRoadTexture();
     const road = new THREE.Mesh(
       new THREE.PlaneGeometry(GAME_ROAD_WIDTH, 240),
@@ -4736,6 +4818,8 @@ function gameClearObjects() {
   gameObjects = [];
   gameScenery.forEach(mesh => gameScene.remove(mesh));
   gameScenery = [];
+  gameDustParticles.forEach(p => gameScene.remove(p.sprite));
+  gameDustParticles = [];
 }
 
 function resetGameState() {
@@ -4752,11 +4836,16 @@ function resetGameState() {
   gamePlayerVY = 0;
   gameIsJumping = false;
   gameIsSliding = false;
+  gameLandBounceAt = -Infinity;
+  gameFoodStreak = 0;
+  gameLastFoodCatchAt = -Infinity;
   gameClearObjects();
   gameUpdatePlayerMesh();
   gameScoreEl.textContent = '0';
   gameStageLabelEl.textContent = GAME_STAGES[0].name;
   gameStageToastEl.classList.remove('visible');
+  gameHitFlashEl.classList.remove('visible');
+  gamePopupLayerEl.innerHTML = '';
 }
 
 // Called whenever gameDistance crosses into a new stage's threshold —
@@ -4787,6 +4876,15 @@ function startGame() {
   gameCountdownEndAt = performance.now() + 3000;
   gameLastTimestamp = performance.now();
   gameAnimHandle = requestAnimationFrame(gameLoop);
+}
+
+// Freezes gameplay for a short beat (camera shake + red flash, see gameLoop)
+// before the real game-over fires, so a death reads as an impact.
+function gameTriggerHit() {
+  gamePhase = 'hit';
+  gameHitEndAt = performance.now() + GAME_HIT_STUN_MS;
+  gameHitFlashEl.classList.add('visible');
+  setTimeout(() => gameHitFlashEl.classList.remove('visible'), GAME_HIT_STUN_MS);
 }
 
 function endGame() {
@@ -4835,8 +4933,18 @@ function gameUpdatePlayerMesh() {
 
   gamePlayerMesh.position.x = gamePlayerX;
   gamePlayerMesh.position.y = GAME_PLAYER_GROUND_Y + gamePlayerY + bob;
-  gamePlayerMesh.scale.y = gameIsSliding ? 0.5 : 1;
-  gamePlayerMesh.position.y -= gameIsSliding ? 0.25 : 0; // keep feet on the ground while flattened
+
+  // Squash-and-stretch on landing: briefly flatten vertically and bulge
+  // horizontally, springing back to normal — classic weight/impact cue.
+  const landT = Math.min((performance.now() - gameLandBounceAt) / 180, 1);
+  const landSquash = landT < 1 ? 1 - Math.sin(landT * Math.PI) * 0.35 : 1;
+
+  if (gameIsSliding) {
+    gamePlayerMesh.scale.set(1, 0.5, 1);
+    gamePlayerMesh.position.y -= 0.25; // keep feet on the ground while flattened
+  } else {
+    gamePlayerMesh.scale.set(1 + (1 - landSquash) * 0.3, landSquash, 1 + (1 - landSquash) * 0.3);
+  }
 
   if (gameGroundShadow) {
     const shadowScale = Math.max(0.35, 1 - gamePlayerY * 0.45);
@@ -4869,6 +4977,8 @@ function gameLoop(timestamp) {
     if (gamePlayerY <= 0) {
       gamePlayerY = 0;
       gameIsJumping = false;
+      gameLandBounceAt = performance.now();
+      gameSpawnDust(gamePlayerX);
     }
   }
   if (gameIsSliding && performance.now() > gameSlideEndAt) {
@@ -4889,6 +4999,21 @@ function gameLoop(timestamp) {
       gameCountdownEl.textContent = String(Math.ceil(remainingMs / 1000));
     }
     gameRenderer.render(gameScene, gameCamera);
+    gameAnimHandle = requestAnimationFrame(gameLoop);
+    return;
+  }
+
+  // A brief freeze-frame on collision — camera shakes and the screen flashes
+  // red for a beat before the real game-over fires, so a death reads as an
+  // impact rather than an abrupt stop.
+  if (gamePhase === 'hit') {
+    gameCamera.position.x += (Math.random() - 0.5) * 0.15;
+    gameCamera.position.y += (Math.random() - 0.5) * 0.1;
+    gameRenderer.render(gameScene, gameCamera);
+    if (performance.now() >= gameHitEndAt) {
+      endGame();
+      return;
+    }
     gameAnimHandle = requestAnimationFrame(gameLoop);
     return;
   }
@@ -4933,26 +5058,57 @@ function gameLoop(timestamp) {
   }
   gameScenery = remainingScenery;
 
+  const remainingDust = [];
+  for (const p of gameDustParticles) {
+    p.life += dt;
+    const t = p.life / p.maxLife;
+    if (t >= 1) {
+      gameScene.remove(p.sprite);
+      continue;
+    }
+    p.sprite.position.x += p.vx * dt;
+    p.sprite.position.y += p.vy * dt;
+    p.sprite.position.z += speed * dt; // scroll with the world like everything else
+    p.sprite.material.opacity = 0.6 * (1 - t);
+    p.sprite.scale.setScalar(0.35 + t * 0.3);
+    remainingDust.push(p);
+  }
+  gameDustParticles = remainingDust;
+
   const remaining = [];
   for (const obj of gameObjects) {
     obj.mesh.position.z += speed * dt;
     const z = obj.mesh.position.z;
 
-    if (!obj.resolved && Math.abs(z) < GAME_COLLISION_WINDOW && obj.lane === gamePlayerLane) {
-      obj.resolved = true;
-      if (obj.kind === 'food') {
-        gameScore += 5;
+    if (!obj.resolved && Math.abs(z) < GAME_COLLISION_WINDOW) {
+      if (obj.lane === gamePlayerLane) {
+        obj.resolved = true;
+        if (obj.kind === 'food') {
+          const now = performance.now();
+          gameFoodStreak = (now - gameLastFoodCatchAt < GAME_FOOD_STREAK_WINDOW_MS) ? gameFoodStreak + 1 : 1;
+          gameLastFoodCatchAt = now;
+          const bonus = 5 + Math.min(gameFoodStreak - 1, 10) * 2;
+          gameScore += bonus;
+          gameScoreEl.textContent = gameScore;
+          gamePlayTone(640, 0.07, 'sine', 0.05);
+          if (gameFoodStreak >= 3) gameShowPopup(`x${gameFoodStreak} Combo! +${bonus}`, 'combo');
+          gameScene.remove(obj.mesh);
+          continue;
+        }
+        const dodged = (obj.kind === 'low' && gamePlayerY > GAME_JUMP_CLEAR_HEIGHT)
+          || (obj.kind === 'high' && gameIsSliding);
+        if (!dodged) {
+          gameScene.remove(obj.mesh);
+          gameTriggerHit();
+          return;
+        }
+      } else if (obj.kind !== 'food' && Math.abs(obj.lane - gamePlayerLane) === 1) {
+        // Rewards tight dodges in an adjacent lane, not just surviving —
+        // nudges players toward reading the road rather than drifting wide.
+        obj.resolved = true;
+        gameScore += 3;
         gameScoreEl.textContent = gameScore;
-        gamePlayTone(640, 0.07, 'sine', 0.05);
-        gameScene.remove(obj.mesh);
-        continue;
-      }
-      const dodged = (obj.kind === 'low' && gamePlayerY > GAME_JUMP_CLEAR_HEIGHT)
-        || (obj.kind === 'high' && gameIsSliding);
-      if (!dodged) {
-        gameScene.remove(obj.mesh);
-        endGame();
-        return;
+        gameShowPopup('Close one! +3', 'near-miss');
       }
     }
 
@@ -4968,28 +5124,15 @@ function gameLoop(timestamp) {
   gameAnimHandle = requestAnimationFrame(gameLoop);
 }
 
-// Spawns one row of obstacles/food across all 4 lanes, guaranteeing at
-// least one lane stays fully clear so a run is never unwinnable by luck.
-// The clear/obstacle split comes from the current stage, so later stages
-// are visibly busier, not just faster.
+// Spawns one row by picking a curated pattern (see GAME_ROW_PATTERNS) rather
+// than rolling each lane independently — every pattern already guarantees a
+// clear lane and reads as a deliberate challenge instead of noise.
 function gameSpawnRow() {
-  const clearChance = GAME_STAGES[gameStageIndex].clearChance;
-  const obstacleShare = 1 - clearChance;
-  const laneKinds = [];
-  for (let lane = 0; lane < GAME_LANE_COUNT; lane++) {
-    const roll = Math.random();
-    laneKinds.push(
-      roll < clearChance ? 'clear'
-      : roll < clearChance + obstacleShare * 0.45 ? 'block'
-      : roll < clearChance + obstacleShare * 0.75 ? 'low'
-      : 'high'
-    );
-  }
-  if (!laneKinds.includes('clear')) {
-    laneKinds[Math.floor(Math.random() * GAME_LANE_COUNT)] = 'clear';
-  }
+  const pool = GAME_ROW_PATTERNS.filter(p => p.minStage <= gameStageIndex);
+  const choice = pool[Math.floor(Math.random() * pool.length)];
 
-  laneKinds.forEach((kind, lane) => {
+  choice.pattern.forEach((code, lane) => {
+    const kind = GAME_PATTERN_KIND[code];
     if (kind === 'clear') {
       if (Math.random() < 0.6) gameSpawnFood(lane);
       return;
