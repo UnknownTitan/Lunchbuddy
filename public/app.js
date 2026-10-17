@@ -355,6 +355,8 @@ const gameOverlayText = document.getElementById('game-overlay-text');
 const btnGameStart = document.getElementById('btn-game-start');
 const gameScoreEl = document.getElementById('game-score');
 const gameBestScoreEl = document.getElementById('game-best-score');
+const gameStageLabelEl = document.getElementById('game-stage-label');
+const gameStageToastEl = document.getElementById('game-stage-toast');
 const myTrendsCard = document.getElementById('my-trends-card');
 const myTrendsStats = document.getElementById('my-trends-stats');
 const myTrendsChartCanvas = document.getElementById('my-trends-chart');
@@ -4498,25 +4500,41 @@ const GAME_GRAVITY = 20;
 const GAME_JUMP_CLEAR_HEIGHT = 0.45; // player.y above this clears a 'low' obstacle
 const GAME_SLIDE_DURATION_MS = 600;
 const GAME_COLLISION_WINDOW = 0.9; // how close (in z) an obstacle must be to the player to resolve
-const GAME_BASE_SPEED = 9; // units/sec
-const GAME_MAX_SPEED = 22;
 const GAME_FOOD_EMOJIS = ['🍚', '🍛', '🍗', '🥘', '🍲', '🧆', '🍜', '🥗'];
 const GAME_LANE_KEY_COOLDOWN_MS = 150;
+const GAME_SCENERY_X = GAME_ROAD_WIDTH / 2 + 2; // just outside the road's edge
+
+// Discrete difficulty stages by distance traveled — each locks in its own
+// target speed and obstacle density (eased into smoothly, see
+// gameCurrentSpeed in gameLoop) and its own sky/fog color, so progression
+// reads as distinct "stages" rather than a silent, continuous speed-up.
+const GAME_STAGES = [
+  { name: 'Warm-up', minDistance: 0, speed: 9, clearChance: 0.5, skyTop: '#ffe9c7', skyBottom: '#ffdca8', fog: 0xffdca8 },
+  { name: 'Lunch Rush', minDistance: 150, speed: 13, clearChance: 0.42, skyTop: '#ffd1a9', skyBottom: '#ffb199', fog: 0xffb199 },
+  { name: 'Rush Hour', minDistance: 350, speed: 17, clearChance: 0.36, skyTop: '#ffab91', skyBottom: '#ff8a65', fog: 0xff8a65 },
+  { name: 'Last Call', minDistance: 600, speed: 21, clearChance: 0.3, skyTop: '#9586d1', skyBottom: '#6a5acd', fog: 0x6a5acd }
+];
 
 let gameRenderer = null;
 let gameScene = null;
 let gameCamera = null;
-let gamePlayerMesh = null;
+let gamePlayerMesh = null; // a Group: body + head + hat, so it moves/leans/squashes as one unit
+let gameGroundShadow = null;
 let gameRoadTexture = null;
 let gameObjects = []; // { mesh, lane, kind: 'block'|'low'|'high'|'food', resolved }
+let gameScenery = []; // roadside decoration meshes, purely cosmetic
 let gameRunning = false;
 let gamePhase = 'playing'; // 'countdown' | 'playing'
 let gameAnimHandle = null;
 let gameLastTimestamp = 0;
 let gameCountdownEndAt = 0;
-let gameDistance = 0; // drives score + speed ramp
+let gameDistance = 0; // drives score + stage progression
+let gameCurrentSpeed = GAME_STAGES[0].speed; // eases toward the current stage's target each frame
+let gameStageIndex = 0;
+let gameStageToastTimeout = null;
 let gameSpawnAccumulator = 0;
 let gameNextSpawnDistance = 10;
+let gameNextSceneryDistance = 0;
 let gamePlayerLane = Math.floor(GAME_LANE_COUNT / 2);
 let gamePlayerX = 0;
 let gamePlayerY = 0;
@@ -4579,6 +4597,44 @@ function gameMakeRoadTexture() {
   return texture;
 }
 
+// A simple vertical-gradient sky, regenerated per stage rather than
+// animated/crossfaded — the hard cut doubles as a clear "new stage" beat.
+function gameMakeSkyTexture(topColor, bottomColor) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 2;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  const gradient = ctx.createLinearGradient(0, 0, 0, 256);
+  gradient.addColorStop(0, topColor);
+  gradient.addColorStop(1, bottomColor);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 2, 256);
+  return new THREE.CanvasTexture(canvas);
+}
+
+// A random roadside "building" — purely cosmetic, sold the sense of speed
+// by scrolling past alongside the lanes (see gameSpawnScenery/gameLoop).
+function gameMakeSceneryMesh() {
+  const height = 2 + Math.random() * 4.5;
+  const hue = 0.07 + Math.random() * 0.08;
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1.6 + Math.random(), height, 1.6 + Math.random()),
+    new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.35, 0.4 + Math.random() * 0.15) })
+  );
+  mesh.position.y = height / 2;
+  return mesh;
+}
+
+function gameSpawnScenery() {
+  [-1, 1].forEach(side => {
+    const mesh = gameMakeSceneryMesh();
+    mesh.position.x = side * (GAME_SCENERY_X + Math.random() * 3);
+    mesh.position.z = GAME_SPAWN_Z - Math.random() * 15;
+    gameScene.add(mesh);
+    gameScenery.push(mesh);
+  });
+}
+
 // Builds the renderer/scene/camera/road once Three.js is loaded, then
 // paints a static first frame — called on first opening the tab and on
 // resize (only while not mid-run, so a resize never disrupts a game).
@@ -4605,8 +4661,9 @@ async function initGameCanvas() {
     gameRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 
     gameScene = new THREE.Scene();
-    gameScene.background = new THREE.Color(0xffdca8);
-    gameScene.fog = new THREE.Fog(0xffdca8, 20, 55);
+    const stage0 = GAME_STAGES[0];
+    gameScene.background = gameMakeSkyTexture(stage0.skyTop, stage0.skyBottom);
+    gameScene.fog = new THREE.Fog(stage0.fog, 20, 55);
 
     gameCamera = new THREE.PerspectiveCamera(62, width / height, 0.1, 200);
 
@@ -4624,10 +4681,39 @@ async function initGameCanvas() {
     road.position.set(0, 0, -90);
     gameScene.add(road);
 
-    gamePlayerMesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.4, 0.7, 4, 8),
+    // A soft blob shadow under the player — shrinks/fades with jump height,
+    // a cheap classic trick that reads as "off the ground" far better than
+    // nothing, without real-time shadow maps.
+    gameGroundShadow = new THREE.Mesh(
+      new THREE.CircleGeometry(0.45, 20),
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 })
+    );
+    gameGroundShadow.rotation.x = -Math.PI / 2;
+    gameGroundShadow.position.y = 0.02;
+    gameScene.add(gameGroundShadow);
+
+    // Player is a small group (body/head/hat) rather than one mesh, so it
+    // reads as a little chef running the lunch line, and so lean/squash
+    // effects (see gameLoop/gameUpdatePlayerMesh) move everything as one unit.
+    gamePlayerMesh = new THREE.Group();
+    const body = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.33, 0.5, 4, 8),
       new THREE.MeshStandardMaterial({ color: 0x6366f1 })
     );
+    body.position.y = 0.4;
+    gamePlayerMesh.add(body);
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.26, 14, 14),
+      new THREE.MeshStandardMaterial({ color: 0xffd9b3 })
+    );
+    head.position.y = 0.88;
+    gamePlayerMesh.add(head);
+    const hat = new THREE.Mesh(
+      new THREE.ConeGeometry(0.2, 0.3, 14),
+      new THREE.MeshStandardMaterial({ color: 0xffffff })
+    );
+    hat.position.y = 1.15;
+    gamePlayerMesh.add(hat);
     gameScene.add(gamePlayerMesh);
   }
 
@@ -4636,6 +4722,7 @@ async function initGameCanvas() {
   gameCamera.updateProjectionMatrix();
 
   gameBestScoreEl.textContent = getGameBestScore();
+  gameStageLabelEl.textContent = GAME_STAGES[0].name;
   gamePlayerLane = Math.floor(GAME_LANE_COUNT / 2);
   gamePlayerX = GAME_LANE_CENTERS[gamePlayerLane];
   gamePlayerY = 0;
@@ -4647,13 +4734,18 @@ async function initGameCanvas() {
 function gameClearObjects() {
   gameObjects.forEach(obj => gameScene.remove(obj.mesh));
   gameObjects = [];
+  gameScenery.forEach(mesh => gameScene.remove(mesh));
+  gameScenery = [];
 }
 
 function resetGameState() {
   gameScore = 0;
   gameDistance = 0;
+  gameStageIndex = 0;
+  gameCurrentSpeed = GAME_STAGES[0].speed;
   gameSpawnAccumulator = 0;
   gameNextSpawnDistance = 10;
+  gameNextSceneryDistance = 0;
   gamePlayerLane = Math.floor(GAME_LANE_COUNT / 2);
   gamePlayerX = GAME_LANE_CENTERS[gamePlayerLane];
   gamePlayerY = 0;
@@ -4663,6 +4755,26 @@ function resetGameState() {
   gameClearObjects();
   gameUpdatePlayerMesh();
   gameScoreEl.textContent = '0';
+  gameStageLabelEl.textContent = GAME_STAGES[0].name;
+  gameStageToastEl.classList.remove('visible');
+}
+
+// Called whenever gameDistance crosses into a new stage's threshold —
+// swaps the sky/fog instantly (a clean beat, not a crossfade) and shows a
+// brief "Stage N: Name!" toast + chime. Speed itself still eases in, see
+// gameLoop, so the *feel* ramps smoothly even though the visuals cut hard.
+function gameOnStageChange(stage, stageNumber) {
+  gameScene.background = gameMakeSkyTexture(stage.skyTop, stage.skyBottom);
+  gameScene.fog.color.set(stage.fog);
+  gameStageLabelEl.textContent = stage.name;
+
+  gameStageToastEl.textContent = `Stage ${stageNumber}: ${stage.name}!`;
+  gameStageToastEl.classList.add('visible');
+  clearTimeout(gameStageToastTimeout);
+  gameStageToastTimeout = setTimeout(() => gameStageToastEl.classList.remove('visible'), 1800);
+
+  gamePlayTone(700, 0.1, 'triangle', 0.06);
+  setTimeout(() => gamePlayTone(920, 0.12, 'triangle', 0.06), 110);
 }
 
 function startGame() {
@@ -4717,10 +4829,21 @@ function gameSlide() {
 }
 
 function gameUpdatePlayerMesh() {
+  // A little bob while running on the ground (suppressed mid-air/slide) so
+  // the character doesn't look like it's gliding.
+  const bob = (!gameIsJumping && !gameIsSliding) ? Math.sin(gameDistance * 2.2) * 0.06 : 0;
+
   gamePlayerMesh.position.x = gamePlayerX;
-  gamePlayerMesh.position.y = GAME_PLAYER_GROUND_Y + gamePlayerY;
+  gamePlayerMesh.position.y = GAME_PLAYER_GROUND_Y + gamePlayerY + bob;
   gamePlayerMesh.scale.y = gameIsSliding ? 0.5 : 1;
   gamePlayerMesh.position.y -= gameIsSliding ? 0.25 : 0; // keep feet on the ground while flattened
+
+  if (gameGroundShadow) {
+    const shadowScale = Math.max(0.35, 1 - gamePlayerY * 0.45);
+    gameGroundShadow.position.x = gamePlayerX;
+    gameGroundShadow.scale.set(shadowScale, shadowScale, 1);
+    gameGroundShadow.material.opacity = 0.35 * shadowScale;
+  }
 }
 
 function gameUpdateCamera() {
@@ -4737,6 +4860,8 @@ function gameLoop(timestamp) {
   // Lane position eases toward its target for a smooth slide-between-lanes feel
   const targetX = GAME_LANE_CENTERS[gamePlayerLane];
   gamePlayerX += (targetX - gamePlayerX) * Math.min(1, 12 * dt);
+  // Lean into the direction of travel — purely cosmetic, sells the lane change
+  gamePlayerMesh.rotation.z = THREE.MathUtils.clamp((targetX - gamePlayerX) * -0.5, -0.35, 0.35);
 
   if (gameIsJumping) {
     gamePlayerY += gamePlayerVY * dt;
@@ -4768,7 +4893,22 @@ function gameLoop(timestamp) {
     return;
   }
 
-  const speed = Math.min(GAME_MAX_SPEED, GAME_BASE_SPEED + gameDistance * 0.03);
+  // Find the highest stage whose threshold we've crossed, and announce it
+  // the moment it changes.
+  let targetStageIndex = 0;
+  for (let i = GAME_STAGES.length - 1; i >= 0; i--) {
+    if (gameDistance >= GAME_STAGES[i].minDistance) { targetStageIndex = i; break; }
+  }
+  if (targetStageIndex !== gameStageIndex) {
+    gameStageIndex = targetStageIndex;
+    gameOnStageChange(GAME_STAGES[gameStageIndex], gameStageIndex + 1);
+  }
+
+  // Actual speed eases toward the current stage's target rather than
+  // snapping, so the stage-up *feels* like accelerating, not a jump-cut.
+  gameCurrentSpeed += (GAME_STAGES[gameStageIndex].speed - gameCurrentSpeed) * Math.min(1, 1.5 * dt);
+  const speed = gameCurrentSpeed;
+
   gameDistance += speed * dt;
   gameScore = Math.floor(gameDistance);
   gameScoreEl.textContent = gameScore;
@@ -4777,6 +4917,21 @@ function gameLoop(timestamp) {
     gameNextSpawnDistance = gameDistance + 8 + Math.random() * 6;
     gameSpawnRow();
   }
+  if (gameDistance >= gameNextSceneryDistance) {
+    gameNextSceneryDistance = gameDistance + 6 + Math.random() * 4;
+    gameSpawnScenery();
+  }
+
+  const remainingScenery = [];
+  for (const mesh of gameScenery) {
+    mesh.position.z += speed * dt;
+    if (mesh.position.z > GAME_REMOVE_Z + 10) {
+      gameScene.remove(mesh);
+      continue;
+    }
+    remainingScenery.push(mesh);
+  }
+  gameScenery = remainingScenery;
 
   const remaining = [];
   for (const obj of gameObjects) {
@@ -4815,11 +4970,20 @@ function gameLoop(timestamp) {
 
 // Spawns one row of obstacles/food across all 4 lanes, guaranteeing at
 // least one lane stays fully clear so a run is never unwinnable by luck.
+// The clear/obstacle split comes from the current stage, so later stages
+// are visibly busier, not just faster.
 function gameSpawnRow() {
+  const clearChance = GAME_STAGES[gameStageIndex].clearChance;
+  const obstacleShare = 1 - clearChance;
   const laneKinds = [];
   for (let lane = 0; lane < GAME_LANE_COUNT; lane++) {
     const roll = Math.random();
-    laneKinds.push(roll < 0.45 ? 'clear' : roll < 0.65 ? 'block' : roll < 0.83 ? 'low' : 'high');
+    laneKinds.push(
+      roll < clearChance ? 'clear'
+      : roll < clearChance + obstacleShare * 0.45 ? 'block'
+      : roll < clearChance + obstacleShare * 0.75 ? 'low'
+      : 'high'
+    );
   }
   if (!laneKinds.includes('clear')) {
     laneKinds[Math.floor(Math.random() * GAME_LANE_COUNT)] = 'clear';
@@ -4834,30 +4998,50 @@ function gameSpawnRow() {
   });
 }
 
+// An obstacle is a small group (box + a floating emoji marker) rather than
+// a bare box, so its required action (switch lane / jump / slide) reads at
+// a glance instead of relying purely on color.
 function gameSpawnObstacle(lane, kind) {
   const laneX = GAME_LANE_CENTERS[lane];
-  let mesh;
+  const group = new THREE.Group();
+  let box, boxY, labelEmoji, labelY;
+
   if (kind === 'block') {
-    mesh = new THREE.Mesh(
+    box = new THREE.Mesh(
       new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 1.4, 0.8),
       new THREE.MeshStandardMaterial({ color: 0xef4444 })
     );
-    mesh.position.set(laneX, 0.7, GAME_SPAWN_Z);
+    boxY = 0.7;
+    labelEmoji = '🚫';
+    labelY = 1.75;
   } else if (kind === 'low') {
-    mesh = new THREE.Mesh(
+    box = new THREE.Mesh(
       new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 0.5, 0.8),
       new THREE.MeshStandardMaterial({ color: 0xf59e0b })
     );
-    mesh.position.set(laneX, 0.25, GAME_SPAWN_Z);
+    boxY = 0.25;
+    labelEmoji = '⬆️';
+    labelY = 0.95;
   } else {
-    mesh = new THREE.Mesh(
+    box = new THREE.Mesh(
       new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 0.4, 0.6),
       new THREE.MeshStandardMaterial({ color: 0x38bdf8 })
     );
-    mesh.position.set(laneX, 1.3, GAME_SPAWN_Z);
+    boxY = 1.3;
+    labelEmoji = '⬇️';
+    labelY = 1.85;
   }
-  gameScene.add(mesh);
-  gameObjects.push({ mesh, lane, kind, resolved: false });
+  box.position.y = boxY;
+  group.add(box);
+
+  const label = gameMakeEmojiSprite(labelEmoji, 48);
+  label.scale.set(0.5, 0.5, 0.5);
+  label.position.y = labelY;
+  group.add(label);
+
+  group.position.set(laneX, 0, GAME_SPAWN_Z);
+  gameScene.add(group);
+  gameObjects.push({ mesh: group, lane, kind, resolved: false });
 }
 
 function gameSpawnFood(lane) {
