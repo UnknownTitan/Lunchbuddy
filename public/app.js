@@ -4763,7 +4763,7 @@ function gameMakeNameTagSprite(name) {
   const texture = new THREE.CanvasTexture(canvas);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
   const aspect = canvas.width / canvas.height;
-  sprite.scale.set(0.85 * aspect, 0.85, 1);
+  sprite.scale.set(0.32 * aspect, 0.32, 1);
   return sprite;
 }
 
@@ -5145,11 +5145,14 @@ async function initGameCanvas() {
       // A small colored accessory cap — the model's own baked clothing
       // textures aren't safely retintable by name, so this is what avatar
       // choice (see GAME_AVATARS) actually changes.
+      // A full helmet rather than a thin top cap — sized/positioned to sit
+      // over the model's actual head, so avatar color is obvious instead of
+      // reading as a tiny disconnected dot floating above it.
       gamePlayerAvatarCap = new THREE.Mesh(
-        new THREE.SphereGeometry(GAME_PLAYER_TARGET_HEIGHT * 0.1, 14, 14, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        new THREE.SphereGeometry(GAME_PLAYER_TARGET_HEIGHT * 0.095, 16, 16),
         new THREE.MeshStandardMaterial({ color: 0x6366f1 })
       );
-      gamePlayerAvatarCap.position.y = GAME_PLAYER_TARGET_HEIGHT * 1.02;
+      gamePlayerAvatarCap.position.y = GAME_PLAYER_TARGET_HEIGHT * 0.93;
       gamePlayerAvatarCap.castShadow = true;
       gamePlayerMesh.add(gamePlayerAvatarCap);
     } catch (err) {
