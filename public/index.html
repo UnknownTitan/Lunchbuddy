@@ -1455,8 +1455,10 @@
                   <p id="game-overlay-text">
                     4 lanes — switch with ← →, jump low obstacles with ↑, slide under high ones with ↓.
                     Dodge full blockers by changing lanes. Grab coins for bonus points, hit a ramp
-                    to launch into the air. On mobile: swipe.
+                    to launch into the air, and grab a shield orb for temporary invulnerability.
+                    On mobile: swipe or use the on-screen buttons.
                   </p>
+                  <div class="game-overlay-stats hidden" id="game-overlay-stats"></div>
                   <div class="game-avatar-picker" id="game-avatar-picker"></div>
                 </div>
                 <button type="button" class="btn btn-primary" id="btn-game-start">
@@ -1467,10 +1469,40 @@
               <button type="button" class="game-fullscreen-btn" id="btn-game-fullscreen" title="Toggle fullscreen">
                 <span class="material-symbols-outlined" id="game-fullscreen-icon">fullscreen</span>
               </button>
+              <div class="game-touch-controls" id="game-touch-controls">
+                <button type="button" class="game-touch-btn" id="btn-touch-left" aria-label="Move left">
+                  <span class="material-symbols-outlined">arrow_back</span>
+                </button>
+                <button type="button" class="game-touch-btn" id="btn-touch-jump" aria-label="Jump">
+                  <span class="material-symbols-outlined">arrow_upward</span>
+                </button>
+                <button type="button" class="game-touch-btn" id="btn-touch-slide" aria-label="Slide">
+                  <span class="material-symbols-outlined">arrow_downward</span>
+                </button>
+                <button type="button" class="game-touch-btn" id="btn-touch-right" aria-label="Move right">
+                  <span class="material-symbols-outlined">arrow_forward</span>
+                </button>
+              </div>
+              <div class="game-overlay hidden" id="game-pause-overlay">
+                <div class="game-overlay-card">
+                  <h2 class="game-overlay-title">Paused</h2>
+                  <p>The game paused automatically when you left this tab.</p>
+                  <button type="button" class="btn btn-primary" id="btn-game-resume">
+                    <span class="material-symbols-outlined">play_arrow</span>
+                    <span>Resume</span>
+                  </button>
+                </div>
+              </div>
             </div>
 
             <div class="game-leaderboard">
-              <h3>Leaderboard</h3>
+              <div class="game-leaderboard-header">
+                <h3>Leaderboard</h3>
+                <div class="game-leaderboard-scope" id="game-leaderboard-scope">
+                  <button type="button" class="active" data-scope="week">This Week</button>
+                  <button type="button" data-scope="all">All-Time</button>
+                </div>
+              </div>
               <ol class="game-leaderboard-list" id="game-leaderboard-list">
                 <li class="game-leaderboard-empty">No scores yet — be the first!</li>
               </ol>

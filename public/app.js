@@ -353,6 +353,7 @@ const gameCountdownEl = document.getElementById('game-countdown');
 const gameOverlay = document.getElementById('game-overlay');
 const gameOverlayText = document.getElementById('game-overlay-text');
 const gameOverlayTitleEl = document.getElementById('game-overlay-title');
+const gameOverlayStatsEl = document.getElementById('game-overlay-stats');
 const btnGameStart = document.getElementById('btn-game-start');
 const gameScoreEl = document.getElementById('game-score');
 const gameBestScoreEl = document.getElementById('game-best-score');
@@ -364,6 +365,13 @@ const gameAvatarPickerEl = document.getElementById('game-avatar-picker');
 const gameFullscreenBtn = document.getElementById('btn-game-fullscreen');
 const gameFullscreenIconEl = document.getElementById('game-fullscreen-icon');
 const gameLeaderboardListEl = document.getElementById('game-leaderboard-list');
+const gameLeaderboardScopeEl = document.getElementById('game-leaderboard-scope');
+const gamePauseOverlayEl = document.getElementById('game-pause-overlay');
+const btnGameResume = document.getElementById('btn-game-resume');
+const btnTouchLeft = document.getElementById('btn-touch-left');
+const btnTouchRight = document.getElementById('btn-touch-right');
+const btnTouchJump = document.getElementById('btn-touch-jump');
+const btnTouchSlide = document.getElementById('btn-touch-slide');
 const myTrendsCard = document.getElementById('my-trends-card');
 const myTrendsStats = document.getElementById('my-trends-stats');
 const myTrendsChartCanvas = document.getElementById('my-trends-chart');
@@ -4556,22 +4564,29 @@ const GAME_LANE_KEY_COOLDOWN_MS = 150;
 const GAME_SCENERY_X = GAME_ROAD_WIDTH / 2 + 2; // just outside the road's edge
 
 // Discrete difficulty stages by distance traveled — each locks in its own
-// target speed and obstacle density (eased into smoothly, see
-// gameCurrentSpeed in gameLoop) and its own sky/fog color, so progression
-// reads as distinct "stages" rather than a silent, continuous speed-up.
+// target speed (eased into smoothly, see gameCurrentSpeed in gameLoop) and
+// its own sky/fog color, so progression reads as distinct "stages" rather
+// than a silent, continuous speed-up. Obstacle density/variety instead comes
+// from which GAME_ROW_PATTERNS are unlocked per stage (see minStage below)
+// and, past the last named stage, from gameGetEffectiveStage's "Overtime"
+// escalation, which keeps raising speed indefinitely so skilled, very long
+// runs keep getting harder instead of plateauing forever.
 const GAME_STAGES = [
-  { name: 'Warm-up', minDistance: 0, speed: 9, clearChance: 0.5, skyTop: '#ffe9c7', skyBottom: '#ffdca8', fog: 0xffdca8 },
-  { name: 'Lunch Rush', minDistance: 150, speed: 13, clearChance: 0.42, skyTop: '#ffd1a9', skyBottom: '#ffb199', fog: 0xffb199 },
-  { name: 'Rush Hour', minDistance: 350, speed: 17, clearChance: 0.36, skyTop: '#ffab91', skyBottom: '#ff8a65', fog: 0xff8a65 },
-  { name: 'Last Call', minDistance: 600, speed: 21, clearChance: 0.3, skyTop: '#9586d1', skyBottom: '#6a5acd', fog: 0x6a5acd }
+  { name: 'Warm-up', minDistance: 0, speed: 9, skyTop: '#ffe9c7', skyBottom: '#ffdca8', fog: 0xffdca8 },
+  { name: 'Lunch Rush', minDistance: 150, speed: 13, skyTop: '#ffd1a9', skyBottom: '#ffb199', fog: 0xffb199 },
+  { name: 'Rush Hour', minDistance: 350, speed: 17, skyTop: '#ffab91', skyBottom: '#ff8a65', fog: 0xff8a65 },
+  { name: 'Last Call', minDistance: 600, speed: 21, skyTop: '#9586d1', skyBottom: '#6a5acd', fog: 0x6a5acd }
 ];
+const GAME_OVERTIME_STEP = 200; // extra distance per additional "Overtime N" level past the last named stage
+const GAME_OVERTIME_SPEED_INC = 2; // speed added per overtime level
+const GAME_OVERTIME_MAX_SPEED = 36; // hard ceiling so it never becomes literally unplayable
+const GAME_OVERTIME_MIN_GAP = 5; // floor for the row-spawn gap (see gameSpawnRow's interval), down from the base 8–14
 
 // Curated row layouts rather than independently-rolled-per-lane randomness —
 // hand-designed patterns read as intentional challenges instead of noise,
 // and let us guarantee interesting variety (zigzags, walls, mixed rows).
 // Every pattern keeps at least one 'C' (clear) lane. Later stages unlock
-// busier/trickier patterns via minStage, layered on top of the per-stage
-// clearChance already used for food-spawn odds.
+// busier/trickier patterns via minStage.
 const GAME_ROW_PATTERNS = [
   { minStage: 0, pattern: ['C', 'C', 'C', 'C'] },
   { minStage: 0, pattern: ['B', 'C', 'C', 'C'] },
@@ -4597,13 +4612,19 @@ const GAME_ROW_PATTERNS = [
   { minStage: 0, pattern: ['R', 'C', 'C', 'C'] },
   { minStage: 0, pattern: ['C', 'R', 'C', 'C'] },
   { minStage: 1, pattern: ['R', 'C', 'L', 'C'] },
-  { minStage: 2, pattern: ['B', 'R', 'C', 'B'] }
+  { minStage: 2, pattern: ['B', 'R', 'C', 'B'] },
+  // Shield rows — rarer than ramps, and only appear once things are
+  // genuinely busy (higher stages), since a shield's whole point is to buy
+  // some breathing room through a dense stretch.
+  { minStage: 2, pattern: ['S', 'C', 'C', 'C'] },
+  { minStage: 3, pattern: ['C', 'S', 'C', 'C'] }
 ];
-const GAME_PATTERN_KIND = { C: 'clear', B: 'block', L: 'low', H: 'high', R: 'ramp' };
+const GAME_PATTERN_KIND = { C: 'clear', B: 'block', L: 'low', H: 'high', R: 'ramp', S: 'shield' };
 const GAME_FOOD_STREAK_WINDOW_MS = 4000; // consecutive catches within this gap keep the combo alive
 const GAME_HIT_STUN_MS = 350; // freeze + shake/flash this long before the real game-over fires
 const GAME_RAMP_LAUNCH_VELOCITY = 11; // well above GAME_JUMP_VELOCITY, for a dramatic soaring arc
 const GAME_RAMP_INVULN_MS = 1200; // ignore collisions while airborne from a ramp boost
+const GAME_SHIELD_DURATION_MS = 5000; // how long a collected shield power-up ignores collisions
 
 // Subway-Surfers-style avatar choice — purely cosmetic (body/head/hat
 // colors), applied by recoloring the existing player mesh materials.
@@ -4663,6 +4684,14 @@ let gameFoodStreak = 0;
 let gameLastFoodCatchAt = -Infinity;
 let gameHitEndAt = 0;
 let gameRampInvulnUntil = 0;
+let gameShieldUntil = 0;
+let gamePlayerShieldAura = null;
+let gameOvertimeLevel = 0; // 0 while still within the named GAME_STAGES; increments past the last one
+let gameSessionToken = null; // issued by POST /api/game/session/start, required by POST /api/game/score
+let gamePaused = false;
+let gameCoinsCollected = 0;
+let gameRampsHit = 0;
+let gameBestCombo = 0;
 let gameSun = null;
 let gameCloudTexture = null;
 let gameClouds = [];
@@ -5166,6 +5195,16 @@ async function initGameCanvas() {
       gamePlayerAvatarCap.position.y = GAME_PLAYER_TARGET_HEIGHT * 0.93;
       gamePlayerAvatarCap.castShadow = true;
       gamePlayerMesh.add(gamePlayerAvatarCap);
+
+      // A translucent glowing shell shown only while a shield power-up is
+      // active (see gameUpdatePlayerMesh and the 'shield' collision case).
+      gamePlayerShieldAura = new THREE.Mesh(
+        new THREE.SphereGeometry(GAME_PLAYER_TARGET_HEIGHT * 0.65, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.25, depthWrite: false })
+      );
+      gamePlayerShieldAura.position.y = GAME_PLAYER_TARGET_HEIGHT * 0.5;
+      gamePlayerShieldAura.visible = false;
+      gamePlayerMesh.add(gamePlayerShieldAura);
     } catch (err) {
       console.error('Failed to load player model:', err);
       gameOverlayText.textContent = "Couldn't load the player model — check your connection and reopen this tab.";
@@ -5227,6 +5266,15 @@ function resetGameState() {
   gameFoodStreak = 0;
   gameLastFoodCatchAt = -Infinity;
   gameRampInvulnUntil = 0;
+  gameShieldUntil = 0;
+  gameOvertimeLevel = 0;
+  gamePaused = false;
+  gamePauseOverlayEl.classList.add('hidden');
+  gameCoinsCollected = 0;
+  gameRampsHit = 0;
+  gameBestCombo = 0;
+  gameOverlayStatsEl.classList.add('hidden');
+  gameOverlayStatsEl.innerHTML = '';
   gameClearObjects();
   gameUpdatePlayerMesh();
   gameScoreEl.textContent = '0';
@@ -5234,6 +5282,27 @@ function resetGameState() {
   gameStageToastEl.classList.remove('visible');
   gameHitFlashEl.classList.remove('visible');
   gamePopupLayerEl.innerHTML = '';
+}
+
+// Returns the stage currently in effect — one of the named GAME_STAGES
+// normally, or a synthesized "Overtime N" stage once distance runs past the
+// last named one, with speed (and the row-spawn gap, see gameSpawnRow)
+// continuing to escalate every GAME_OVERTIME_STEP distance so a long,
+// skilled run never just plateaus.
+function gameGetEffectiveStage() {
+  const lastIndex = GAME_STAGES.length - 1;
+  const last = GAME_STAGES[lastIndex];
+  if (gameStageIndex !== lastIndex || gameDistance < last.minDistance) {
+    return { ...GAME_STAGES[gameStageIndex], overtimeLevel: 0 };
+  }
+  const level = Math.floor((gameDistance - last.minDistance) / GAME_OVERTIME_STEP);
+  if (level <= 0) return { ...last, overtimeLevel: 0 };
+  return {
+    ...last,
+    name: `Overtime ${level}`,
+    speed: Math.min(GAME_OVERTIME_MAX_SPEED, last.speed + level * GAME_OVERTIME_SPEED_INC),
+    overtimeLevel: level
+  };
 }
 
 // Called whenever gameDistance crosses into a new stage's threshold —
@@ -5254,6 +5323,25 @@ function gameOnStageChange(stage, stageNumber) {
   setTimeout(() => gamePlayTone(920, 0.12, 'triangle', 0.06), 110);
 }
 
+// Auto-pauses a running game when its browser tab goes into the background,
+// so leaving mid-run never comes back to a surprise death from obstacles
+// that kept scrolling while unseen. Resuming is a deliberate tap, not
+// automatic on return, so play only continues when the user is ready.
+function gamePauseGame() {
+  if (!gameRunning || gamePaused || gamePhase === 'hit') return;
+  gamePaused = true;
+  if (gameAnimHandle) cancelAnimationFrame(gameAnimHandle);
+  gamePauseOverlayEl.classList.remove('hidden');
+}
+
+function gameResumeGame() {
+  if (!gameRunning || !gamePaused) return;
+  gamePaused = false;
+  gamePauseOverlayEl.classList.add('hidden');
+  gameLastTimestamp = performance.now(); // avoid a huge dt jump for the time spent paused
+  gameAnimHandle = requestAnimationFrame(gameLoop);
+}
+
 function startGame() {
   if (!gameRenderer) return; // 3D engine failed to load — nothing to start
   resetGameState();
@@ -5264,6 +5352,14 @@ function startGame() {
   gameCountdownEndAt = performance.now() + 3000;
   gameLastTimestamp = performance.now();
   gameAnimHandle = requestAnimationFrame(gameLoop);
+
+  // Fetched in parallel rather than awaited, so the game starts instantly —
+  // the server requires this token on score submission (see gameSubmitScore)
+  // to sanity-check score against how long the run actually took.
+  gameSessionToken = null;
+  apiCall('/api/game/session/start', 'POST')
+    .then(res => { gameSessionToken = res.sessionToken; })
+    .catch(err => console.error('Failed to start game session:', err));
 }
 
 // Freezes gameplay for a short beat (camera shake + red flash, see gameLoop)
@@ -5291,6 +5387,8 @@ function endGame() {
     ? `New best! You scored <span class="go-accent-orange">${gameScore}</span>.`
     : `You scored <span class="go-accent-orange">${gameScore}</span>.`;
   btnGameStart.innerHTML = '<span class="material-symbols-outlined">replay</span><span>Play Again</span>';
+  gameOverlayStatsEl.innerHTML = `<span>🪙 ${gameCoinsCollected}</span><span>⤴️ ${gameRampsHit}</span><span>x${Math.max(gameBestCombo, 1)} combo</span>`;
+  gameOverlayStatsEl.classList.remove('hidden');
   gameOverlay.classList.remove('hidden');
 
   gameSubmitScore(gameScore);
@@ -5300,18 +5398,21 @@ function endGame() {
 // the user's stored best (see submitGameScore in db.js), so it's safe to
 // post every run rather than just new personal bests.
 async function gameSubmitScore(score) {
+  if (!gameSessionToken) return; // session token fetch hadn't resolved yet — skip rather than submit without proof of duration
   try {
-    await apiCall('/api/game/score', 'POST', { score });
+    await apiCall('/api/game/score', 'POST', { score, sessionToken: gameSessionToken });
     loadGameLeaderboard();
   } catch (err) {
     console.error('Failed to submit game score:', err);
   }
 }
 
+let gameLeaderboardScope = 'week';
+
 async function loadGameLeaderboard() {
   if (!gameLeaderboardListEl) return;
   try {
-    const leaderboard = await apiCall('/api/game/leaderboard');
+    const leaderboard = await apiCall(`/api/game/leaderboard?scope=${gameLeaderboardScope}`);
     gameRenderLeaderboard(leaderboard);
   } catch (err) {
     console.error('Failed to load leaderboard:', err);
@@ -5418,6 +5519,14 @@ function gameUpdatePlayerMesh() {
   if (gameNameSprite) {
     gameNameSprite.position.set(gamePlayerX, GAME_PLAYER_GROUND_Y + gamePlayerY + bob + GAME_PLAYER_TARGET_HEIGHT + 0.4, 0.1);
   }
+
+  if (gamePlayerShieldAura) {
+    const shieldActive = performance.now() < gameShieldUntil;
+    gamePlayerShieldAura.visible = shieldActive;
+    if (shieldActive) {
+      gamePlayerShieldAura.scale.setScalar(1 + Math.sin(performance.now() * 0.01) * 0.05);
+    }
+  }
 }
 
 function gameUpdateCamera() {
@@ -5512,12 +5621,19 @@ function gameLoop(timestamp) {
   }
   if (targetStageIndex !== gameStageIndex) {
     gameStageIndex = targetStageIndex;
+    gameOvertimeLevel = 0;
     gameOnStageChange(GAME_STAGES[gameStageIndex], gameStageIndex + 1);
+  }
+
+  const effectiveStage = gameGetEffectiveStage();
+  if (effectiveStage.overtimeLevel !== gameOvertimeLevel) {
+    gameOvertimeLevel = effectiveStage.overtimeLevel;
+    gameOnStageChange(effectiveStage, GAME_STAGES.length + gameOvertimeLevel);
   }
 
   // Actual speed eases toward the current stage's target rather than
   // snapping, so the stage-up *feels* like accelerating, not a jump-cut.
-  gameCurrentSpeed += (GAME_STAGES[gameStageIndex].speed - gameCurrentSpeed) * Math.min(1, 1.5 * dt);
+  gameCurrentSpeed += (effectiveStage.speed - gameCurrentSpeed) * Math.min(1, 1.5 * dt);
   const speed = gameCurrentSpeed;
 
   gameDistance += speed * dt;
@@ -5525,7 +5641,8 @@ function gameLoop(timestamp) {
   gameScoreEl.textContent = gameScore;
 
   if (gameDistance >= gameNextSpawnDistance) {
-    gameNextSpawnDistance = gameDistance + 8 + Math.random() * 6;
+    const gap = Math.max(GAME_OVERTIME_MIN_GAP, 8 - gameOvertimeLevel * 0.4) + Math.random() * 6;
+    gameNextSpawnDistance = gameDistance + gap;
     gameSpawnRow();
   }
   if (gameDistance >= gameNextSceneryDistance) {
@@ -5574,6 +5691,8 @@ function gameLoop(timestamp) {
           const now = performance.now();
           gameFoodStreak = (now - gameLastFoodCatchAt < GAME_FOOD_STREAK_WINDOW_MS) ? gameFoodStreak + 1 : 1;
           gameLastFoodCatchAt = now;
+          gameBestCombo = Math.max(gameBestCombo, gameFoodStreak);
+          gameCoinsCollected++;
           const bonus = 5 + Math.min(gameFoodStreak - 1, 10) * 2;
           gameScore += bonus;
           gameScoreEl.textContent = gameScore;
@@ -5589,6 +5708,7 @@ function gameLoop(timestamp) {
           gameIsJumping = true;
           gamePlayerVY = GAME_RAMP_LAUNCH_VELOCITY;
           gameRampInvulnUntil = performance.now() + GAME_RAMP_INVULN_MS;
+          gameRampsHit++;
           gameScore += 5;
           gameScoreEl.textContent = gameScore;
           gamePlayTone(520, 0.1, 'sawtooth', 0.06);
@@ -5596,7 +5716,16 @@ function gameLoop(timestamp) {
           gameScene.remove(obj.mesh);
           continue;
         }
-        if (performance.now() < gameRampInvulnUntil) {
+        if (obj.kind === 'shield') {
+          gameShieldUntil = performance.now() + GAME_SHIELD_DURATION_MS;
+          gameScore += 5;
+          gameScoreEl.textContent = gameScore;
+          gamePlayTone(880, 0.12, 'triangle', 0.06);
+          gameShowPopup('Shield!', 'combo');
+          gameScene.remove(obj.mesh);
+          continue;
+        }
+        if (performance.now() < gameRampInvulnUntil || performance.now() < gameShieldUntil) {
           gameScene.remove(obj.mesh);
           continue;
         }
@@ -5612,7 +5741,7 @@ function gameLoop(timestamp) {
           gameAnimHandle = requestAnimationFrame(gameLoop);
           return;
         }
-      } else if (obj.kind !== 'food' && obj.kind !== 'ramp' && Math.abs(obj.lane - gamePlayerLane) === 1) {
+      } else if (obj.kind !== 'food' && obj.kind !== 'ramp' && obj.kind !== 'shield' && Math.abs(obj.lane - gamePlayerLane) === 1) {
         // Rewards tight dodges in an adjacent lane, not just surviving —
         // nudges players toward reading the road rather than drifting wide.
         obj.resolved = true;
@@ -5662,6 +5791,10 @@ function gameSpawnRow() {
       gameSpawnRamp(lane);
       return;
     }
+    if (kind === 'shield') {
+      gameSpawnShield(lane);
+      return;
+    }
     gameSpawnObstacle(lane, kind);
   });
 }
@@ -5691,6 +5824,21 @@ function gameSpawnRamp(lane) {
   group.position.set(GAME_LANE_CENTERS[lane], 0, GAME_SPAWN_Z);
   gameScene.add(group);
   gameObjects.push({ mesh: group, lane, kind: 'ramp', resolved: false });
+}
+
+// A shield power-up — a glowing blue orb that grants temporary
+// invulnerability on pickup (see the 'shield' collision case in gameLoop
+// and the aura toggled in gameUpdatePlayerMesh).
+function gameSpawnShield(lane) {
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.32, 16, 16),
+    new THREE.MeshStandardMaterial({
+      color: 0x38bdf8, emissive: 0x0ea5e9, emissiveIntensity: 0.7, transparent: true, opacity: 0.85
+    })
+  );
+  mesh.position.set(GAME_LANE_CENTERS[lane], 1, GAME_SPAWN_Z);
+  gameScene.add(mesh);
+  gameObjects.push({ mesh, lane, kind: 'shield', resolved: false });
 }
 
 // An obstacle is a small group (box + a floating emoji marker) rather than
@@ -5767,7 +5915,7 @@ function gameSetupSwipeControls() {
     touchStartTime = performance.now();
   }, { passive: true });
   gameCanvas.addEventListener('touchend', (e) => {
-    if (!gameRunning) return;
+    if (!gameRunning || gamePaused) return;
     const t = e.changedTouches[0];
     const dx = t.clientX - touchStartX;
     const dy = t.clientY - touchStartY;
@@ -5780,6 +5928,24 @@ function gameSetupSwipeControls() {
       gameSlide();
     }
   });
+}
+
+// On-screen tap buttons alongside swipe — shown only on touch devices via
+// CSS (see .game-touch-controls), not feature-detected here. touchstart
+// (rather than click) avoids the ~300ms synthetic-click delay and firing
+// twice; preventDefault stops that trailing synthetic click from also firing.
+function gameSetupTouchButtons() {
+  const bind = (el, action) => {
+    el.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      if (!gameRunning || gamePaused) return;
+      action();
+    }, { passive: false });
+  };
+  bind(btnTouchLeft, () => gameChangeLane(-1));
+  bind(btnTouchRight, () => gameChangeLane(1));
+  bind(btnTouchJump, gameJump);
+  bind(btnTouchSlide, gameSlide);
 }
 
 // Procedural sound effects via Web Audio — no audio files to ship or load.
@@ -6072,8 +6238,9 @@ function setupEventListeners() {
   // Lunch Run mini-game
   btnGameStart.addEventListener('click', startGame);
   gameSetupSwipeControls();
+  gameSetupTouchButtons();
   document.addEventListener('keydown', (e) => {
-    if (activeTab !== 'game-tab' || !gameRunning) return;
+    if (activeTab !== 'game-tab' || !gameRunning || gamePaused) return;
     if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') { gameChangeLane(-1); e.preventDefault(); }
     else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') { gameChangeLane(1); e.preventDefault(); }
     else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') { gameJump(); e.preventDefault(); }
@@ -6090,6 +6257,17 @@ function setupEventListeners() {
     if (activeTab !== 'game-tab') return;
     // Let the browser finish resizing the fullscreen element before measuring it
     requestAnimationFrame(gameResizeRendererOnly);
+  });
+  btnGameResume.addEventListener('click', gameResumeGame);
+  gameLeaderboardScopeEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-scope]');
+    if (!btn || btn.classList.contains('active')) return;
+    gameLeaderboardScopeEl.querySelectorAll('button').forEach(b => b.classList.toggle('active', b === btn));
+    gameLeaderboardScope = btn.dataset.scope;
+    loadGameLeaderboard();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) gamePauseGame();
   });
 }
 

@@ -61,7 +61,8 @@ import {
   getPasswordResetToken,
   markPasswordResetTokenUsed,
   submitGameScore,
-  getGameLeaderboard
+  getGameLeaderboard,
+  getGameWeeklyLeaderboard
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2807,19 +2808,63 @@ app.get('/api/my-trends', authMiddleware, requireCompanyUser, async (req, res) =
 // Any logged-in company user: submit a Lunch Run score. Only ever raises
 // their stored best (see submitGameScore) — the response always reflects
 // the user's current best, whether or not this particular run beat it.
+
+// A generous ceiling on how fast score can plausibly climb — distance alone
+// tops out well under this even at the game's max "Overtime" speed, with
+// headroom left for coin/ramp/near-miss bonuses. Not meant to catch a
+// sophisticated cheater, just the trivial "paste a bigger number into
+// devtools" case, since this is a friendly office leaderboard, not a
+// competitive platform with real stakes.
+const GAME_SCORE_RATE_CAP = 45; // points per elapsed second
+const GAME_SCORE_RATE_BUFFER = 20; // flat allowance for a very fast, very short run
+
+// Any logged-in company user: start a Lunch Run session. Returns a short-
+// lived signed token binding this run to "now" and to this user, which
+// POST /api/game/score requires back — without it, a score has no way to
+// prove how long the run that produced it actually took.
+app.post('/api/game/session/start', authMiddleware, requireCompanyUser, (req, res) => {
+  const sessionToken = jwt.sign(
+    { userId: req.user.id, companyId: req.user.companyId, startedAt: Date.now() },
+    SESSION_SECRET,
+    { expiresIn: '30m' }
+  );
+  res.json({ sessionToken });
+});
+
 app.post('/api/game/score', authMiddleware, requireCompanyUser, async (req, res) => {
   const score = Number(req.body?.score);
   if (!Number.isFinite(score) || score < 0) {
     return res.status(400).json({ error: 'A valid non-negative score is required.' });
   }
+
+  let session;
+  try {
+    session = jwt.verify(req.body?.sessionToken, SESSION_SECRET);
+  } catch (err) {
+    return res.status(400).json({ error: 'Missing or invalid game session — start a new run and try again.' });
+  }
+  if (session.userId !== req.user.id || session.companyId !== req.user.companyId) {
+    return res.status(403).json({ error: 'This game session does not belong to you.' });
+  }
+
+  const elapsedSeconds = Math.max(0, (Date.now() - session.startedAt) / 1000);
+  const maxPlausibleScore = elapsedSeconds * GAME_SCORE_RATE_CAP + GAME_SCORE_RATE_BUFFER;
+  if (score > maxPlausibleScore) {
+    return res.status(400).json({ error: 'Score is not plausible for this session\'s duration.' });
+  }
+
   const best = await submitGameScore(req.user.companyId, req.user.id, req.user.name, Math.floor(score));
   res.json({ best });
 });
 
 // Any logged-in company user: the company's Lunch Run leaderboard (top 10
-// personal bests).
+// personal bests). ?scope=week returns the current ISO week's leaderboard
+// instead — a lighter-weight alternative to actually resetting gameScores,
+// so competition can refresh weekly without ever losing the all-time board.
 app.get('/api/game/leaderboard', authMiddleware, requireCompanyUser, async (req, res) => {
-  const leaderboard = await getGameLeaderboard(req.user.companyId, 10);
+  const leaderboard = req.query.scope === 'week'
+    ? await getGameWeeklyLeaderboard(req.user.companyId, 10)
+    : await getGameLeaderboard(req.user.companyId, 10);
   res.json(leaderboard);
 });
 

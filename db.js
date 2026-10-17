@@ -41,6 +41,8 @@ async function ensureIndexes() {
   await db.collection('notificationHistory').createIndex({ companyId: 1, sentAt: -1 });
   await db.collection('gameScores').createIndex({ companyId: 1, userId: 1 }, { unique: true });
   await db.collection('gameScores').createIndex({ companyId: 1, score: -1 });
+  await db.collection('gameWeeklyScores').createIndex({ companyId: 1, weekKey: 1, userId: 1 }, { unique: true });
+  await db.collection('gameWeeklyScores').createIndex({ companyId: 1, weekKey: 1, score: -1 });
   // TTL index: MongoDB auto-deletes a token doc once `expiresAt` (a real
   // Date) passes — expired reset links clean themselves up, no sweep needed.
   await db.collection('passwordResetTokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
@@ -554,24 +556,58 @@ export async function getHistoryInRange(companyId, startDate, endDate) {
 // when a new run beats it, so the leaderboard is always "best run per
 // person" rather than every run ever played.
 
+// ISO week key (e.g. "2026-W03") — used to bucket the weekly leaderboard so
+// it naturally "resets" each week without ever deleting data: a new week
+// just means a new, empty bucket, and old weeks stay queryable if ever needed.
+function getIsoWeekKey(date = new Date()) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, '0')}`;
+}
+
 export async function submitGameScore(companyId, userId, userName, score) {
   requireCompanyId(companyId, 'submitGameScore');
+
   const existing = await db.collection('gameScores').findOne({ companyId, userId });
-  if (existing && existing.score >= score) {
-    return existing.score;
+  if (!existing || existing.score < score) {
+    await db.collection('gameScores').updateOne(
+      { companyId, userId },
+      { $set: { companyId, userId, userName, score, updatedAt: new Date() } },
+      { upsert: true }
+    );
   }
-  await db.collection('gameScores').updateOne(
-    { companyId, userId },
-    { $set: { companyId, userId, userName, score, updatedAt: new Date() } },
-    { upsert: true }
-  );
-  return score;
+
+  const weekKey = getIsoWeekKey();
+  const existingWeek = await db.collection('gameWeeklyScores').findOne({ companyId, weekKey, userId });
+  if (!existingWeek || existingWeek.score < score) {
+    await db.collection('gameWeeklyScores').updateOne(
+      { companyId, weekKey, userId },
+      { $set: { companyId, weekKey, userId, userName, score, updatedAt: new Date() } },
+      { upsert: true }
+    );
+  }
+
+  return existing && existing.score > score ? existing.score : score;
 }
 
 export async function getGameLeaderboard(companyId, limit = 10) {
   requireCompanyId(companyId, 'getGameLeaderboard');
   const docs = await db.collection('gameScores')
     .find({ companyId })
+    .sort({ score: -1 })
+    .limit(limit)
+    .toArray();
+  return docs.map(({ _id, ...rest }) => rest);
+}
+
+export async function getGameWeeklyLeaderboard(companyId, limit = 10) {
+  requireCompanyId(companyId, 'getGameWeeklyLeaderboard');
+  const weekKey = getIsoWeekKey();
+  const docs = await db.collection('gameWeeklyScores')
+    .find({ companyId, weekKey })
     .sort({ score: -1 })
     .limit(limit)
     .toArray();

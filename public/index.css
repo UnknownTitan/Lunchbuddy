@@ -3723,9 +3723,41 @@ input:checked + .slider:before {
   margin: 1.25rem auto 0;
 }
 
-.game-leaderboard h3 {
-  margin: 0 0 0.5rem;
+.game-leaderboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.game-leaderboard-header h3 {
+  margin: 0;
   font-size: 1rem;
+}
+
+.game-leaderboard-scope {
+  display: flex;
+  gap: 0.3rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--card-border);
+  border-radius: 999px;
+  padding: 0.2rem;
+}
+
+.game-leaderboard-scope button {
+  border: none;
+  background: none;
+  padding: 0.3rem 0.8rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.game-leaderboard-scope button.active {
+  background: var(--gradient-accent);
+  color: #fff;
 }
 
 .game-leaderboard-list {
@@ -3831,6 +3863,56 @@ input:checked + .slider:before {
 
 #btn-game-start {
   margin-top: -1.25rem;
+}
+
+.game-overlay-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.game-overlay-stats span {
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* Touch-only fallback controls alongside swipe gestures — hidden on
+   pointer/mouse devices via the media query below, not JS feature-detection. */
+.game-touch-controls {
+  display: none;
+  position: absolute;
+  bottom: 14px;
+  left: 0;
+  right: 0;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 0 14px;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.game-touch-btn {
+  pointer-events: auto;
+  width: 3rem;
+  height: 3rem;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.4);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .game-touch-controls {
+    display: flex;
+  }
 }
 
 .game-countdown {
