@@ -4488,11 +4488,52 @@ let THREE = null;
 let threeJsLoadPromise = null;
 function loadThreeJs() {
   if (!threeJsLoadPromise) {
-    threeJsLoadPromise = import('https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js')
-      .then(mod => { THREE = mod; });
+    // Resolved via the import map in index.html (needed anyway so the
+    // loader/postprocessing addons below, which import "three" internally
+    // as a bare specifier, resolve to the same module instance).
+    threeJsLoadPromise = import('three').then(mod => { THREE = mod; });
   }
   return threeJsLoadPromise;
 }
+
+let GLTFLoaderClass = null;
+let gltfLoaderLoadPromise = null;
+function loadGLTFLoader() {
+  if (!gltfLoaderLoadPromise) {
+    gltfLoaderLoadPromise = import('three/addons/loaders/GLTFLoader.js')
+      .then(mod => { GLTFLoaderClass = mod.GLTFLoader; });
+  }
+  return gltfLoaderLoadPromise;
+}
+
+let EffectComposerClass = null;
+let RenderPassClass = null;
+let UnrealBloomPassClass = null;
+let OutputPassClass = null;
+let postprocessingLoadPromise = null;
+function loadPostprocessing() {
+  if (!postprocessingLoadPromise) {
+    postprocessingLoadPromise = Promise.all([
+      import('three/addons/postprocessing/EffectComposer.js'),
+      import('three/addons/postprocessing/RenderPass.js'),
+      import('three/addons/postprocessing/UnrealBloomPass.js'),
+      import('three/addons/postprocessing/OutputPass.js')
+    ]).then(([ec, rp, bp, op]) => {
+      EffectComposerClass = ec.EffectComposer;
+      RenderPassClass = rp.RenderPass;
+      UnrealBloomPassClass = bp.UnrealBloomPass;
+      OutputPassClass = op.OutputPass;
+    });
+  }
+  return postprocessingLoadPromise;
+}
+
+// The player model is a real rigged GLTF humanoid (three.js's own MIT-
+// licensed example asset) rather than hand-built primitives, with its
+// built-in "Run" animation driven by an AnimationMixer — see initGameCanvas
+// and the mixer.update() call in gameLoop.
+const GAME_PLAYER_MODEL_URL = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/models/gltf/Soldier.glb';
+const GAME_PLAYER_TARGET_HEIGHT = 1.3; // world units — matches the old rig's height so lanes/camera framing still fit
 
 const GAME_LANE_COUNT = 4;
 const GAME_LANE_WIDTH = 2;
@@ -4553,20 +4594,28 @@ const GAME_HIT_STUN_MS = 350; // freeze + shake/flash this long before the real 
 
 // Subway-Surfers-style avatar choice — purely cosmetic (body/head/hat
 // colors), applied by recoloring the existing player mesh materials.
+// The player model's own baked textures aren't safely retintable by name
+// (see gameApplyAvatarColors), so "avatar" choice is a colored accessory
+// cap on the model rather than a full outfit recolor.
 const GAME_AVATARS = [
-  { id: 'classic', name: 'Classic Chef', body: 0x6366f1, head: 0xffd9b3, hat: 0xffffff },
-  { id: 'fire', name: 'Fire Chef', body: 0xef4444, head: 0xffd9b3, hat: 0xfff1e6 },
-  { id: 'ocean', name: 'Ocean Chef', body: 0x0891b2, head: 0xffd9b3, hat: 0xe0f7fa },
-  { id: 'sunshine', name: 'Sunshine Chef', body: 0xf59e0b, head: 0xffd9b3, hat: 0xfffde7 },
-  { id: 'grape', name: 'Grape Chef', body: 0x9333ea, head: 0xffd9b3, hat: 0xf3e8ff },
-  { id: 'mint', name: 'Mint Chef', body: 0x10b981, head: 0xffd9b3, hat: 0xecfdf5 }
+  { id: 'classic', name: 'Classic', color: 0x6366f1 },
+  { id: 'fire', name: 'Fire', color: 0xef4444 },
+  { id: 'ocean', name: 'Ocean', color: 0x0891b2 },
+  { id: 'sunshine', name: 'Sunshine', color: 0xf59e0b },
+  { id: 'grape', name: 'Grape', color: 0x9333ea },
+  { id: 'mint', name: 'Mint', color: 0x10b981 }
 ];
 const GAME_AVATARS_DEFAULT_ID = GAME_AVATARS[0].id;
 
 let gameRenderer = null;
+let gameComposer = null;
+let gameBloomPass = null;
 let gameScene = null;
 let gameCamera = null;
-let gamePlayerMesh = null; // a Group: body + head + hat, so it moves/leans/squashes as one unit
+let gamePlayerMesh = null; // wrapper Group holding the loaded GLTF model, so it moves/leans/squashes as one unit
+let gamePlayerModel = null; // the GLTF model's root scene node, inside gamePlayerMesh
+let gamePlayerMixer = null; // drives the model's built-in run animation
+let gamePlayerAvatarCap = null; // small colored accessory recolored per avatar (see GAME_AVATARS)
 let gameGroundShadow = null;
 let gameRoadTexture = null;
 let gameObjects = []; // { mesh, lane, kind: 'block'|'low'|'high'|'food', resolved }
@@ -4603,13 +4652,6 @@ let gameHitEndAt = 0;
 let gameSun = null;
 let gameCloudTexture = null;
 let gameClouds = [];
-let gamePlayerBodyMesh = null;
-let gamePlayerHeadMesh = null;
-let gamePlayerHatMesh = null;
-let gamePlayerArmLPivot = null;
-let gamePlayerArmRPivot = null;
-let gamePlayerLegLPivot = null;
-let gamePlayerLegRPivot = null;
 let gameNameSprite = null;
 let gameSelectedAvatarId = GAME_AVATARS_DEFAULT_ID;
 
@@ -4630,11 +4672,13 @@ function gameLoadAvatarPreference() {
   gameSelectedAvatarId = GAME_AVATARS.some(a => a.id === saved) ? saved : GAME_AVATARS_DEFAULT_ID;
 }
 
+// The player model is now a real textured GLTF asset, so we can't safely
+// retint its baked materials by name without inspecting this specific file.
+// Avatar choice instead recolors a small accessory cap worn on the model —
+// still a clear, reliable per-user visual distinction.
 function gameApplyAvatarColors() {
   const avatar = GAME_AVATARS.find(a => a.id === gameSelectedAvatarId) || GAME_AVATARS[0];
-  if (gamePlayerBodyMesh) gamePlayerBodyMesh.material.color.setHex(avatar.body);
-  if (gamePlayerHeadMesh) gamePlayerHeadMesh.material.color.setHex(avatar.head);
-  if (gamePlayerHatMesh) gamePlayerHatMesh.material.color.setHex(avatar.hat);
+  if (gamePlayerAvatarCap) gamePlayerAvatarCap.material.color.setHex(avatar.color);
 }
 
 function gameSelectAvatar(id) {
@@ -4643,7 +4687,7 @@ function gameSelectAvatar(id) {
   localStorage.setItem(gameAvatarStorageKey(), id);
   gameApplyAvatarColors();
   gameRenderAvatarPicker();
-  if (gameRenderer && !gameRunning) gameRenderer.render(gameScene, gameCamera);
+  if (gameRenderer && !gameRunning) gameComposer.render();
 }
 
 // Builds the avatar swatch row shown in the start/game-over overlay —
@@ -4657,8 +4701,7 @@ function gameRenderAvatarPicker() {
     btn.type = 'button';
     btn.className = 'game-avatar-swatch' + (avatar.id === gameSelectedAvatarId ? ' selected' : '');
     btn.title = avatar.name;
-    btn.style.setProperty('--swatch-color', `#${avatar.body.toString(16).padStart(6, '0')}`);
-    btn.style.setProperty('--swatch-hat', `#${avatar.hat.toString(16).padStart(6, '0')}`);
+    btn.style.setProperty('--swatch-color', `#${avatar.color.toString(16).padStart(6, '0')}`);
     btn.addEventListener('click', () => gameSelectAvatar(avatar.id));
     gameAvatarPickerEl.appendChild(btn);
   });
@@ -4957,7 +5000,7 @@ function gameSpawnScenery() {
 // resize (only while not mid-run, so a resize never disrupts a game).
 async function initGameCanvas() {
   try {
-    await loadThreeJs();
+    await Promise.all([loadThreeJs(), loadGLTFLoader(), loadPostprocessing()]);
   } catch (err) {
     console.error('Failed to load 3D engine:', err);
     gameOverlayText.textContent = "Couldn't load the 3D engine — check your connection and reopen this tab.";
@@ -4988,6 +5031,15 @@ async function initGameCanvas() {
     gameScene.fog = new THREE.Fog(stage0.fog, 20, 55);
 
     gameCamera = new THREE.PerspectiveCamera(62, width / height, 0.1, 200);
+
+    // Composer wraps the plain renderer with a bloom pass so bright
+    // highlights (sun glints, lamp bulbs, gold coins) actually glow instead
+    // of just being a flat bright color.
+    gameComposer = new EffectComposerClass(gameRenderer);
+    gameComposer.addPass(new RenderPassClass(gameScene, gameCamera));
+    gameBloomPass = new UnrealBloomPassClass(new THREE.Vector2(width, height), 0.45, 0.4, 0.86);
+    gameComposer.addPass(gameBloomPass);
+    gameComposer.addPass(new OutputPassClass());
 
     gameScene.add(new THREE.AmbientLight(0xffffff, 0.5));
     gameScene.add(new THREE.HemisphereLight(0xffe9c7, 0x30261c, 0.5));
@@ -5042,73 +5094,59 @@ async function initGameCanvas() {
     gameGroundShadow.position.y = 0.02;
     gameScene.add(gameGroundShadow);
 
-    // Player is an articulated little runner (torso/head/hair + pivoted
-    // arms and legs) rather than a single abstract blob, so it reads as an
-    // actual person running rather than a mascot shape. Arm/leg pivots are
-    // animated in gameUpdatePlayerMesh; lean/squash still move the whole
-    // gamePlayerMesh group as one unit.
+    // Player is a real rigged GLTF humanoid (three.js's own MIT-licensed
+    // example asset) rather than hand-built primitives, with its own "Run"
+    // animation played through an AnimationMixer (updated in gameLoop).
+    // gamePlayerMesh stays a plain wrapper Group so lean/squash/slide still
+    // just scale/rotate one object, regardless of what model is inside it.
     gamePlayerMesh = new THREE.Group();
-
-    gamePlayerBodyMesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.22, 0.45, 4, 8),
-      new THREE.MeshStandardMaterial({ color: 0x6366f1 })
-    );
-    gamePlayerBodyMesh.position.y = 0.72;
-    gamePlayerBodyMesh.castShadow = true;
-    gamePlayerMesh.add(gamePlayerBodyMesh);
-
-    gamePlayerHeadMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 16, 16),
-      new THREE.MeshStandardMaterial({ color: 0xffd9b3 })
-    );
-    gamePlayerHeadMesh.position.y = 1.18;
-    gamePlayerHeadMesh.castShadow = true;
-    gamePlayerMesh.add(gamePlayerHeadMesh);
-
-    gamePlayerHatMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.235, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.55),
-      new THREE.MeshStandardMaterial({ color: 0x3e2723 })
-    );
-    gamePlayerHatMesh.position.y = 1.24;
-    gamePlayerHatMesh.castShadow = true;
-    gamePlayerMesh.add(gamePlayerHatMesh);
-
-    const skinMat = () => new THREE.MeshStandardMaterial({ color: 0xffd9b3 });
-    const limbGeo = new THREE.CapsuleGeometry(0.07, 0.38, 4, 6);
-
-    gamePlayerArmLPivot = new THREE.Group();
-    gamePlayerArmLPivot.position.set(-0.3, 0.95, 0);
-    const armL = new THREE.Mesh(limbGeo, skinMat());
-    armL.position.y = -0.22;
-    armL.castShadow = true;
-    gamePlayerArmLPivot.add(armL);
-    gamePlayerMesh.add(gamePlayerArmLPivot);
-
-    gamePlayerArmRPivot = new THREE.Group();
-    gamePlayerArmRPivot.position.set(0.3, 0.95, 0);
-    const armR = new THREE.Mesh(limbGeo, skinMat());
-    armR.position.y = -0.22;
-    armR.castShadow = true;
-    gamePlayerArmRPivot.add(armR);
-    gamePlayerMesh.add(gamePlayerArmRPivot);
-
-    gamePlayerLegLPivot = new THREE.Group();
-    gamePlayerLegLPivot.position.set(-0.13, 0.5, 0);
-    const legL = new THREE.Mesh(limbGeo, skinMat());
-    legL.position.y = -0.22;
-    legL.castShadow = true;
-    gamePlayerLegLPivot.add(legL);
-    gamePlayerMesh.add(gamePlayerLegLPivot);
-
-    gamePlayerLegRPivot = new THREE.Group();
-    gamePlayerLegRPivot.position.set(0.13, 0.5, 0);
-    const legR = new THREE.Mesh(limbGeo, skinMat());
-    legR.position.y = -0.22;
-    legR.castShadow = true;
-    gamePlayerLegRPivot.add(legR);
-    gamePlayerMesh.add(gamePlayerLegRPivot);
-
     gameScene.add(gamePlayerMesh);
+
+    try {
+      const loader = new GLTFLoaderClass();
+      const gltf = await loader.loadAsync(GAME_PLAYER_MODEL_URL);
+      gamePlayerModel = gltf.scene;
+
+      gamePlayerModel.traverse(obj => {
+        if (obj.isMesh) {
+          obj.castShadow = true;
+          obj.receiveShadow = true;
+        }
+      });
+
+      // Auto-fit: scale the model (whatever its native units are) to a
+      // known target height, then plant its feet at local y=0 — avoids
+      // hardcoding a scale factor guessed from this specific file.
+      const box = new THREE.Box3().setFromObject(gamePlayerModel);
+      const rawHeight = box.max.y - box.min.y || 1;
+      const scale = GAME_PLAYER_TARGET_HEIGHT / rawHeight;
+      gamePlayerModel.scale.setScalar(scale);
+      const fittedBox = new THREE.Box3().setFromObject(gamePlayerModel);
+      gamePlayerModel.position.y -= fittedBox.min.y;
+
+      gamePlayerMesh.add(gamePlayerModel);
+
+      gamePlayerMixer = new THREE.AnimationMixer(gamePlayerModel);
+      const runClip = THREE.AnimationClip.findByName(gltf.animations, 'Run') || gltf.animations[0];
+      if (runClip) {
+        gamePlayerMixer.clipAction(runClip).play();
+      }
+
+      // A small colored accessory cap — the model's own baked clothing
+      // textures aren't safely retintable by name, so this is what avatar
+      // choice (see GAME_AVATARS) actually changes.
+      gamePlayerAvatarCap = new THREE.Mesh(
+        new THREE.SphereGeometry(GAME_PLAYER_TARGET_HEIGHT * 0.1, 14, 14, 0, Math.PI * 2, 0, Math.PI * 0.55),
+        new THREE.MeshStandardMaterial({ color: 0x6366f1 })
+      );
+      gamePlayerAvatarCap.position.y = GAME_PLAYER_TARGET_HEIGHT * 1.02;
+      gamePlayerAvatarCap.castShadow = true;
+      gamePlayerMesh.add(gamePlayerAvatarCap);
+    } catch (err) {
+      console.error('Failed to load player model:', err);
+      gameOverlayText.textContent = "Couldn't load the player model — check your connection and reopen this tab.";
+      return;
+    }
 
     // A floating name tag above the player's head — a separate top-level
     // sprite (not a child of gamePlayerMesh) so the squash/slide scaling
@@ -5123,6 +5161,8 @@ async function initGameCanvas() {
   }
 
   gameRenderer.setSize(width, height, false);
+  gameComposer.setSize(width, height);
+  gameBloomPass.resolution.set(width, height);
   gameCamera.aspect = width / height;
   gameCamera.updateProjectionMatrix();
 
@@ -5133,7 +5173,7 @@ async function initGameCanvas() {
   gamePlayerY = 0;
   gameUpdatePlayerMesh();
   gameUpdateCamera();
-  gameRenderer.render(gameScene, gameCamera); // paint a static frame behind the "Start Game" overlay
+  gameComposer.render(); // paint a static frame behind the "Start Game" overlay
 }
 
 function gameClearObjects() {
@@ -5295,9 +5335,11 @@ function gameResizeRendererOnly() {
   const width = Math.round(gameCanvasWrap.clientWidth);
   const height = Math.round(width * 0.6);
   gameRenderer.setSize(width, height, false);
+  gameComposer.setSize(width, height);
+  gameBloomPass.resolution.set(width, height);
   gameCamera.aspect = width / height;
   gameCamera.updateProjectionMatrix();
-  if (!gameRunning) gameRenderer.render(gameScene, gameCamera);
+  if (!gameRunning) gameComposer.render();
 }
 
 function gameChangeLane(dir) {
@@ -5341,27 +5383,6 @@ function gameUpdatePlayerMesh() {
     gamePlayerMesh.scale.set(1 + (1 - landSquash) * 0.3, landSquash, 1 + (1 - landSquash) * 0.3);
   }
 
-  // Arm/leg poses: a running swing cycle on the ground, fixed tucked/stretched
-  // poses in the air or mid-slide — no knee joints, just rigid pivots, but
-  // enough to read as a person running rather than a static mannequin.
-  if (gameIsSliding) {
-    gamePlayerLegLPivot.rotation.x = -1.2;
-    gamePlayerLegRPivot.rotation.x = -1.2;
-    gamePlayerArmLPivot.rotation.x = 0.9;
-    gamePlayerArmRPivot.rotation.x = 0.9;
-  } else if (gameIsJumping) {
-    gamePlayerLegLPivot.rotation.x = -0.9;
-    gamePlayerLegRPivot.rotation.x = -0.5;
-    gamePlayerArmLPivot.rotation.x = -0.6;
-    gamePlayerArmRPivot.rotation.x = 0.6;
-  } else {
-    const strideAngle = Math.sin(gameDistance * 4.4) * 0.9;
-    gamePlayerLegLPivot.rotation.x = strideAngle;
-    gamePlayerLegRPivot.rotation.x = -strideAngle;
-    gamePlayerArmLPivot.rotation.x = -strideAngle * 0.8;
-    gamePlayerArmRPivot.rotation.x = strideAngle * 0.8;
-  }
-
   if (gameGroundShadow) {
     const shadowScale = Math.max(0.35, 1 - gamePlayerY * 0.45);
     gameGroundShadow.position.x = gamePlayerX;
@@ -5370,7 +5391,7 @@ function gameUpdatePlayerMesh() {
   }
 
   if (gameNameSprite) {
-    gameNameSprite.position.set(gamePlayerX, GAME_PLAYER_GROUND_Y + gamePlayerY + bob + 1.75, 0.1);
+    gameNameSprite.position.set(gamePlayerX, GAME_PLAYER_GROUND_Y + gamePlayerY + bob + GAME_PLAYER_TARGET_HEIGHT + 0.4, 0.1);
   }
 }
 
@@ -5407,6 +5428,7 @@ function gameLoop(timestamp) {
 
   gameUpdatePlayerMesh();
   gameUpdateCamera();
+  if (gamePlayerMixer) gamePlayerMixer.update(dt);
   gameRoadTexture.offset.y -= dt * 0.8;
 
   // Keep the shadow-casting sun's target centered on the player so the
@@ -5437,7 +5459,7 @@ function gameLoop(timestamp) {
       gameCountdownEl.classList.remove('hidden');
       gameCountdownEl.textContent = String(Math.ceil(remainingMs / 1000));
     }
-    gameRenderer.render(gameScene, gameCamera);
+    gameComposer.render();
     gameAnimHandle = requestAnimationFrame(gameLoop);
     return;
   }
@@ -5448,7 +5470,7 @@ function gameLoop(timestamp) {
   if (gamePhase === 'hit') {
     gameCamera.position.x += (Math.random() - 0.5) * 0.15;
     gameCamera.position.y += (Math.random() - 0.5) * 0.1;
-    gameRenderer.render(gameScene, gameCamera);
+    gameComposer.render();
     if (performance.now() >= gameHitEndAt) {
       endGame();
       return;
@@ -5543,7 +5565,7 @@ function gameLoop(timestamp) {
           // Keep the loop alive into the 'hit' phase handled at the top of
           // gameLoop — without scheduling the next frame here, the game
           // would just freeze forever and endGame() would never fire.
-          gameRenderer.render(gameScene, gameCamera);
+          gameComposer.render();
           gameAnimHandle = requestAnimationFrame(gameLoop);
           return;
         }
@@ -5565,7 +5587,7 @@ function gameLoop(timestamp) {
   }
   gameObjects = remaining;
 
-  gameRenderer.render(gameScene, gameCamera);
+  gameComposer.render();
   gameAnimHandle = requestAnimationFrame(gameLoop);
 }
 

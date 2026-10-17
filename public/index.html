@@ -26,6 +26,20 @@
        loadChartJs() in app.js) — only the Trends tab and My Orders' personal
        trends chart need them, so every other page load skips this ~200KB
        and the parse/execute time that came with blocking it in <head>. -->
+
+  <!-- Import map so Three.js's loader/postprocessing addons (which import
+       "three" and "three/addons/..." as bare specifiers internally) resolve
+       correctly — they're only ever pulled in via dynamic import() from
+       app.js (see loadThreeJs/loadGLTFLoader/loadPostprocessing), lazily,
+       the first time the Lunch Run tab is opened. -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
 
