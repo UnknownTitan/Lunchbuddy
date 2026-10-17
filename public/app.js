@@ -4532,7 +4532,10 @@ function loadPostprocessing() {
 // licensed example asset) rather than hand-built primitives, with its
 // built-in "Run" animation driven by an AnimationMixer — see initGameCanvas
 // and the mixer.update() call in gameLoop.
-const GAME_PLAYER_MODEL_URL = 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/models/gltf/Soldier.glb';
+// The npm "three" package (used for the main module/addons above) doesn't
+// include the examples/models/ assets — only the GitHub repo does — so this
+// one file is pulled from jsdelivr's GitHub CDN instead of the npm CDN.
+const GAME_PLAYER_MODEL_URL = 'https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/models/gltf/Soldier.glb';
 const GAME_PLAYER_TARGET_HEIGHT = 1.3; // world units — matches the old rig's height so lanes/camera framing still fit
 
 const GAME_LANE_COUNT = 4;
