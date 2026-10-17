@@ -360,6 +360,9 @@ const gameStageToastEl = document.getElementById('game-stage-toast');
 const gameHitFlashEl = document.getElementById('game-hit-flash');
 const gamePopupLayerEl = document.getElementById('game-popup-layer');
 const gameAvatarPickerEl = document.getElementById('game-avatar-picker');
+const gameFullscreenBtn = document.getElementById('btn-game-fullscreen');
+const gameFullscreenIconEl = document.getElementById('game-fullscreen-icon');
+const gameLeaderboardListEl = document.getElementById('game-leaderboard-list');
 const myTrendsCard = document.getElementById('my-trends-card');
 const myTrendsStats = document.getElementById('my-trends-stats');
 const myTrendsChartCanvas = document.getElementById('my-trends-chart');
@@ -1047,6 +1050,7 @@ function onTabLoad(tabId) {
     loadNotificationHistory();
   } else if (tabId === 'game-tab') {
     initGameCanvas();
+    loadGameLeaderboard();
   }
 }
 
@@ -4497,7 +4501,7 @@ const GAME_LANE_CENTERS = Array.from({ length: GAME_LANE_COUNT }, (_, i) =>
 );
 const GAME_SPAWN_Z = -60;
 const GAME_REMOVE_Z = 8;
-const GAME_PLAYER_GROUND_Y = 0.6;
+const GAME_PLAYER_GROUND_Y = 0; // the rig's own leg geometry already plants its feet at local y=0
 const GAME_JUMP_VELOCITY = 7;
 const GAME_GRAVITY = 20;
 const GAME_JUMP_CLEAR_HEIGHT = 0.45; // player.y above this clears a 'low' obstacle
@@ -4601,6 +4605,11 @@ let gameClouds = [];
 let gamePlayerBodyMesh = null;
 let gamePlayerHeadMesh = null;
 let gamePlayerHatMesh = null;
+let gamePlayerArmLPivot = null;
+let gamePlayerArmRPivot = null;
+let gamePlayerLegLPivot = null;
+let gamePlayerLegRPivot = null;
+let gameNameSprite = null;
 let gameSelectedAvatarId = GAME_AVATARS_DEFAULT_ID;
 
 function gameHighScoreKey() {
@@ -4668,6 +4677,46 @@ function gameMakeEmojiSprite(emoji, size = 64) {
   const texture = new THREE.CanvasTexture(canvas);
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true }));
   sprite.scale.set(0.9, 0.9, 0.9);
+  return sprite;
+}
+
+// A name-plate sprite that floats above the player's head — rendered once
+// per game session (name doesn't change mid-run), not a child of
+// gamePlayerMesh so squash/slide scaling never distorts it (see
+// gameUpdatePlayerMesh, which repositions it manually instead).
+function gameMakeNameTagSprite(name) {
+  const label = (name || 'Player').trim().slice(0, 18) || 'Player';
+  const measureCanvas = document.createElement('canvas');
+  const measureCtx = measureCanvas.getContext('2d');
+  measureCtx.font = '28px sans-serif';
+  const textWidth = measureCtx.measureText(label).width;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(textWidth) + 32;
+  canvas.height = 44;
+  const ctx = canvas.getContext('2d');
+  ctx.font = '28px sans-serif';
+
+  const r = 10;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.arcTo(canvas.width, 0, canvas.width, canvas.height, r);
+  ctx.arcTo(canvas.width, canvas.height, 0, canvas.height, r);
+  ctx.arcTo(0, canvas.height, 0, 0, r);
+  ctx.arcTo(0, 0, canvas.width, 0, r);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, canvas.width / 2, canvas.height / 2 + 1);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }));
+  const aspect = canvas.width / canvas.height;
+  sprite.scale.set(0.85 * aspect, 0.85, 1);
   return sprite;
 }
 
@@ -4964,32 +5013,80 @@ async function initGameCanvas() {
     gameGroundShadow.position.y = 0.02;
     gameScene.add(gameGroundShadow);
 
-    // Player is a small group (body/head/hat) rather than one mesh, so it
-    // reads as a little chef running the lunch line, and so lean/squash
-    // effects (see gameLoop/gameUpdatePlayerMesh) move everything as one unit.
+    // Player is an articulated little runner (torso/head/hair + pivoted
+    // arms and legs) rather than a single abstract blob, so it reads as an
+    // actual person running rather than a mascot shape. Arm/leg pivots are
+    // animated in gameUpdatePlayerMesh; lean/squash still move the whole
+    // gamePlayerMesh group as one unit.
     gamePlayerMesh = new THREE.Group();
+
     gamePlayerBodyMesh = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.33, 0.5, 4, 8),
+      new THREE.CapsuleGeometry(0.22, 0.45, 4, 8),
       new THREE.MeshStandardMaterial({ color: 0x6366f1 })
     );
-    gamePlayerBodyMesh.position.y = 0.4;
+    gamePlayerBodyMesh.position.y = 0.72;
     gamePlayerBodyMesh.castShadow = true;
     gamePlayerMesh.add(gamePlayerBodyMesh);
+
     gamePlayerHeadMesh = new THREE.Mesh(
-      new THREE.SphereGeometry(0.26, 14, 14),
+      new THREE.SphereGeometry(0.22, 16, 16),
       new THREE.MeshStandardMaterial({ color: 0xffd9b3 })
     );
-    gamePlayerHeadMesh.position.y = 0.88;
+    gamePlayerHeadMesh.position.y = 1.18;
     gamePlayerHeadMesh.castShadow = true;
     gamePlayerMesh.add(gamePlayerHeadMesh);
+
     gamePlayerHatMesh = new THREE.Mesh(
-      new THREE.ConeGeometry(0.2, 0.3, 14),
-      new THREE.MeshStandardMaterial({ color: 0xffffff })
+      new THREE.SphereGeometry(0.235, 16, 16, 0, Math.PI * 2, 0, Math.PI * 0.55),
+      new THREE.MeshStandardMaterial({ color: 0x3e2723 })
     );
-    gamePlayerHatMesh.position.y = 1.15;
+    gamePlayerHatMesh.position.y = 1.24;
     gamePlayerHatMesh.castShadow = true;
     gamePlayerMesh.add(gamePlayerHatMesh);
+
+    const skinMat = () => new THREE.MeshStandardMaterial({ color: 0xffd9b3 });
+    const limbGeo = new THREE.CapsuleGeometry(0.07, 0.38, 4, 6);
+
+    gamePlayerArmLPivot = new THREE.Group();
+    gamePlayerArmLPivot.position.set(-0.3, 0.95, 0);
+    const armL = new THREE.Mesh(limbGeo, skinMat());
+    armL.position.y = -0.22;
+    armL.castShadow = true;
+    gamePlayerArmLPivot.add(armL);
+    gamePlayerMesh.add(gamePlayerArmLPivot);
+
+    gamePlayerArmRPivot = new THREE.Group();
+    gamePlayerArmRPivot.position.set(0.3, 0.95, 0);
+    const armR = new THREE.Mesh(limbGeo, skinMat());
+    armR.position.y = -0.22;
+    armR.castShadow = true;
+    gamePlayerArmRPivot.add(armR);
+    gamePlayerMesh.add(gamePlayerArmRPivot);
+
+    gamePlayerLegLPivot = new THREE.Group();
+    gamePlayerLegLPivot.position.set(-0.13, 0.5, 0);
+    const legL = new THREE.Mesh(limbGeo, skinMat());
+    legL.position.y = -0.22;
+    legL.castShadow = true;
+    gamePlayerLegLPivot.add(legL);
+    gamePlayerMesh.add(gamePlayerLegLPivot);
+
+    gamePlayerLegRPivot = new THREE.Group();
+    gamePlayerLegRPivot.position.set(0.13, 0.5, 0);
+    const legR = new THREE.Mesh(limbGeo, skinMat());
+    legR.position.y = -0.22;
+    legR.castShadow = true;
+    gamePlayerLegRPivot.add(legR);
+    gamePlayerMesh.add(gamePlayerLegRPivot);
+
     gameScene.add(gamePlayerMesh);
+
+    // A floating name tag above the player's head — a separate top-level
+    // sprite (not a child of gamePlayerMesh) so the squash/slide scaling
+    // applied to the body never distorts its size; position is synced in
+    // gameUpdatePlayerMesh instead.
+    gameNameSprite = gameMakeNameTagSprite(currentUser?.name);
+    gameScene.add(gameNameSprite);
 
     gameLoadAvatarPreference();
     gameApplyAvatarColors();
@@ -5100,6 +5197,77 @@ function endGame() {
     : `Game over — you scored ${gameScore}.`;
   btnGameStart.innerHTML = '<span class="material-symbols-outlined">replay</span><span>Play Again</span>';
   gameOverlay.classList.remove('hidden');
+
+  gameSubmitScore(gameScore);
+}
+
+// Reports the run to the company leaderboard — the server only ever raises
+// the user's stored best (see submitGameScore in db.js), so it's safe to
+// post every run rather than just new personal bests.
+async function gameSubmitScore(score) {
+  try {
+    await apiCall('/api/game/score', 'POST', { score });
+    loadGameLeaderboard();
+  } catch (err) {
+    console.error('Failed to submit game score:', err);
+  }
+}
+
+async function loadGameLeaderboard() {
+  if (!gameLeaderboardListEl) return;
+  try {
+    const leaderboard = await apiCall('/api/game/leaderboard');
+    gameRenderLeaderboard(leaderboard);
+  } catch (err) {
+    console.error('Failed to load leaderboard:', err);
+  }
+}
+
+function gameRenderLeaderboard(entries) {
+  gameLeaderboardListEl.innerHTML = '';
+  if (!entries || entries.length === 0) {
+    const li = document.createElement('li');
+    li.className = 'game-leaderboard-empty';
+    li.textContent = 'No scores yet — be the first!';
+    gameLeaderboardListEl.appendChild(li);
+    return;
+  }
+  entries.forEach((entry, i) => {
+    const li = document.createElement('li');
+    if (currentUser && entry.userId === currentUser.id) li.classList.add('me');
+    const rank = document.createElement('span');
+    rank.className = 'game-leaderboard-rank';
+    rank.textContent = `#${i + 1}`;
+    const name = document.createElement('span');
+    name.className = 'game-leaderboard-name';
+    name.textContent = entry.userName || 'Someone';
+    const score = document.createElement('span');
+    score.className = 'game-leaderboard-score';
+    score.textContent = entry.score;
+    li.append(rank, name, score);
+    gameLeaderboardListEl.appendChild(li);
+  });
+}
+
+function gameToggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else {
+    gameCanvasWrap.requestFullscreen?.().catch(() => {});
+  }
+}
+
+// Resizes the renderer/camera to match the canvas wrap's current size
+// without touching player/game state — safe to call mid-run (e.g. on
+// entering/exiting fullscreen), unlike the fuller initGameCanvas() reset.
+function gameResizeRendererOnly() {
+  if (!gameRenderer) return;
+  const width = Math.round(gameCanvasWrap.clientWidth);
+  const height = Math.round(width * 0.6);
+  gameRenderer.setSize(width, height, false);
+  gameCamera.aspect = width / height;
+  gameCamera.updateProjectionMatrix();
+  if (!gameRunning) gameRenderer.render(gameScene, gameCamera);
 }
 
 function gameChangeLane(dir) {
@@ -5143,11 +5311,36 @@ function gameUpdatePlayerMesh() {
     gamePlayerMesh.scale.set(1 + (1 - landSquash) * 0.3, landSquash, 1 + (1 - landSquash) * 0.3);
   }
 
+  // Arm/leg poses: a running swing cycle on the ground, fixed tucked/stretched
+  // poses in the air or mid-slide — no knee joints, just rigid pivots, but
+  // enough to read as a person running rather than a static mannequin.
+  if (gameIsSliding) {
+    gamePlayerLegLPivot.rotation.x = -1.2;
+    gamePlayerLegRPivot.rotation.x = -1.2;
+    gamePlayerArmLPivot.rotation.x = 0.9;
+    gamePlayerArmRPivot.rotation.x = 0.9;
+  } else if (gameIsJumping) {
+    gamePlayerLegLPivot.rotation.x = -0.9;
+    gamePlayerLegRPivot.rotation.x = -0.5;
+    gamePlayerArmLPivot.rotation.x = -0.6;
+    gamePlayerArmRPivot.rotation.x = 0.6;
+  } else {
+    const strideAngle = Math.sin(gameDistance * 4.4) * 0.9;
+    gamePlayerLegLPivot.rotation.x = strideAngle;
+    gamePlayerLegRPivot.rotation.x = -strideAngle;
+    gamePlayerArmLPivot.rotation.x = -strideAngle * 0.8;
+    gamePlayerArmRPivot.rotation.x = strideAngle * 0.8;
+  }
+
   if (gameGroundShadow) {
     const shadowScale = Math.max(0.35, 1 - gamePlayerY * 0.45);
     gameGroundShadow.position.x = gamePlayerX;
     gameGroundShadow.scale.set(shadowScale, shadowScale, 1);
     gameGroundShadow.material.opacity = 0.22 * shadowScale;
+  }
+
+  if (gameNameSprite) {
+    gameNameSprite.position.set(gamePlayerX, GAME_PLAYER_GROUND_Y + gamePlayerY + bob + 1.75, 0.1);
   }
 }
 
@@ -5746,7 +5939,16 @@ function setupEventListeners() {
     else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') { gameSlide(); e.preventDefault(); }
   });
   window.addEventListener('resize', () => {
-    if (activeTab === 'game-tab' && !gameRunning) initGameCanvas();
+    if (activeTab !== 'game-tab') return;
+    if (gameRunning) gameResizeRendererOnly();
+    else initGameCanvas();
+  });
+  gameFullscreenBtn.addEventListener('click', gameToggleFullscreen);
+  document.addEventListener('fullscreenchange', () => {
+    gameFullscreenIconEl.textContent = document.fullscreenElement ? 'fullscreen_exit' : 'fullscreen';
+    if (activeTab !== 'game-tab') return;
+    // Let the browser finish resizing the fullscreen element before measuring it
+    requestAnimationFrame(gameResizeRendererOnly);
   });
 }
 

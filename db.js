@@ -39,6 +39,8 @@ async function ensureIndexes() {
   await db.collection('companySettings').createIndex({ companyId: 1 }, { unique: true, sparse: true });
   await db.collection('scheduledNotifications').createIndex({ companyId: 1, status: 1, sendAt: 1 });
   await db.collection('notificationHistory').createIndex({ companyId: 1, sentAt: -1 });
+  await db.collection('gameScores').createIndex({ companyId: 1, userId: 1 }, { unique: true });
+  await db.collection('gameScores').createIndex({ companyId: 1, score: -1 });
   // TTL index: MongoDB auto-deletes a token doc once `expiresAt` (a real
   // Date) passes — expired reset links clean themselves up, no sweep needed.
   await db.collection('passwordResetTokens').createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
@@ -545,4 +547,33 @@ export async function getHistoryInRange(companyId, startDate, endDate) {
   }
   const docs = await db.collection('history').find(query).sort({ date: 1 }).toArray();
   return docs.map(({ _id, _seq, ...rest }) => rest);
+}
+
+// ---- gameScores (Lunch Run leaderboard) ----
+// One doc per user per company holding their personal best — only updated
+// when a new run beats it, so the leaderboard is always "best run per
+// person" rather than every run ever played.
+
+export async function submitGameScore(companyId, userId, userName, score) {
+  requireCompanyId(companyId, 'submitGameScore');
+  const existing = await db.collection('gameScores').findOne({ companyId, userId });
+  if (existing && existing.score >= score) {
+    return existing.score;
+  }
+  await db.collection('gameScores').updateOne(
+    { companyId, userId },
+    { $set: { companyId, userId, userName, score, updatedAt: new Date() } },
+    { upsert: true }
+  );
+  return score;
+}
+
+export async function getGameLeaderboard(companyId, limit = 10) {
+  requireCompanyId(companyId, 'getGameLeaderboard');
+  const docs = await db.collection('gameScores')
+    .find({ companyId })
+    .sort({ score: -1 })
+    .limit(limit)
+    .toArray();
+  return docs.map(({ _id, ...rest }) => rest);
 }

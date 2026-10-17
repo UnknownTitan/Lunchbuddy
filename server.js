@@ -59,7 +59,9 @@ import {
   getUserByEmail,
   createPasswordResetToken,
   getPasswordResetToken,
-  markPasswordResetTokenUsed
+  markPasswordResetTokenUsed,
+  submitGameScore,
+  getGameLeaderboard
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2800,6 +2802,25 @@ app.get('/api/my-trends', authMiddleware, requireCompanyUser, async (req, res) =
     .sort((a, b) => b.totalCount - a.totalCount);
 
   res.json({ mealsOrdered, topDishes });
+});
+
+// Any logged-in company user: submit a Lunch Run score. Only ever raises
+// their stored best (see submitGameScore) — the response always reflects
+// the user's current best, whether or not this particular run beat it.
+app.post('/api/game/score', authMiddleware, requireCompanyUser, async (req, res) => {
+  const score = Number(req.body?.score);
+  if (!Number.isFinite(score) || score < 0) {
+    return res.status(400).json({ error: 'A valid non-negative score is required.' });
+  }
+  const best = await submitGameScore(req.user.companyId, req.user.id, req.user.name, Math.floor(score));
+  res.json({ best });
+});
+
+// Any logged-in company user: the company's Lunch Run leaderboard (top 10
+// personal bests).
+app.get('/api/game/leaderboard', authMiddleware, requireCompanyUser, async (req, res) => {
+  const leaderboard = await getGameLeaderboard(req.user.companyId, 10);
+  res.json(leaderboard);
 });
 
 // Admin/Abigail: View historical records
