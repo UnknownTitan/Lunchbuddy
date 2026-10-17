@@ -5120,10 +5120,17 @@ async function initGameCanvas() {
       // Auto-fit: scale the model (whatever its native units are) to a
       // known target height, then plant its feet at local y=0 — avoids
       // hardcoding a scale factor guessed from this specific file.
+      // updateMatrixWorld(true) is required here: a freshly-loaded scene's
+      // world matrices aren't computed until the next render, so measuring
+      // the bounding box without it reads near-zero size — which is exactly
+      // what blew the auto-fit scale up to "giant" (camera ends up inside
+      // the oversized model).
+      gamePlayerModel.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(gamePlayerModel);
       const rawHeight = box.max.y - box.min.y || 1;
       const scale = GAME_PLAYER_TARGET_HEIGHT / rawHeight;
       gamePlayerModel.scale.setScalar(scale);
+      gamePlayerModel.updateMatrixWorld(true);
       const fittedBox = new THREE.Box3().setFromObject(gamePlayerModel);
       gamePlayerModel.position.y -= fittedBox.min.y;
 
