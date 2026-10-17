@@ -3843,11 +3843,11 @@ input:checked + .slider:before {
   background: rgba(239, 68, 68, 0.55);
   opacity: 0;
   z-index: 4;
+  transition: opacity 0.35s ease-out;
 }
 
 .game-hit-flash.visible {
   opacity: 1;
-  transition: opacity 0.35s ease-out;
 }
 
 .game-popup-layer {

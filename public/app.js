@@ -5509,6 +5509,11 @@ function gameLoop(timestamp) {
         if (!dodged) {
           gameScene.remove(obj.mesh);
           gameTriggerHit();
+          // Keep the loop alive into the 'hit' phase handled at the top of
+          // gameLoop — without scheduling the next frame here, the game
+          // would just freeze forever and endGame() would never fire.
+          gameRenderer.render(gameScene, gameCamera);
+          gameAnimHandle = requestAnimationFrame(gameLoop);
           return;
         }
       } else if (obj.kind !== 'food' && Math.abs(obj.lane - gamePlayerLane) === 1) {
