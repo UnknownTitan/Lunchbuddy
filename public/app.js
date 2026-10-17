@@ -4589,11 +4589,21 @@ const GAME_ROW_PATTERNS = [
   { minStage: 2, pattern: ['B', 'L', 'C', 'H'] },
   { minStage: 3, pattern: ['H', 'C', 'L', 'B'] },
   { minStage: 3, pattern: ['B', 'H', 'C', 'B'] },
-  { minStage: 3, pattern: ['L', 'B', 'C', 'L'] }
+  { minStage: 3, pattern: ['L', 'B', 'C', 'L'] },
+  // Ramp rows — a Subway-Surfers-style launch pad: hitting one auto-boosts
+  // the player into a high arc (see the 'ramp' handling in gameLoop) with a
+  // brief invulnerability window, so it always reads as a fun, rewarding
+  // shortcut rather than a trap, regardless of what the next row holds.
+  { minStage: 0, pattern: ['R', 'C', 'C', 'C'] },
+  { minStage: 0, pattern: ['C', 'R', 'C', 'C'] },
+  { minStage: 1, pattern: ['R', 'C', 'L', 'C'] },
+  { minStage: 2, pattern: ['B', 'R', 'C', 'B'] }
 ];
-const GAME_PATTERN_KIND = { C: 'clear', B: 'block', L: 'low', H: 'high' };
+const GAME_PATTERN_KIND = { C: 'clear', B: 'block', L: 'low', H: 'high', R: 'ramp' };
 const GAME_FOOD_STREAK_WINDOW_MS = 4000; // consecutive catches within this gap keep the combo alive
 const GAME_HIT_STUN_MS = 350; // freeze + shake/flash this long before the real game-over fires
+const GAME_RAMP_LAUNCH_VELOCITY = 11; // well above GAME_JUMP_VELOCITY, for a dramatic soaring arc
+const GAME_RAMP_INVULN_MS = 1200; // ignore collisions while airborne from a ramp boost
 
 // Subway-Surfers-style avatar choice — purely cosmetic (body/head/hat
 // colors), applied by recoloring the existing player mesh materials.
@@ -4652,6 +4662,7 @@ let gameLandBounceAt = -Infinity; // timestamp of last landing, drives the squas
 let gameFoodStreak = 0;
 let gameLastFoodCatchAt = -Infinity;
 let gameHitEndAt = 0;
+let gameRampInvulnUntil = 0;
 let gameSun = null;
 let gameCloudTexture = null;
 let gameClouds = [];
@@ -5215,6 +5226,7 @@ function resetGameState() {
   gameLandBounceAt = -Infinity;
   gameFoodStreak = 0;
   gameLastFoodCatchAt = -Infinity;
+  gameRampInvulnUntil = 0;
   gameClearObjects();
   gameUpdatePlayerMesh();
   gameScoreEl.textContent = '0';
@@ -5570,6 +5582,24 @@ function gameLoop(timestamp) {
           gameScene.remove(obj.mesh);
           continue;
         }
+        if (obj.kind === 'ramp') {
+          // Auto-launch into a high arc, Subway-Surfers-style, plus a brief
+          // invulnerability window so whatever the flight path passes over
+          // next can never cheaply end the run.
+          gameIsJumping = true;
+          gamePlayerVY = GAME_RAMP_LAUNCH_VELOCITY;
+          gameRampInvulnUntil = performance.now() + GAME_RAMP_INVULN_MS;
+          gameScore += 5;
+          gameScoreEl.textContent = gameScore;
+          gamePlayTone(520, 0.1, 'sawtooth', 0.06);
+          gameShowPopup('Boost!', 'combo');
+          gameScene.remove(obj.mesh);
+          continue;
+        }
+        if (performance.now() < gameRampInvulnUntil) {
+          gameScene.remove(obj.mesh);
+          continue;
+        }
         const dodged = (obj.kind === 'low' && gamePlayerY > GAME_JUMP_CLEAR_HEIGHT)
           || (obj.kind === 'high' && gameIsSliding);
         if (!dodged) {
@@ -5582,7 +5612,7 @@ function gameLoop(timestamp) {
           gameAnimHandle = requestAnimationFrame(gameLoop);
           return;
         }
-      } else if (obj.kind !== 'food' && Math.abs(obj.lane - gamePlayerLane) === 1) {
+      } else if (obj.kind !== 'food' && obj.kind !== 'ramp' && Math.abs(obj.lane - gamePlayerLane) === 1) {
         // Rewards tight dodges in an adjacent lane, not just surviving —
         // nudges players toward reading the road rather than drifting wide.
         obj.resolved = true;
@@ -5628,8 +5658,39 @@ function gameSpawnRow() {
       if (lane === foodLane) gameSpawnFood(lane);
       return;
     }
+    if (kind === 'ramp') {
+      gameSpawnRamp(lane);
+      return;
+    }
     gameSpawnObstacle(lane, kind);
   });
+}
+
+// A ramp — a tilted wedge the player launches off automatically when it
+// resolves in their lane (see gameLoop), Subway-Surfers-style. Visually a
+// barrier-striped slope with an upward arrow so the "free boost" reads
+// clearly rather than looking like another obstacle to dodge.
+function gameSpawnRamp(lane) {
+  const group = new THREE.Group();
+  const wedge = new THREE.Mesh(
+    new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 0.15, 1.6),
+    new THREE.MeshStandardMaterial({ map: gameBarrierTexture })
+  );
+  wedge.rotation.x = -0.35;
+  wedge.position.y = 0.3;
+  wedge.position.z = -0.3;
+  wedge.castShadow = true;
+  wedge.receiveShadow = true;
+  group.add(wedge);
+
+  const label = gameMakeEmojiSprite('⤴️', 48);
+  label.scale.set(0.5, 0.5, 0.5);
+  label.position.y = 1.1;
+  group.add(label);
+
+  group.position.set(GAME_LANE_CENTERS[lane], 0, GAME_SPAWN_Z);
+  gameScene.add(group);
+  gameObjects.push({ mesh: group, lane, kind: 'ramp', resolved: false });
 }
 
 // An obstacle is a small group (box + a floating emoji marker) rather than
