@@ -3791,3 +3791,43 @@ input:checked + .slider:before {
   15% { opacity: 1; transform: translate(-50%, 0) scale(1.1); }
   100% { opacity: 0; transform: translate(-50%, -42px) scale(1); }
 }
+
+.game-avatar-picker {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+}
+
+.game-avatar-swatch {
+  position: relative;
+  width: 2.2rem;
+  height: 2.2rem;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  background: var(--swatch-color, #6366f1);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+
+.game-avatar-swatch::after {
+  content: '';
+  position: absolute;
+  top: -0.3rem;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0.7rem;
+  height: 0.55rem;
+  border-radius: 0.35rem 0.35rem 0 0;
+  background: var(--swatch-hat, #fff);
+}
+
+.game-avatar-swatch:hover {
+  transform: scale(1.08);
+}
+
+.game-avatar-swatch.selected {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.4);
+}

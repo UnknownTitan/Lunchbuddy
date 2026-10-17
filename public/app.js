@@ -359,6 +359,7 @@ const gameStageLabelEl = document.getElementById('game-stage-label');
 const gameStageToastEl = document.getElementById('game-stage-toast');
 const gameHitFlashEl = document.getElementById('game-hit-flash');
 const gamePopupLayerEl = document.getElementById('game-popup-layer');
+const gameAvatarPickerEl = document.getElementById('game-avatar-picker');
 const myTrendsCard = document.getElementById('my-trends-card');
 const myTrendsStats = document.getElementById('my-trends-stats');
 const myTrendsChartCanvas = document.getElementById('my-trends-chart');
@@ -4546,6 +4547,18 @@ const GAME_PATTERN_KIND = { C: 'clear', B: 'block', L: 'low', H: 'high' };
 const GAME_FOOD_STREAK_WINDOW_MS = 4000; // consecutive catches within this gap keep the combo alive
 const GAME_HIT_STUN_MS = 350; // freeze + shake/flash this long before the real game-over fires
 
+// Subway-Surfers-style avatar choice — purely cosmetic (body/head/hat
+// colors), applied by recoloring the existing player mesh materials.
+const GAME_AVATARS = [
+  { id: 'classic', name: 'Classic Chef', body: 0x6366f1, head: 0xffd9b3, hat: 0xffffff },
+  { id: 'fire', name: 'Fire Chef', body: 0xef4444, head: 0xffd9b3, hat: 0xfff1e6 },
+  { id: 'ocean', name: 'Ocean Chef', body: 0x0891b2, head: 0xffd9b3, hat: 0xe0f7fa },
+  { id: 'sunshine', name: 'Sunshine Chef', body: 0xf59e0b, head: 0xffd9b3, hat: 0xfffde7 },
+  { id: 'grape', name: 'Grape Chef', body: 0x9333ea, head: 0xffd9b3, hat: 0xf3e8ff },
+  { id: 'mint', name: 'Mint Chef', body: 0x10b981, head: 0xffd9b3, hat: 0xecfdf5 }
+];
+const GAME_AVATARS_DEFAULT_ID = GAME_AVATARS[0].id;
+
 let gameRenderer = null;
 let gameScene = null;
 let gameCamera = null;
@@ -4582,6 +4595,13 @@ let gameLandBounceAt = -Infinity; // timestamp of last landing, drives the squas
 let gameFoodStreak = 0;
 let gameLastFoodCatchAt = -Infinity;
 let gameHitEndAt = 0;
+let gameSun = null;
+let gameCloudTexture = null;
+let gameClouds = [];
+let gamePlayerBodyMesh = null;
+let gamePlayerHeadMesh = null;
+let gamePlayerHatMesh = null;
+let gameSelectedAvatarId = GAME_AVATARS_DEFAULT_ID;
 
 function gameHighScoreKey() {
   return `lunchsync_runner_best_${currentUser?.id || 'anon'}`;
@@ -4589,6 +4609,49 @@ function gameHighScoreKey() {
 
 function getGameBestScore() {
   return Number(localStorage.getItem(gameHighScoreKey())) || 0;
+}
+
+function gameAvatarStorageKey() {
+  return `lunchsync_runner_avatar_${currentUser?.id || 'anon'}`;
+}
+
+function gameLoadAvatarPreference() {
+  const saved = localStorage.getItem(gameAvatarStorageKey());
+  gameSelectedAvatarId = GAME_AVATARS.some(a => a.id === saved) ? saved : GAME_AVATARS_DEFAULT_ID;
+}
+
+function gameApplyAvatarColors() {
+  const avatar = GAME_AVATARS.find(a => a.id === gameSelectedAvatarId) || GAME_AVATARS[0];
+  if (gamePlayerBodyMesh) gamePlayerBodyMesh.material.color.setHex(avatar.body);
+  if (gamePlayerHeadMesh) gamePlayerHeadMesh.material.color.setHex(avatar.head);
+  if (gamePlayerHatMesh) gamePlayerHatMesh.material.color.setHex(avatar.hat);
+}
+
+function gameSelectAvatar(id) {
+  if (!GAME_AVATARS.some(a => a.id === id) || id === gameSelectedAvatarId) return;
+  gameSelectedAvatarId = id;
+  localStorage.setItem(gameAvatarStorageKey(), id);
+  gameApplyAvatarColors();
+  gameRenderAvatarPicker();
+  if (gameRenderer && !gameRunning) gameRenderer.render(gameScene, gameCamera);
+}
+
+// Builds the avatar swatch row shown in the start/game-over overlay —
+// plain colored circles are enough to read as distinct characters without
+// needing separate preview models.
+function gameRenderAvatarPicker() {
+  if (!gameAvatarPickerEl) return;
+  gameAvatarPickerEl.innerHTML = '';
+  GAME_AVATARS.forEach(avatar => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'game-avatar-swatch' + (avatar.id === gameSelectedAvatarId ? ' selected' : '');
+    btn.title = avatar.name;
+    btn.style.setProperty('--swatch-color', `#${avatar.body.toString(16).padStart(6, '0')}`);
+    btn.style.setProperty('--swatch-hat', `#${avatar.hat.toString(16).padStart(6, '0')}`);
+    btn.addEventListener('click', () => gameSelectAvatar(avatar.id));
+    gameAvatarPickerEl.appendChild(btn);
+  });
 }
 
 // Renders an emoji onto a small canvas and wraps it as a camera-facing
@@ -4617,6 +4680,12 @@ function gameMakeRoadTexture() {
   const ctx = canvas.getContext('2d');
   ctx.fillStyle = '#33415c';
   ctx.fillRect(0, 0, 64, 256);
+  // subtle asphalt speckle so the road reads as a textured surface up close,
+  // not a flat color fill
+  for (let i = 0; i < 260; i++) {
+    ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.06})`;
+    ctx.fillRect(Math.random() * 64, Math.random() * 256, 1, 1);
+  }
   ctx.strokeStyle = 'rgba(255,255,255,0.3)';
   ctx.lineWidth = 2;
   ctx.setLineDash([22, 18]);
@@ -4643,23 +4712,113 @@ function gameMakeSkyTexture(topColor, bottomColor) {
   const ctx = canvas.getContext('2d');
   const gradient = ctx.createLinearGradient(0, 0, 0, 256);
   gradient.addColorStop(0, topColor);
+  gradient.addColorStop(0.55, bottomColor);
   gradient.addColorStop(1, bottomColor);
   ctx.fillStyle = gradient;
   ctx.fillRect(0, 0, 2, 256);
   return new THREE.CanvasTexture(canvas);
 }
 
-// A random roadside "building" — purely cosmetic, sold the sense of speed
-// by scrolling past alongside the lanes (see gameSpawnScenery/gameLoop).
-function gameMakeSceneryMesh() {
-  const height = 2 + Math.random() * 4.5;
-  const hue = 0.07 + Math.random() * 0.08;
-  const mesh = new THREE.Mesh(
-    new THREE.BoxGeometry(1.6 + Math.random(), height, 1.6 + Math.random()),
-    new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.35, 0.4 + Math.random() * 0.15) })
+// A soft multi-blob cloud, drawn once and reused as a sprite texture for
+// every drifting background cloud (see gameSpawnCloud).
+function gameMakeCloudTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.filter = 'blur(4px)';
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  [[32, 34, 22], [56, 26, 26], [82, 34, 20], [102, 30, 16]].forEach(([x, y, r]) => {
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  });
+  return new THREE.CanvasTexture(canvas);
+}
+
+// A slow-drifting background cloud — purely atmospheric parallax. Loops back
+// to a far position once it passes the camera rather than being destroyed,
+// so a small fixed pool runs for the whole game.
+function gameSpawnCloud(far) {
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: gameCloudTexture, transparent: true, opacity: 0.8, fog: false, depthWrite: false
+  }));
+  const scale = 10 + Math.random() * 6;
+  sprite.scale.set(scale, scale * 0.5, 1);
+  sprite.position.set(
+    (Math.random() - 0.5) * 60,
+    10 + Math.random() * 10,
+    far ? -100 - Math.random() * 30 : -40 - Math.random() * 60
   );
-  mesh.position.y = height / 2;
-  return mesh;
+  gameScene.add(sprite);
+  gameClouds.push(sprite);
+}
+
+// A roadside decoration — picked from a small set of street-market
+// archetypes (food stall, lamp post, tree, building) rather than one plain
+// box shape repeated, so the street reads as a place, not filler geometry.
+function gameMakeSceneryMesh() {
+  const kind = ['stall', 'lamp', 'tree', 'building'][Math.floor(Math.random() * 4)];
+  const group = new THREE.Group();
+
+  if (kind === 'stall') {
+    const hue = Math.random() * 0.12;
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.08, 1.6, 8),
+      new THREE.MeshStandardMaterial({ color: 0x8d6e63 })
+    );
+    pole.position.y = 0.8;
+    group.add(pole);
+    const canopy = new THREE.Mesh(
+      new THREE.ConeGeometry(1.1, 0.9, 8),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.65, 0.55) })
+    );
+    canopy.position.y = 2;
+    group.add(canopy);
+  } else if (kind === 'lamp') {
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, 3, 8),
+      new THREE.MeshStandardMaterial({ color: 0x37474f })
+    );
+    pole.position.y = 1.5;
+    group.add(pole);
+    const bulb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 10, 10),
+      new THREE.MeshStandardMaterial({ color: 0xfff3c4, emissive: 0xffdd88, emissiveIntensity: 0.6 })
+    );
+    bulb.position.y = 3.1;
+    group.add(bulb);
+  } else if (kind === 'tree') {
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.14, 0.18, 1.4, 8),
+      new THREE.MeshStandardMaterial({ color: 0x795548 })
+    );
+    trunk.position.y = 0.7;
+    group.add(trunk);
+    const foliage = new THREE.Mesh(
+      new THREE.SphereGeometry(0.9 + Math.random() * 0.3, 10, 10),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(0.3, 0.45, 0.35 + Math.random() * 0.1) })
+    );
+    foliage.position.y = 1.9;
+    group.add(foliage);
+  } else {
+    const height = 2 + Math.random() * 4.5;
+    const hue = 0.07 + Math.random() * 0.08;
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(1.6 + Math.random(), height, 1.6 + Math.random()),
+      new THREE.MeshStandardMaterial({ color: new THREE.Color().setHSL(hue, 0.35, 0.4 + Math.random() * 0.15) })
+    );
+    box.position.y = height / 2;
+    group.add(box);
+  }
+
+  group.traverse(obj => {
+    if (obj.isMesh) {
+      obj.castShadow = true;
+      obj.receiveShadow = true;
+    }
+  });
+  return group;
 }
 
 // A soft radial-gradient dot used for both landing-dust puffs — one shared
@@ -4740,6 +4899,11 @@ async function initGameCanvas() {
       return;
     }
     gameRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    gameRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    gameRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    gameRenderer.toneMappingExposure = 1.15;
+    gameRenderer.shadowMap.enabled = true;
+    gameRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     gameScene = new THREE.Scene();
     const stage0 = GAME_STAGES[0];
@@ -4748,12 +4912,26 @@ async function initGameCanvas() {
 
     gameCamera = new THREE.PerspectiveCamera(62, width / height, 0.1, 200);
 
-    gameScene.add(new THREE.AmbientLight(0xffffff, 0.75));
-    const sun = new THREE.DirectionalLight(0xffffff, 0.7);
-    sun.position.set(4, 10, 6);
-    gameScene.add(sun);
+    gameScene.add(new THREE.AmbientLight(0xffffff, 0.5));
+    gameScene.add(new THREE.HemisphereLight(0xffe9c7, 0x30261c, 0.5));
+    gameSun = new THREE.DirectionalLight(0xffffff, 1);
+    gameSun.position.set(4, 10, 6);
+    gameSun.castShadow = true;
+    gameSun.shadow.mapSize.set(1024, 1024);
+    gameSun.shadow.camera.left = -8;
+    gameSun.shadow.camera.right = 8;
+    gameSun.shadow.camera.top = 10;
+    gameSun.shadow.camera.bottom = -12;
+    gameSun.shadow.camera.near = 1;
+    gameSun.shadow.camera.far = 30;
+    gameSun.shadow.bias = -0.002;
+    gameScene.add(gameSun);
+    gameScene.add(gameSun.target);
 
     gameDustTexture = gameMakeDustTexture();
+    gameCloudTexture = gameMakeCloudTexture();
+    for (let i = 0; i < 5; i++) gameSpawnCloud(false);
+
     gameRoadTexture = gameMakeRoadTexture();
     const road = new THREE.Mesh(
       new THREE.PlaneGeometry(GAME_ROAD_WIDTH, 240),
@@ -4761,14 +4939,26 @@ async function initGameCanvas() {
     );
     road.rotation.x = -Math.PI / 2;
     road.position.set(0, 0, -90);
+    road.receiveShadow = true;
     gameScene.add(road);
 
-    // A soft blob shadow under the player — shrinks/fades with jump height,
-    // a cheap classic trick that reads as "off the ground" far better than
-    // nothing, without real-time shadow maps.
+    // Sidewalk curbs along both edges of the road — a cheap read of "street"
+    // rather than a strip of asphalt floating in a void.
+    const curbMat = new THREE.MeshStandardMaterial({ color: 0xcfd8dc });
+    [-1, 1].forEach(side => {
+      const curb = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.15, 240), curbMat);
+      curb.position.set(side * (GAME_ROAD_WIDTH / 2 + 0.2), 0.075, -90);
+      curb.receiveShadow = true;
+      gameScene.add(curb);
+    });
+
+    // A soft blob shadow under the player — shrinks/fades with jump height.
+    // Kept as a subtle extra on top of the real shadow map below since it
+    // reacts instantly to jump height, which the shadow map alone reads less
+    // clearly at a glance.
     gameGroundShadow = new THREE.Mesh(
       new THREE.CircleGeometry(0.45, 20),
-      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 })
+      new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22 })
     );
     gameGroundShadow.rotation.x = -Math.PI / 2;
     gameGroundShadow.position.y = 0.02;
@@ -4778,25 +4968,32 @@ async function initGameCanvas() {
     // reads as a little chef running the lunch line, and so lean/squash
     // effects (see gameLoop/gameUpdatePlayerMesh) move everything as one unit.
     gamePlayerMesh = new THREE.Group();
-    const body = new THREE.Mesh(
+    gamePlayerBodyMesh = new THREE.Mesh(
       new THREE.CapsuleGeometry(0.33, 0.5, 4, 8),
       new THREE.MeshStandardMaterial({ color: 0x6366f1 })
     );
-    body.position.y = 0.4;
-    gamePlayerMesh.add(body);
-    const head = new THREE.Mesh(
+    gamePlayerBodyMesh.position.y = 0.4;
+    gamePlayerBodyMesh.castShadow = true;
+    gamePlayerMesh.add(gamePlayerBodyMesh);
+    gamePlayerHeadMesh = new THREE.Mesh(
       new THREE.SphereGeometry(0.26, 14, 14),
       new THREE.MeshStandardMaterial({ color: 0xffd9b3 })
     );
-    head.position.y = 0.88;
-    gamePlayerMesh.add(head);
-    const hat = new THREE.Mesh(
+    gamePlayerHeadMesh.position.y = 0.88;
+    gamePlayerHeadMesh.castShadow = true;
+    gamePlayerMesh.add(gamePlayerHeadMesh);
+    gamePlayerHatMesh = new THREE.Mesh(
       new THREE.ConeGeometry(0.2, 0.3, 14),
       new THREE.MeshStandardMaterial({ color: 0xffffff })
     );
-    hat.position.y = 1.15;
-    gamePlayerMesh.add(hat);
+    gamePlayerHatMesh.position.y = 1.15;
+    gamePlayerHatMesh.castShadow = true;
+    gamePlayerMesh.add(gamePlayerHatMesh);
     gameScene.add(gamePlayerMesh);
+
+    gameLoadAvatarPreference();
+    gameApplyAvatarColors();
+    gameRenderAvatarPicker();
   }
 
   gameRenderer.setSize(width, height, false);
@@ -4950,7 +5147,7 @@ function gameUpdatePlayerMesh() {
     const shadowScale = Math.max(0.35, 1 - gamePlayerY * 0.45);
     gameGroundShadow.position.x = gamePlayerX;
     gameGroundShadow.scale.set(shadowScale, shadowScale, 1);
-    gameGroundShadow.material.opacity = 0.35 * shadowScale;
+    gameGroundShadow.material.opacity = 0.22 * shadowScale;
   }
 }
 
@@ -4988,6 +5185,25 @@ function gameLoop(timestamp) {
   gameUpdatePlayerMesh();
   gameUpdateCamera();
   gameRoadTexture.offset.y -= dt * 0.8;
+
+  // Keep the shadow-casting sun's target centered on the player so the
+  // (necessarily tight) shadow frustum stays over the action as it moves
+  // between lanes.
+  if (gameSun) {
+    gameSun.target.position.x = gamePlayerX;
+    gameSun.position.x = gamePlayerX + 4;
+  }
+
+  // Background clouds drift at a constant, gentle pace regardless of game
+  // speed/phase — pure atmosphere, looping back once they pass the camera.
+  gameClouds.forEach(cloud => {
+    cloud.position.z += dt * 0.6;
+    if (cloud.position.z > 25) {
+      cloud.position.z = -100 - Math.random() * 20;
+      cloud.position.x = (Math.random() - 0.5) * 60;
+      cloud.position.y = 10 + Math.random() * 10;
+    }
+  });
 
   if (gamePhase === 'countdown') {
     const remainingMs = gameCountdownEndAt - timestamp;
@@ -5131,10 +5347,21 @@ function gameSpawnRow() {
   const pool = GAME_ROW_PATTERNS.filter(p => p.minStage <= gameStageIndex);
   const choice = pool[Math.floor(Math.random() * pool.length)];
 
+  // At most one food item per row, in one randomly chosen clear lane — food
+  // is a pure bonus and should never tempt a cross-lane dash through
+  // obstacle lanes to reach a second item in the same row.
+  const clearLanes = [];
+  choice.pattern.forEach((code, lane) => {
+    if (GAME_PATTERN_KIND[code] === 'clear') clearLanes.push(lane);
+  });
+  const foodLane = clearLanes.length && Math.random() < 0.6
+    ? clearLanes[Math.floor(Math.random() * clearLanes.length)]
+    : -1;
+
   choice.pattern.forEach((code, lane) => {
     const kind = GAME_PATTERN_KIND[code];
     if (kind === 'clear') {
-      if (Math.random() < 0.6) gameSpawnFood(lane);
+      if (lane === foodLane) gameSpawnFood(lane);
       return;
     }
     gameSpawnObstacle(lane, kind);
@@ -5175,6 +5402,8 @@ function gameSpawnObstacle(lane, kind) {
     labelY = 1.85;
   }
   box.position.y = boxY;
+  box.castShadow = true;
+  box.receiveShadow = true;
   group.add(box);
 
   const label = gameMakeEmojiSprite(labelEmoji, 48);
