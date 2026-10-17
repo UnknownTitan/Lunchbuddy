@@ -352,6 +352,7 @@ const gameCanvasWrap = document.querySelector('.game-canvas-wrap');
 const gameCountdownEl = document.getElementById('game-countdown');
 const gameOverlay = document.getElementById('game-overlay');
 const gameOverlayText = document.getElementById('game-overlay-text');
+const gameOverlayTitleEl = document.getElementById('game-overlay-title');
 const btnGameStart = document.getElementById('btn-game-start');
 const gameScoreEl = document.getElementById('game-score');
 const gameBestScoreEl = document.getElementById('game-best-score');
@@ -4507,7 +4508,6 @@ const GAME_GRAVITY = 20;
 const GAME_JUMP_CLEAR_HEIGHT = 0.45; // player.y above this clears a 'low' obstacle
 const GAME_SLIDE_DURATION_MS = 600;
 const GAME_COLLISION_WINDOW = 0.9; // how close (in z) an obstacle must be to the player to resolve
-const GAME_FOOD_EMOJIS = ['🍚', '🍛', '🍗', '🥘', '🍲', '🧆', '🍜', '🥗'];
 const GAME_LANE_KEY_COOLDOWN_MS = 150;
 const GAME_SCENERY_X = GAME_ROAD_WIDTH / 2 + 2; // just outside the road's edge
 
@@ -4594,6 +4594,7 @@ let gameLastLaneKeyAt = 0;
 let gameScore = 0;
 let gameAudioCtx = null;
 let gameDustTexture = null;
+let gameBarrierTexture = null;
 let gameDustParticles = []; // { sprite, vx, vy, life, maxLife }
 let gameLandBounceAt = -Infinity; // timestamp of last landing, drives the squash-and-stretch
 let gameFoodStreak = 0;
@@ -4884,6 +4885,33 @@ function gameMakeDustTexture() {
   return new THREE.CanvasTexture(canvas);
 }
 
+// Hazard-yellow diagonal stripes, used for the block/jump obstacles —
+// reads instantly as "barrier" the way a flat color block doesn't.
+function gameMakeBarrierTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#facc15';
+  ctx.fillRect(0, 0, 64, 64);
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 11;
+  ctx.save();
+  ctx.translate(32, 32);
+  ctx.rotate(Math.PI / 4);
+  for (let x = -96; x < 96; x += 24) {
+    ctx.beginPath();
+    ctx.moveTo(x, -96);
+    ctx.lineTo(x, 96);
+    ctx.stroke();
+  }
+  ctx.restore();
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2, 1);
+  return texture;
+}
+
 // A short puff of dust at the player's feet on landing — classic cheap trick
 // that sells "impact" far better than the squash-and-stretch alone.
 function gameSpawnDust(x) {
@@ -4978,6 +5006,7 @@ async function initGameCanvas() {
     gameScene.add(gameSun.target);
 
     gameDustTexture = gameMakeDustTexture();
+    gameBarrierTexture = gameMakeBarrierTexture();
     gameCloudTexture = gameMakeCloudTexture();
     for (let i = 0; i < 5; i++) gameSpawnCloud(false);
 
@@ -5192,9 +5221,10 @@ function endGame() {
     gameBestScoreEl.textContent = gameScore;
   }
 
-  gameOverlayText.textContent = gameScore > best
-    ? `New best! You scored ${gameScore}.`
-    : `Game over — you scored ${gameScore}.`;
+  gameOverlayTitleEl.innerHTML = 'Game <span class="go-accent-red">Over!</span>';
+  gameOverlayText.innerHTML = gameScore > best
+    ? `New best! You scored <span class="go-accent-orange">${gameScore}</span>.`
+    : `You scored <span class="go-accent-orange">${gameScore}</span>.`;
   btnGameStart.innerHTML = '<span class="material-symbols-outlined">replay</span><span>Play Again</span>';
   gameOverlay.classList.remove('hidden');
 
@@ -5487,6 +5517,7 @@ function gameLoop(timestamp) {
   const remaining = [];
   for (const obj of gameObjects) {
     obj.mesh.position.z += speed * dt;
+    if (obj.kind === 'food') obj.mesh.rotation.y += dt * 3;
     const z = obj.mesh.position.z;
 
     if (!obj.resolved && Math.abs(z) < GAME_COLLISION_WINDOW) {
@@ -5577,7 +5608,7 @@ function gameSpawnObstacle(lane, kind) {
   if (kind === 'block') {
     box = new THREE.Mesh(
       new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 1.4, 0.8),
-      new THREE.MeshStandardMaterial({ color: 0xef4444 })
+      new THREE.MeshStandardMaterial({ map: gameBarrierTexture })
     );
     boxY = 0.7;
     labelEmoji = '🚫';
@@ -5585,7 +5616,7 @@ function gameSpawnObstacle(lane, kind) {
   } else if (kind === 'low') {
     box = new THREE.Mesh(
       new THREE.BoxGeometry(GAME_LANE_WIDTH * 0.8, 0.5, 0.8),
-      new THREE.MeshStandardMaterial({ color: 0xf59e0b })
+      new THREE.MeshStandardMaterial({ map: gameBarrierTexture })
     );
     boxY = 0.25;
     labelEmoji = '⬆️';
@@ -5614,9 +5645,18 @@ function gameSpawnObstacle(lane, kind) {
   gameObjects.push({ mesh: group, lane, kind, resolved: false });
 }
 
+// A spinning gold coin rather than a food emoji — the classic runner-game
+// pickup read, and it matches the barrier-and-coin visual language the rest
+// of the scene is styled after. Spin is applied per-frame in gameLoop.
 function gameSpawnFood(lane) {
-  const emoji = GAME_FOOD_EMOJIS[Math.floor(Math.random() * GAME_FOOD_EMOJIS.length)];
-  const mesh = gameMakeEmojiSprite(emoji);
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.28, 0.28, 0.08, 20),
+    new THREE.MeshStandardMaterial({
+      color: 0xffd700, metalness: 0.75, roughness: 0.25, emissive: 0x7a5c00, emissiveIntensity: 0.2
+    })
+  );
+  mesh.rotation.x = Math.PI / 2;
+  mesh.castShadow = true;
   mesh.position.set(GAME_LANE_CENTERS[lane], 1, GAME_SPAWN_Z);
   gameScene.add(mesh);
   gameObjects.push({ mesh, lane, kind: 'food', resolved: false });

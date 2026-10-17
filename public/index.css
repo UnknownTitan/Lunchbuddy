@@ -3788,16 +3788,49 @@ input:checked + .slider:before {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 1rem;
   text-align: center;
   padding: 1.5rem;
-  background: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.game-overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 1.75rem 2rem 2rem;
+  border-radius: 1.25rem;
+  background: rgba(15, 15, 20, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.game-overlay-title {
+  margin: 0;
+  color: #fff;
+  font-size: 1.8rem;
+  font-weight: 800;
+}
+
+.game-overlay-title .go-accent-red {
+  color: #ef4444;
 }
 
 .game-overlay p {
+  margin: 0;
   color: #fff;
   font-size: 0.95rem;
   max-width: 320px;
+}
+
+.game-overlay p .go-accent-orange {
+  color: #f59e0b;
+  font-weight: 700;
+}
+
+#btn-game-start {
+  margin-top: -1.25rem;
 }
 
 .game-countdown {
@@ -3893,7 +3926,7 @@ input:checked + .slider:before {
   width: 2.2rem;
   height: 2.2rem;
   border-radius: 50%;
-  border: 2px solid transparent;
+  border: 2px solid rgba(255, 255, 255, 0.55);
   background: var(--swatch-color, #6366f1);
   cursor: pointer;
   padding: 0;
