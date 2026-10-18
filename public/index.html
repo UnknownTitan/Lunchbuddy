@@ -659,6 +659,12 @@
                 <div id="other-dishes-list" class="admin-menu-items-list"></div>
               </div>
 
+              <details class="archived-dishes-section hidden" id="archived-dishes-section">
+                <summary>Archived dishes (<span id="archived-dishes-count">0</span>)</summary>
+                <p class="help-text">Archived dishes never appear on a menu. Restore one to bring it back with its repeat days.</p>
+                <div id="archived-dishes-list" class="admin-menu-items-list"></div>
+              </details>
+
               <hr class="divider">
 
               <div class="admin-menu-actions">
@@ -726,7 +732,7 @@
                   <div class="roster-form-actions">
                     <button type="submit" class="btn btn-primary" id="btn-catalog-dish-submit">Save Dish</button>
                     <button type="button" class="btn btn-secondary" id="btn-catalog-dish-cancel">Cancel</button>
-                    <button type="button" class="btn btn-danger hidden" id="btn-catalog-dish-remove">Remove from Catalog</button>
+                    <button type="button" class="btn btn-danger hidden" id="btn-catalog-dish-remove">Archive Dish</button>
                   </div>
                   <p id="catalog-dish-status" class="status-msg-inline"></p>
                 </form>

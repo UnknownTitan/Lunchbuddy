@@ -947,14 +947,23 @@ async function applyMenuTemplateForNewDate(companyId, dailyState) {
   const allTemplatedDishIds = new Set(
     Object.values(days).flat().map(item => item.catalogDishId).filter(Boolean)
   );
-  const todaysDishIds = new Set(todaysItems.map(item => item.catalogDishId).filter(Boolean));
+  // Archived dishes keep their repeat days (so Restore brings them back on
+  // the same schedule) but are skipped here: never added, and dropped from a
+  // carried-over menu. Without this, one archived repeating dish made
+  // resolveMenuItems throw and silently blocked that whole day's update.
+  const activeDishIds = new Set((await getDishes(companyId)).map(d => d.id));
+  const isArchived = item => item.catalogDishId && !activeDishIds.has(item.catalogDishId);
+
+  const todaysActiveItems = todaysItems.filter(item => !isArchived(item));
+  const todaysDishIds = new Set(todaysActiveItems.map(item => item.catalogDishId).filter(Boolean));
 
   const carriedOver = dailyState.menu || [];
   const kept = carriedOver.filter(item =>
-    !item.catalogDishId || !allTemplatedDishIds.has(item.catalogDishId) || todaysDishIds.has(item.catalogDishId)
+    !isArchived(item) &&
+    (!item.catalogDishId || !allTemplatedDishIds.has(item.catalogDishId) || todaysDishIds.has(item.catalogDishId))
   );
   const alreadyPresentIds = new Set(kept.map(item => item.catalogDishId).filter(Boolean));
-  const toAdd = todaysItems.filter(item => !item.catalogDishId || !alreadyPresentIds.has(item.catalogDishId));
+  const toAdd = todaysActiveItems.filter(item => !item.catalogDishId || !alreadyPresentIds.has(item.catalogDishId));
 
   if (kept.length === carriedOver.length && toAdd.length === 0) return; // nothing changed — true no-op
 
@@ -1772,7 +1781,13 @@ app.post('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
     await createDish(companyId, dish);
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(409).json({ error: 'A dish with this name already exists in your catalog.' });
+      const all = await getDishes(companyId, { includeInactive: true });
+      const clash = all.find(d => d.normalizedName === dish.normalizedName);
+      return res.status(409).json({
+        error: clash && clash.active === false
+          ? `"${clash.name}" is archived — restore it from Archived dishes instead of adding it again.`
+          : 'A dish with this name already exists in your catalog.'
+      });
     }
     throw err;
   }
@@ -1832,6 +1847,19 @@ app.delete('/api/dishes/:id', authMiddleware, requireAdmin, async (req, res) => 
     return res.status(404).json({ error: 'Dish not found.' });
   }
   await setDishActive(companyId, id, false);
+  res.json({ success: true });
+});
+
+// Brings an archived dish back into the active catalog, with the repeat
+// days it had before archiving.
+app.post('/api/dishes/:id/restore', authMiddleware, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const companyId = req.user.companyId;
+  const existing = await getDishById(companyId, id);
+  if (!existing) {
+    return res.status(404).json({ error: 'Dish not found.' });
+  }
+  await setDishActive(companyId, id, true);
   res.json({ success: true });
 });
 

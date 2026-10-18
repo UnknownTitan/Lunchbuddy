@@ -2090,6 +2090,24 @@ select {
   margin: 0 0 0.75rem;
 }
 
+.archived-dishes-section {
+  margin-top: 1.5rem;
+}
+
+.archived-dishes-section summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.archived-dishes-section .help-text {
+  margin: 0.5rem 0 0.75rem;
+}
+
+.admin-dish-row-archived {
+  opacity: 0.75;
+}
+
 .catalog-dish-image-preview {
   width: 60px;
   height: 60px;

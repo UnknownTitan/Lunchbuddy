@@ -248,6 +248,9 @@ const adminPublishToggle = document.getElementById('admin-publish-toggle');
 const adminMenuStatus = document.getElementById('admin-menu-status');
 const otherDishesSection = document.getElementById('other-dishes-section');
 const otherDishesList = document.getElementById('other-dishes-list');
+const archivedDishesSection = document.getElementById('archived-dishes-section');
+const archivedDishesList = document.getElementById('archived-dishes-list');
+const archivedDishesCount = document.getElementById('archived-dishes-count');
 
 // Add/Edit Dish Modal
 const catalogModalOverlay = document.getElementById('catalog-modal-overlay');
@@ -2791,12 +2794,49 @@ let catalogDishes = [];
 
 async function loadCatalogPicker() {
   try {
-    catalogDishes = await apiCall('/api/dishes');
+    const all = await apiCall('/api/dishes?includeInactive=true');
+    catalogDishes = all.filter(dish => dish.active !== false);
+    archivedDishes = all.filter(dish => dish.active === false);
   } catch (err) {
     console.error('Error loading dish catalog:', err);
     catalogDishes = [];
+    archivedDishes = [];
   }
   renderOtherDishes();
+  renderArchivedDishes();
+}
+
+let archivedDishes = [];
+
+function renderArchivedDishes() {
+  archivedDishesList.innerHTML = '';
+  archivedDishesCount.textContent = archivedDishes.length;
+  archivedDishesSection.classList.toggle('hidden', archivedDishes.length === 0);
+
+  archivedDishes.forEach(dish => {
+    const row = document.createElement('div');
+    row.className = 'admin-dish-row admin-dish-row-archived';
+    row.innerHTML = `
+      <img src="${getDishImage(dish)}" class="admin-dish-row-thumb" alt="" loading="lazy">
+      <div class="admin-dish-row-info"><strong>${escapeHtml(dish.name)}</strong></div>
+      <button type="button" class="btn btn-secondary btn-sm btn-restore-dish">
+        <span class="material-symbols-outlined">unarchive</span>
+        <span>Restore</span>
+      </button>
+    `;
+    row.querySelector('.btn-restore-dish').addEventListener('click', async (e) => {
+      e.currentTarget.disabled = true;
+      try {
+        await apiCall(`/api/dishes/${dish.id}/restore`, 'POST');
+        await loadCatalogPicker();
+        showExportFeedback(`${dish.name} restored.`);
+      } catch (err) {
+        e.currentTarget.disabled = false;
+        showAlert(err.message || 'Failed to restore dish.');
+      }
+    });
+    archivedDishesList.appendChild(row);
+  });
 }
 
 // Catalog dishes that aren't on today's menu — e.g. a Wednesday-only dish
@@ -2966,23 +3006,23 @@ async function handleCatalogDishFormSubmit(e) {
   }
 }
 
-// Removes the dish currently open in the Add/Edit Dish form from the
-// catalog entirely (soft delete server-side — any day that already used it
-// keeps its own frozen record).
+// Archives the dish currently open in the Add/Edit Dish form (soft delete
+// server-side — restorable from Archived dishes, and any day that already
+// used it keeps its own frozen record).
 async function handleCatalogDishRemove() {
   const id = catalogDishId.value;
   const name = catalogDishName.value.trim() || 'this dish';
   if (!id) return; // only ever shown while editing an existing dish
 
-  const ok = await confirmDialog(`Remove "${name}" from your catalog? Days that already used it keep their own record.`);
+  const ok = await confirmDialog(`Archive "${name}"? It won't appear on any future menu, but you can restore it anytime from Archived dishes. If it's on today's menu, it stays there for today.`);
   if (!ok) return;
   try {
     await apiCall(`/api/dishes/${id}`, 'DELETE');
     await loadCatalogPicker();
     closeCatalogModal();
-    showExportFeedback(`${name} removed from catalog.`);
+    showExportFeedback(`${name} archived.`);
   } catch (err) {
-    showAlert(err.message || 'Failed to remove dish.');
+    showAlert(err.message || 'Failed to archive dish.');
   }
 }
 
