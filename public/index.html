@@ -644,12 +644,6 @@
                 <p>Define the dishes team members can select from today.</p>
               </div>
               
-              <div class="catalog-picker-section">
-                <select class="catalog-picker-select" id="catalog-picker-select">
-                  <option value="">+ Add an existing dish from your catalog…</option>
-                </select>
-              </div>
-
               <div id="admin-menu-list" class="admin-menu-items-list">
                 <!-- Dynamic Input list -->
               </div>
@@ -658,6 +652,12 @@
                 <span class="material-symbols-outlined">add</span>
                 <span>Add New Dish</span>
               </button>
+
+              <div class="other-dishes-section hidden" id="other-dishes-section">
+                <h3>Other dishes</h3>
+                <p class="help-text">Not on today's menu. Set their days with the calendar icon — they'll appear automatically on those days.</p>
+                <div id="other-dishes-list" class="admin-menu-items-list"></div>
+              </div>
 
               <hr class="divider">
 

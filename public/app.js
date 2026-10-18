@@ -246,7 +246,8 @@ const btnAdminAddDish = document.getElementById('btn-admin-add-dish');
 const btnAdminSaveMenu = document.getElementById('btn-admin-save-menu');
 const adminPublishToggle = document.getElementById('admin-publish-toggle');
 const adminMenuStatus = document.getElementById('admin-menu-status');
-const catalogPickerSelect = document.getElementById('catalog-picker-select');
+const otherDishesSection = document.getElementById('other-dishes-section');
+const otherDishesList = document.getElementById('other-dishes-list');
 
 // Add/Edit Dish Modal
 const catalogModalOverlay = document.getElementById('catalog-modal-overlay');
@@ -2612,7 +2613,7 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
         price: priceVal ? Number(priceVal) : null
       });
       catalogDishes.push(dish);
-      renderCatalogPickerSelect();
+      renderOtherDishes();
       div.remove();
       addCatalogPickRow(container, dish);
       adminMenuStatus.className = 'status-msg-inline';
@@ -2631,9 +2632,12 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
 // recurring-weekday toggle, a variants shortcut, and a remove button —
 // editing the underlying dish values happens in the Manage Catalog modal,
 // not here.
-function addCatalogPickRow(container, dish, existingDailyItemId = null) {
+// onTodaysMenu=false renders the same row for the "Other dishes" list (see
+// renderOtherDishes): days and edit still work, but there's no remove
+// button, since the dish isn't on today's menu to remove it from.
+function addCatalogPickRow(container, dish, existingDailyItemId = null, onTodaysMenu = true) {
   if (container.querySelector(`.admin-dish-row-catalog[data-catalog-dish-id="${dish.id}"]`)) return;
-  removeEmptyPlaceholderRow(container);
+  if (onTodaysMenu) removeEmptyPlaceholderRow(container);
 
   const div = document.createElement('div');
   div.className = 'admin-dish-row admin-dish-row-catalog';
@@ -2656,12 +2660,14 @@ function addCatalogPickRow(container, dish, existingDailyItemId = null) {
       <span class="material-symbols-outlined">event_repeat</span>
       ${recurringBadge}
     </button>
-    <button type="button" class="btn btn-icon btn-edit-variants" title="Edit variant options (e.g. soup type, sauce)">
+    <button type="button" class="btn btn-icon btn-edit-variants" title="Edit dish (name, photo, price, variants)">
       <span class="material-symbols-outlined">tune</span>
     </button>
-    <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Remove">
-      <span class="material-symbols-outlined">delete</span>
-    </button>
+    ${onTodaysMenu ? `
+      <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Remove from today's menu">
+        <span class="material-symbols-outlined">delete</span>
+      </button>
+    ` : ''}
     <div class="admin-dish-row-recurring hidden">
       <span class="help-text">Repeats every week on:</span>
       <div class="week-day-tabs inline-week-day-tabs">
@@ -2700,11 +2706,12 @@ function addCatalogPickRow(container, dish, existingDailyItemId = null) {
 
   div.querySelector('.btn-edit-variants').addEventListener('click', () => editDishVariants(dish.id));
 
-  div.querySelector('.btn-delete-row').addEventListener('click', () => {
+  div.querySelector('.btn-delete-row')?.addEventListener('click', () => {
     div.remove();
     if (container.children.length === 0) {
       addDishInputRow(container);
     }
+    renderOtherDishes(); // the removed dish now belongs in "Other dishes"
   });
 
   container.appendChild(div);
@@ -2789,22 +2796,22 @@ async function loadCatalogPicker() {
     console.error('Error loading dish catalog:', err);
     catalogDishes = [];
   }
-  renderCatalogPickerSelect();
+  renderOtherDishes();
 }
 
-// A compact dropdown for adding an EXISTING catalog dish to today's menu —
-// deliberately not a wall of chips (that got cluttered fast as the catalog
-// grew). Brand-new dishes still go through "Add New Dish" below, which
-// already has an image field and drops the result straight onto today's
-// menu, so this dropdown only needs to cover "it's already in my catalog."
-function renderCatalogPickerSelect() {
-  catalogPickerSelect.innerHTML = '<option value="">+ Add an existing dish from your catalog…</option>';
-  catalogDishes.forEach(dish => {
-    const option = document.createElement('option');
-    option.value = dish.id;
-    option.textContent = dish.price != null ? `${dish.name} · ${formatPrice(dish.price)}` : dish.name;
-    catalogPickerSelect.appendChild(option);
-  });
+// Catalog dishes that aren't on today's menu — e.g. a Wednesday-only dish
+// on a Monday. Listed here so their repeat days and details can be edited
+// any day, not only on the days they're scheduled. A dish reaches the menu
+// through its repeat days (applied at each day's rollover), not from here.
+function renderOtherDishes() {
+  const onMenuIds = new Set(
+    [...adminMenuList.querySelectorAll('.admin-dish-row-catalog')].map(row => row.dataset.catalogDishId)
+  );
+  const others = catalogDishes.filter(dish => !onMenuIds.has(dish.id));
+
+  otherDishesList.innerHTML = '';
+  otherDishesSection.classList.toggle('hidden', others.length === 0);
+  others.forEach(dish => addCatalogPickRow(otherDishesList, dish, null, false));
 }
 
 // True while the catalog modal was opened from Today's Menu Builder's
@@ -2946,6 +2953,7 @@ async function handleCatalogDishFormSubmit(e) {
     // nowhere left to browse to.
     if (isNewDish && addNewDishToTodaysMenu) {
       addCatalogPickRow(adminMenuList, dish);
+      renderOtherDishes();
       closeCatalogModal();
       showExportFeedback(`${dish.name} added to today's menu!`);
     } else {
@@ -2978,17 +2986,11 @@ async function handleCatalogDishRemove() {
   }
 }
 
-// --- Weekly Repeats ---
-// A dish the admin configures once per weekday, auto-ADDED on top of
-// whatever's already on that day's menu at rollover (see
-// applyMenuTemplateForNewDate in server.js) — the day's menu already
-// behaves as the "permanent" base on its own (it carries over day to day
-// until an admin changes it), so this only ever appends to it, never
-// replaces it. Unlike the regular menu, it's day-scoped: it disappears
-// again the next day unless that day is also configured for it. The modal
-// below covers scheduling a dish that ISN'T currently on today's menu; for
-// one already on today's menu, the repeat-icon toggle on its row in Today's
-// Menu Builder does the same thing in one click (see toggleRecurringDay).
+// --- Repeat days ---
+// Which weekdays each catalog dish appears on, set with the calendar icon on
+// its row (today's menu or "Other dishes"). Applied at each day's rollover
+// by applyMenuTemplateForNewDate in server.js: a dish is added on its days
+// and dropped on the others.
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 let menuTemplate = null; // { companyId, days: { "0": [...], ..., "6": [...] } }
@@ -6188,11 +6190,6 @@ function setupEventListeners() {
 
   // Admin Setup Menu buttons
   btnAdminAddDish.addEventListener('click', () => openCatalogModal(true));
-  catalogPickerSelect.addEventListener('change', () => {
-    const dish = catalogDishes.find(d => d.id === catalogPickerSelect.value);
-    catalogPickerSelect.value = '';
-    if (dish) addCatalogPickRow(adminMenuList, dish);
-  });
   btnAdminSaveMenu.addEventListener('click', saveAdminMenu);
 
   // Add/Edit Dish modal
