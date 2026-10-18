@@ -2076,47 +2076,20 @@ select {
   white-space: nowrap;
 }
 
-/* Catalog picker (menu builder) */
+/* Catalog picker (menu builder) — a compact dropdown rather than a chip
+   wall, which got cluttered fast as the catalog grew (see
+   renderCatalogPickerSelect in app.js). */
 .catalog-picker-section {
   margin-bottom: 1.2rem;
 }
 
-.catalog-picker-section > label {
-  display: block;
-  margin-bottom: 0.6rem;
-}
-
-.catalog-picker-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.6rem;
-}
-
-.catalog-chip {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.4rem 0.7rem 0.4rem 0.4rem;
-  background: var(--bg-secondary);
+.catalog-picker-select {
+  width: 100%;
+  padding: 0.65rem 0.9rem;
   border: 1px solid var(--card-border);
-  border-radius: 999px;
-  cursor: pointer;
-  transition: border-color 0.15s ease;
-}
-
-.catalog-chip:hover {
-  border-color: var(--accent-color);
-}
-
-.catalog-chip img {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  object-fit: cover;
-}
-
-.catalog-chip-empty {
-  color: var(--text-secondary);
+  border-radius: var(--border-radius-sm, 8px);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
   font-size: 0.9rem;
 }
 

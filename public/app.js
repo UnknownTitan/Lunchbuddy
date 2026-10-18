@@ -246,7 +246,7 @@ const btnAdminAddDish = document.getElementById('btn-admin-add-dish');
 const btnAdminSaveMenu = document.getElementById('btn-admin-save-menu');
 const adminPublishToggle = document.getElementById('admin-publish-toggle');
 const adminMenuStatus = document.getElementById('admin-menu-status');
-const catalogPickerChips = document.getElementById('catalog-picker-chips');
+const catalogPickerSelect = document.getElementById('catalog-picker-select');
 
 // Add/Edit Dish Modal
 const catalogModalOverlay = document.getElementById('catalog-modal-overlay');
@@ -2572,6 +2572,11 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
     <input type="text" class="dish-name-input" placeholder="Dish Name (e.g. Sushi)" value="${escapeHtml(name)}" required>
     <input type="text" class="dish-desc-input" placeholder="Optional description" value="${escapeHtml(description)}">
     <input type="number" class="dish-price-input" placeholder="Price (optional)" min="0" step="0.01" value="${price != null ? price : ''}">
+    ${id ? `
+      <button type="button" class="btn btn-icon btn-migrate-to-catalog" title="Move to Dish Catalog so it can have an image, variants, and recurring days">
+        <span class="material-symbols-outlined">move_up</span>
+      </button>
+    ` : ''}
     <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Delete Row">
       <span class="material-symbols-outlined">delete</span>
     </button>
@@ -2582,6 +2587,39 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
     div.remove();
     if (container.children.length === 0) {
       addDishInputRow(container);
+    }
+  });
+
+  // One of today's menu's old free-text entries (predates the Dish Catalog)
+  // — lets an admin upgrade it into a real catalog dish with one click
+  // instead of retyping it, so it can finally have an image/variants/
+  // recurring days. We can't fabricate a photo for it ourselves; this just
+  // gives it somewhere to receive one.
+  div.querySelector('.btn-migrate-to-catalog')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    const dishName = div.querySelector('.dish-name-input').value.trim();
+    if (!dishName) {
+      showAlert('Enter a dish name before moving it to the catalog.');
+      return;
+    }
+    const dishDescription = div.querySelector('.dish-desc-input').value.trim();
+    const priceVal = div.querySelector('.dish-price-input').value.trim();
+    btn.disabled = true;
+    try {
+      const dish = await apiCall('/api/dishes', 'POST', {
+        name: dishName,
+        description: dishDescription,
+        price: priceVal ? Number(priceVal) : null
+      });
+      catalogDishes.push(dish);
+      renderCatalogPickerSelect();
+      div.remove();
+      addCatalogPickRow(container, dish);
+      adminMenuStatus.className = 'status-msg-inline';
+      adminMenuStatus.textContent = `"${dish.name}" moved to your catalog — open it to add a photo, then Save Menu Layout.`;
+    } catch (err) {
+      showAlert(err.message || 'Failed to move this dish to the catalog.');
+      btn.disabled = false;
     }
   });
 
@@ -2751,26 +2789,21 @@ async function loadCatalogPicker() {
     console.error('Error loading dish catalog:', err);
     catalogDishes = [];
   }
-  renderCatalogChips(catalogPickerChips, adminMenuList);
+  renderCatalogPickerSelect();
 }
 
-// chipsContainer: where the clickable chips render. targetContainer: where
-// clicking a chip adds a row (Today's Menu Builder's dish list).
-function renderCatalogChips(chipsContainer, targetContainer) {
-  chipsContainer.innerHTML = '';
-  if (catalogDishes.length === 0) {
-    chipsContainer.innerHTML = '<span class="catalog-chip-empty">No dishes in your catalog yet — use Manage Catalog to add some.</span>';
-    return;
-  }
+// A compact dropdown for adding an EXISTING catalog dish to today's menu —
+// deliberately not a wall of chips (that got cluttered fast as the catalog
+// grew). Brand-new dishes still go through "Add New Dish" below, which
+// already has an image field and drops the result straight onto today's
+// menu, so this dropdown only needs to cover "it's already in my catalog."
+function renderCatalogPickerSelect() {
+  catalogPickerSelect.innerHTML = '<option value="">+ Add an existing dish from your catalog…</option>';
   catalogDishes.forEach(dish => {
-    const chip = document.createElement('div');
-    chip.className = 'catalog-chip';
-    chip.innerHTML = `
-      <img src="${getDishImage(dish)}" alt="" loading="lazy">
-      <span>${escapeHtml(dish.name)}${typeof dish.price === 'number' ? ` · ${formatPrice(dish.price)}` : ''}</span>
-    `;
-    chip.addEventListener('click', () => addCatalogPickRow(targetContainer, dish));
-    chipsContainer.appendChild(chip);
+    const option = document.createElement('option');
+    option.value = dish.id;
+    option.textContent = dish.price != null ? `${dish.name} · ${formatPrice(dish.price)}` : dish.name;
+    catalogPickerSelect.appendChild(option);
   });
 }
 
@@ -6155,6 +6188,11 @@ function setupEventListeners() {
 
   // Admin Setup Menu buttons
   btnAdminAddDish.addEventListener('click', () => openCatalogModal(true));
+  catalogPickerSelect.addEventListener('change', () => {
+    const dish = catalogDishes.find(d => d.id === catalogPickerSelect.value);
+    catalogPickerSelect.value = '';
+    if (dish) addCatalogPickRow(adminMenuList, dish);
+  });
   btnAdminSaveMenu.addEventListener('click', saveAdminMenu);
 
   // Add/Edit Dish modal
