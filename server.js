@@ -999,6 +999,33 @@ const ROLLOVER_EXEMPT_PATHS = new Set([
 // arrive in the same tick. Bounded by company count, so no eviction needed.
 const dailyRolloverChains = new Map();
 
+// Keeps one menu entry per catalog dish. Older rollover logic could add the
+// same catalog dish twice (different item ids, same name), which showed up
+// as duplicate columns in the Roster Breakdown — and Menu Builder hid the
+// copy (one row per catalog dish), so an admin couldn't remove it by hand.
+// Orders placed on a dropped copy are moved to the kept one, so nobody's
+// order disappears. Returns true if anything changed.
+function dedupeMenuByCatalogDish(dailyState) {
+  const keptIdByCatalogId = new Map();
+  const remap = new Map(); // dropped item id -> kept item id
+  const menu = [];
+  for (const item of dailyState.menu || []) {
+    if (item.catalogDishId && keptIdByCatalogId.has(item.catalogDishId)) {
+      remap.set(item.id, keptIdByCatalogId.get(item.catalogDishId));
+      continue;
+    }
+    if (item.catalogDishId) keptIdByCatalogId.set(item.catalogDishId, item.id);
+    menu.push(item);
+  }
+  if (remap.size === 0) return false;
+
+  dailyState.menu = menu;
+  for (const order of Object.values(dailyState.orders || {})) {
+    if (order && remap.has(order.itemId)) order.itemId = remap.get(order.itemId);
+  }
+  return true;
+}
+
 async function handleDailyResetMiddleware(req, res, next) {
   if (!req.companyId || ROLLOVER_EXEMPT_PATHS.has(req.path) || req.path.startsWith('/api/companies')) {
     return next();
@@ -1039,6 +1066,10 @@ async function handleDailyResetMiddleware(req, res, next) {
       if (await applyWeeklyPlansForDate(companyId, dailyState)) {
         await saveDailyState(companyId, dailyState);
       }
+    }
+
+    if (dedupeMenuByCatalogDish(dailyState)) {
+      await saveDailyState(companyId, dailyState);
     }
   });
   dailyRolloverChains.set(companyId, run.catch(() => {})); // keep the chain alive even if this run throws
@@ -2068,6 +2099,7 @@ app.post('/api/menu', authMiddleware, requireAdmin, async (req, res) => {
     return res.status(err.status || 400).json({ error: err.message });
   }
   dailyState.menu = newMenu;
+  dedupeMenuByCatalogDish(dailyState);
   // Marks this business date as deliberately set — the weekly-template
   // auto-fill (see applyMenuTemplateForNewDate) checks this so it never
   // overwrites a day the admin has already touched.
