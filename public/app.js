@@ -912,13 +912,6 @@ async function loginSuccess() {
     document.querySelectorAll('.admin-abigail-only').forEach(el => el.classList.remove('hidden'));
   }
 
-  // Reload roster snapshot now that we're authenticated
-  try {
-    roster = await apiCall('/api/roster');
-  } catch (err) {
-    console.error('Error updating roster snapshot:', err);
-  }
-
   // Sync the today/week toggle buttons to the persisted mode before the
   // first fetch, so fetchDailyState's orderMode check is already correct.
   orderModeToggle.querySelectorAll('.order-mode-btn').forEach(btn => {
@@ -927,8 +920,12 @@ async function loginSuccess() {
     btn.setAttribute('aria-pressed', String(active));
   });
 
-  // Fetch initial state and start polling
-  await fetchDailyState();
+  // Roster snapshot and today's state don't depend on each other — fetch
+  // them in parallel rather than one round-trip after the other.
+  const rosterLoad = apiCall('/api/roster')
+    .then(result => { roster = result; })
+    .catch(err => console.error('Error updating roster snapshot:', err));
+  await Promise.all([rosterLoad, fetchDailyState()]);
   if (pollInterval) clearInterval(pollInterval);
   pollInterval = setInterval(fetchDailyState, 10000);
 

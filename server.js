@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import morgan from 'morgan';
+import compression from 'compression';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -569,10 +570,23 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(morgan('dev'));
+// gzip every response (HTML/CSS/JS and API JSON) — cuts the ~400KB of
+// uncompressed text on a cold load to roughly a quarter.
+app.use(compression());
 // Raised from the 100kb default to fit a base64-encoded dish image
 // (client caps originals at ~300KB before upload — see /api/dishes/:id/image).
 app.use(express.json({ limit: '2mb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+// Images/icons rarely change, so browsers can reuse them for a week without
+// asking. HTML/CSS/JS keep the default (revalidate every load via ETag — a
+// cheap 304 when unchanged) so a deploy is picked up immediately rather than
+// users being stuck on a stale app.js.
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    if (/[\\/](assets|icons)[\\/]/.test(filePath)) {
+      res.set('Cache-Control', 'public, max-age=604800');
+    }
+  }
+}));
 
 // Client-side route: the Platform Admin login screen lives at the same
 // index.html, keyed off location.pathname in app.js.
