@@ -407,13 +407,14 @@ export async function deleteDishImage(companyId, imageId) {
 
 // ---- menuTemplates ----
 // One document per company: { companyId, days: { "0": [...], ..., "6": [...] } }
-// (0=Sun..6=Sat) — special dishes that auto-add to a given weekday's menu
-// at daily rollover (see applyMenuTemplateForNewDate in server.js), on top
-// of whatever's already there (the day's menu itself already behaves as
-// the "permanent" base, since it carries over day to day until an admin
-// changes it — no separate template needed for that). Editing a weekday's
-// list here never retroactively changes an already-built day, same "not a
-// live reference" principle as the Dish Catalog snapshot in POST /api/menu.
+// (0=Sun..6=Sat) — dishes configured to recur automatically on a given
+// weekday (the repeat-icon toggle in Today's Menu Builder), applied at
+// daily rollover (see applyMenuTemplateForNewDate in server.js). A dish
+// with no entry here at all is a plain manual addition and just carries
+// over day to day untouched, same as before this system existed. Editing a
+// weekday's list here never retroactively changes an already-built day,
+// same "not a live reference" principle as the Dish Catalog snapshot in
+// POST /api/menu.
 
 export async function getMenuTemplate(companyId) {
   requireCompanyId(companyId, 'getMenuTemplate');

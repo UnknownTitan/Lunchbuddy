@@ -2039,7 +2039,6 @@ function renderFoodOrderForm() {
         <div class="menu-card-body">
           <div class="menu-card-header">
             <span class="menu-card-title">${escapeHtml(item.name)}</span>
-            ${item.special ? '<span class="special-badge">Today Only</span>' : ''}
           </div>
           <p class="menu-card-desc">${escapeHtml(item.description)}</p>
         </div>
@@ -2543,9 +2542,9 @@ async function loadAdminMenuBuilder() {
   } else {
     dailyState.menu.forEach(item => {
       if (item.catalogDishId) {
-        addCatalogPickRow(adminMenuList, { id: item.catalogDishId, name: item.name, price: item.price, imageId: item.imageId }, item.id, !!item.special);
+        addCatalogPickRow(adminMenuList, { id: item.catalogDishId, name: item.name, price: item.price, imageId: item.imageId }, item.id);
       } else {
-        addDishInputRow(adminMenuList, item.id, item.name, item.description, item.price, !!item.special);
+        addDishInputRow(adminMenuList, item.id, item.name, item.description, item.price);
       }
     });
   }
@@ -2564,7 +2563,7 @@ function removeEmptyPlaceholderRow(container) {
   }
 }
 
-function addDishInputRow(container, id = '', name = '', description = '', price = null, special = false) {
+function addDishInputRow(container, id = '', name = '', description = '', price = null) {
   const div = document.createElement('div');
   div.className = 'admin-dish-row';
   div.dataset.id = id;
@@ -2573,10 +2572,6 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
     <input type="text" class="dish-name-input" placeholder="Dish Name (e.g. Sushi)" value="${escapeHtml(name)}" required>
     <input type="text" class="dish-desc-input" placeholder="Optional description" value="${escapeHtml(description)}">
     <input type="number" class="dish-price-input" placeholder="Price (optional)" min="0" step="0.01" value="${price != null ? price : ''}">
-    <label class="special-flag-toggle" title="Only shows today — auto-removed at the next rollover unless also set up as a Weekly Repeat.">
-      <input type="checkbox" class="dish-special-input" ${special ? 'checked' : ''}>
-      <span>Today Only</span>
-    </label>
     <button type="button" class="btn btn-icon btn-logout btn-delete-row" title="Delete Row">
       <span class="material-symbols-outlined">delete</span>
     </button>
@@ -2595,10 +2590,10 @@ function addDishInputRow(container, id = '', name = '', description = '', price 
 
 // A "catalog pick" row: read-only (thumbnail/name/price sourced from the
 // catalog dish, snapshotted onto the daily menu item at save time), with a
-// "Special" flag, a recurring-weekday toggle, a variants shortcut, and a
-// remove button — editing the underlying dish values happens in the Manage
-// Catalog modal, not here.
-function addCatalogPickRow(container, dish, existingDailyItemId = null, special = false) {
+// recurring-weekday toggle, a variants shortcut, and a remove button —
+// editing the underlying dish values happens in the Manage Catalog modal,
+// not here.
+function addCatalogPickRow(container, dish, existingDailyItemId = null) {
   if (container.querySelector(`.admin-dish-row-catalog[data-catalog-dish-id="${dish.id}"]`)) return;
   removeEmptyPlaceholderRow(container);
 
@@ -2619,10 +2614,6 @@ function addCatalogPickRow(container, dish, existingDailyItemId = null, special 
       <strong>${escapeHtml(dish.name)}</strong>
       ${typeof dish.price === 'number' ? `<span class="menu-card-price">${formatPrice(dish.price)}</span>` : ''}
     </div>
-    <label class="special-flag-toggle" title="Only shows today — auto-removed at the next rollover unless also set up as a Weekly Repeat.">
-      <input type="checkbox" class="dish-special-input" ${special ? 'checked' : ''}>
-      <span>Today Only</span>
-    </label>
     <button type="button" class="btn btn-icon btn-toggle-recurring ${recurringCount > 0 ? 'has-recurring' : ''}" title="Repeat this dish automatically on specific weekdays">
       <span class="material-symbols-outlined">event_repeat</span>
       ${recurringBadge}
@@ -2705,10 +2696,8 @@ async function saveAdminMenu() {
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
 
-    const special = row.querySelector('.dish-special-input')?.checked || false;
-
     if (row.dataset.catalogDishId) {
-      menuItems.push({ id: row.dataset.id || null, catalogDishId: row.dataset.catalogDishId, special });
+      menuItems.push({ id: row.dataset.id || null, catalogDishId: row.dataset.catalogDishId });
       continue;
     }
 
@@ -2728,8 +2717,7 @@ async function saveAdminMenu() {
       id: row.dataset.id || null, // Keep same ID if editing, else make new
       name,
       description,
-      price: priceVal ? Number(priceVal) : null,
-      special
+      price: priceVal ? Number(priceVal) : null
     });
   }
 

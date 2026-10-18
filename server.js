@@ -910,16 +910,16 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
   return true;
 }
 
-// Helper: on a brand-new business day, make special dishes strictly
-// day-scoped — strip EVERY special-flagged item out of whatever menu
-// carried over (whether it came from a prior day's Special Dishes auto-add
-// or was hand-flagged "Special" in Today's Menu Builder), then add back
-// only today's weekday's configured special dishes. Regular (non-special)
-// items are untouched and keep carrying over exactly as before — this is
-// purely about specials never bleeding into a day they weren't configured
-// for. Because everything special is stripped before re-adding, there's no
-// separate dedup step needed: a recurring special dish is removed and
-// re-added fresh every time its weekday comes around, never accumulating.
+// Helper: on a brand-new business day, apply the recurring-day menu
+// template. A dish configured to recur on SOME weekday (anywhere in the
+// template) but not today's gets dropped from whatever menu carried over —
+// it'll come back automatically when its weekday comes around. A dish
+// that's on the menu but has no recurring-day configuration at all is a
+// plain manual addition and always just carries over untouched, same as
+// before this system existed. Today's weekday's configured dishes are then
+// added, skipping any already present (by catalogDishId) — this is what
+// keeps an admin manually adding the same dish that's also configured to
+// recur today from ending up as two separate menu entries.
 // No-ops entirely if this date's menu has already been touched today (by
 // an earlier admin edit, or a prior run of this same function — tracked
 // via dailyState.menuSetDate): template edits are never retroactive,
@@ -929,10 +929,8 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
 // carried over from yesterday."
 // menuPublished is deliberately left untouched here — it carries over
 // day to day exactly like the menu itself, so a weekday with a recurring
-// special dish (e.g. every Monday) auto-publishes instead of making the
-// admin manually re-publish each time that weekday comes around. If a
-// special dish ever needs a manual review step before going live, publish
-// it as a regular Today's Menu Builder item instead of a template special.
+// dish (e.g. every Monday) auto-publishes instead of making the admin
+// manually re-publish each time that weekday comes around.
 // Mutates dailyState.menu/menuSetDate in place; caller saves dailyState
 // either way (mirrors applyWeeklyPlansForDate's contract).
 async function applyMenuTemplateForNewDate(companyId, dailyState) {
@@ -940,21 +938,34 @@ async function applyMenuTemplateForNewDate(companyId, dailyState) {
 
   const weekday = getBusinessDateWeekday(dailyState);
   const template = await getMenuTemplate(companyId);
-  const dayItems = Array.isArray(template.days?.[String(weekday)]) ? template.days[String(weekday)] : [];
+  const days = template.days || {};
+  const todaysItems = Array.isArray(days[String(weekday)]) ? days[String(weekday)] : [];
+
+  // Every catalogDishId configured as recurring on ANY weekday — tells a
+  // "recurs on some other day, not today" dish apart from a dish that was
+  // just added manually, with no recurring-day configuration at all.
+  const allTemplatedDishIds = new Set(
+    Object.values(days).flat().map(item => item.catalogDishId).filter(Boolean)
+  );
+  const todaysDishIds = new Set(todaysItems.map(item => item.catalogDishId).filter(Boolean));
 
   const carriedOver = dailyState.menu || [];
-  const nonSpecialCarryOver = carriedOver.filter(item => !item.special);
-  const hadStaleSpecials = nonSpecialCarryOver.length !== carriedOver.length;
-  if (dayItems.length === 0 && !hadStaleSpecials) return; // nothing to add, nothing stale to strip — true no-op
+  const kept = carriedOver.filter(item =>
+    !item.catalogDishId || !allTemplatedDishIds.has(item.catalogDishId) || todaysDishIds.has(item.catalogDishId)
+  );
+  const alreadyPresentIds = new Set(kept.map(item => item.catalogDishId).filter(Boolean));
+  const toAdd = todaysItems.filter(item => !item.catalogDishId || !alreadyPresentIds.has(item.catalogDishId));
+
+  if (kept.length === carriedOver.length && toAdd.length === 0) return; // nothing changed — true no-op
 
   try {
-    const specials = dayItems.length > 0 ? await resolveMenuItems(companyId, dayItems) : [];
-    dailyState.menu = [...nonSpecialCarryOver, ...specials];
+    const added = toAdd.length > 0 ? await resolveMenuItems(companyId, toAdd) : [];
+    dailyState.menu = [...kept, ...added];
   } catch (err) {
-    // A special-dish entry references a catalog dish that's since gone
+    // A template entry references a catalog dish that's since gone
     // inactive/deleted — don't break rollover for every request; just skip
-    // today's change and leave the carried-over menu (specials included) as-is.
-    console.error(`[menuTemplate] failed to apply special dishes for company ${companyId}, weekday ${weekday}:`, err.message);
+    // today's change and leave the carried-over menu as-is.
+    console.error(`[menuTemplate] failed to apply recurring dishes for company ${companyId}, weekday ${weekday}:`, err.message);
     return;
   }
   dailyState.menuSetDate = dailyState.date;
@@ -1894,31 +1905,27 @@ app.get('/api/dish-images/:imageId', async (req, res) => {
   res.send(image.data.buffer ? Buffer.from(image.data.buffer) : image.data);
 });
 
-// --- Special Dishes ---
-// Dishes the admin configures once per weekday, auto-ADDED on top of
-// whatever's already on that day's menu at rollover (see
-// applyMenuTemplateForNewDate below) — never a replacement, so there's no
-// way this can wipe out the regular menu. The day's menu already behaves
-// as the "permanent" base on its own (it carries over day to day until an
-// admin changes it); this only ever appends to it. Unlike the regular
-// menu, though, anything flagged `special: true` — whether it came from
-// here or was hand-flagged "Special" in Today's Menu Builder — is strictly
-// day-scoped: it's stripped out again at the next rollover unless that new
-// day's weekday configuration says to add it back. Editing this list never
-// retroactively changes a day that's already been set (same principle as
-// the Dish Catalog snapshot in POST /api/menu below).
+// --- Menu Template (recurring weekdays) ---
+// Lets an admin configure, per catalog dish, which weekdays it should
+// automatically appear on — the repeat-icon toggle in Today's Menu Builder
+// (see toggleRecurringDay in app.js). Applied at the next day-rollover (see
+// applyMenuTemplateForNewDate below), which adds a weekday's configured
+// dishes if they aren't already on the menu, and drops any dish that's in
+// this system but not configured for the new day — a dish with no
+// recurring-day configuration at all is a plain manual addition and always
+// just carries over untouched. Editing this list never retroactively
+// changes a day that's already been set (same principle as the Dish
+// Catalog snapshot in POST /api/menu below).
 
 app.get('/api/menu-template', authMiddleware, requireAdmin, async (req, res) => {
   const template = await getMenuTemplate(req.user.companyId);
   res.json(template);
 });
 
-// Shape-validates and normalizes a raw special-dish item list — same rules
+// Shape-validates and normalizes a raw recurring-day item list — same rules
 // resolveMenuItems enforces at apply-time. Deliberately does NOT resolve/
 // snapshot catalog data here: an item should always resolve fresh against
-// the catalog at the moment it seeds a real day, not at save time. Every
-// item here is inherently a special addition (see comment above) — always
-// stamped special:true, regardless of what the caller sends. Throws
+// the catalog at the moment it seeds a real day, not at save time. Throws
 // { status, message } on a bad item.
 function cleanTemplateItems(items) {
   for (const item of items) {
@@ -1932,8 +1939,7 @@ function cleanTemplateItems(items) {
     id: item.id || `tpl-item-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     ...(item.catalogDishId
       ? { catalogDishId: item.catalogDishId }
-      : { name: item.name, description: item.description || '', price: Number.isFinite(item.price) ? item.price : null }),
-    special: true
+      : { name: item.name, description: item.description || '', price: Number.isFinite(item.price) ? item.price : null })
   }));
 }
 
@@ -1990,7 +1996,6 @@ async function resolveMenuItems(companyId, rawItems) {
         price: typeof dish.price === 'number' ? dish.price : null,
         catalogDishId: dish.id,
         imageId: dish.imageId || null,
-        special: !!item.special,
         variantLabel: dish.variantLabel || null,
         variantOptions: Array.isArray(dish.variantOptions) ? dish.variantOptions : []
       });
@@ -2007,7 +2012,6 @@ async function resolveMenuItems(companyId, rawItems) {
         price: Number.isFinite(item.price) ? item.price : null,
         catalogDishId: null,
         imageId: null,
-        special: !!item.special,
         variantLabel: null,
         variantOptions: []
       });

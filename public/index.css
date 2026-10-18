@@ -2485,29 +2485,6 @@ input:checked + .slider:before {
   vertical-align: middle;
 }
 
-.special-badge {
-  display: inline-block;
-  margin-left: 0.5rem;
-  padding: 0.1rem 0.4rem;
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #fff;
-  background: var(--accent-color);
-  border-radius: var(--border-radius-sm);
-  vertical-align: middle;
-}
-
-.special-flag-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
 .week-day-tabs {
   display: flex;
   flex-wrap: wrap;
