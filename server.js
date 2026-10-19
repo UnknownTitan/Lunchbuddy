@@ -924,16 +924,36 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
   return true;
 }
 
-// Helper: on a brand-new business day, apply the recurring-day menu
-// template. A dish configured to recur on SOME weekday (anywhere in the
-// template) but not today's gets dropped from whatever menu carried over —
-// it'll come back automatically when its weekday comes around. A dish
-// that's on the menu but has no recurring-day configuration at all is a
-// plain manual addition and always just carries over untouched, same as
-// before this system existed. Today's weekday's configured dishes are then
-// added, skipping any already present (by catalogDishId) — this is what
-// keeps an admin manually adding the same dish that's also configured to
-// recur today from ending up as two separate menu entries.
+// Given the menu carried in from the previous day, works out which items stay
+// and which repeating dishes get added for `weekday`: a dish that repeats on
+// some weekday but not this one is dropped, one that repeats today is added
+// if missing, a dish with no repeat days at all just carries over, and
+// archived dishes are never kept or added (they keep their repeat days so
+// Restore brings them back on the same schedule). Shared by the real
+// rollover below and the weekly planner's per-day menu preview, so a plan
+// can only be made for a dish that will actually be on that day's menu.
+function planMenuForWeekday(carriedOver, template, activeDishIds, weekday) {
+  const days = template.days || {};
+  const allTemplatedDishIds = new Set(
+    Object.values(days).flat().map(item => item.catalogDishId).filter(Boolean)
+  );
+  const isArchived = item => item.catalogDishId && !activeDishIds.has(item.catalogDishId);
+
+  const dayItems = (Array.isArray(days[String(weekday)]) ? days[String(weekday)] : [])
+    .filter(item => !isArchived(item));
+  const dayDishIds = new Set(dayItems.map(item => item.catalogDishId).filter(Boolean));
+
+  const kept = (carriedOver || []).filter(item =>
+    !isArchived(item) &&
+    (!item.catalogDishId || !allTemplatedDishIds.has(item.catalogDishId) || dayDishIds.has(item.catalogDishId))
+  );
+  const presentIds = new Set(kept.map(item => item.catalogDishId).filter(Boolean));
+  const toAdd = dayItems.filter(item => !item.catalogDishId || !presentIds.has(item.catalogDishId));
+  return { kept, toAdd };
+}
+
+// Helper: on a brand-new business day, apply repeat days to the menu carried
+// over from yesterday (see planMenuForWeekday).
 // No-ops entirely if this date's menu has already been touched today (by
 // an earlier admin edit, or a prior run of this same function — tracked
 // via dailyState.menuSetDate): template edits are never retroactive,
@@ -942,9 +962,7 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
 // is empty", is what distinguishes "already set for today" from "just
 // carried over from yesterday."
 // menuPublished is deliberately left untouched here — it carries over
-// day to day exactly like the menu itself, so a weekday with a recurring
-// dish (e.g. every Monday) auto-publishes instead of making the admin
-// manually re-publish each time that weekday comes around.
+// day to day exactly like the menu itself.
 // Mutates dailyState.menu/menuSetDate in place; caller saves dailyState
 // either way (mirrors applyWeeklyPlansForDate's contract).
 async function applyMenuTemplateForNewDate(companyId, dailyState) {
@@ -952,32 +970,9 @@ async function applyMenuTemplateForNewDate(companyId, dailyState) {
 
   const weekday = getBusinessDateWeekday(dailyState);
   const template = await getMenuTemplate(companyId);
-  const days = template.days || {};
-  const todaysItems = Array.isArray(days[String(weekday)]) ? days[String(weekday)] : [];
-
-  // Every catalogDishId configured as recurring on ANY weekday — tells a
-  // "recurs on some other day, not today" dish apart from a dish that was
-  // just added manually, with no recurring-day configuration at all.
-  const allTemplatedDishIds = new Set(
-    Object.values(days).flat().map(item => item.catalogDishId).filter(Boolean)
-  );
-  // Archived dishes keep their repeat days (so Restore brings them back on
-  // the same schedule) but are skipped here: never added, and dropped from a
-  // carried-over menu. Without this, one archived repeating dish made
-  // resolveMenuItems throw and silently blocked that whole day's update.
   const activeDishIds = new Set((await getDishes(companyId)).map(d => d.id));
-  const isArchived = item => item.catalogDishId && !activeDishIds.has(item.catalogDishId);
-
-  const todaysActiveItems = todaysItems.filter(item => !isArchived(item));
-  const todaysDishIds = new Set(todaysActiveItems.map(item => item.catalogDishId).filter(Boolean));
-
   const carriedOver = dailyState.menu || [];
-  const kept = carriedOver.filter(item =>
-    !isArchived(item) &&
-    (!item.catalogDishId || !allTemplatedDishIds.has(item.catalogDishId) || todaysDishIds.has(item.catalogDishId))
-  );
-  const alreadyPresentIds = new Set(kept.map(item => item.catalogDishId).filter(Boolean));
-  const toAdd = todaysActiveItems.filter(item => !item.catalogDishId || !alreadyPresentIds.has(item.catalogDishId));
+  const { kept, toAdd } = planMenuForWeekday(carriedOver, template, activeDishIds, weekday);
 
   if (kept.length === carriedOver.length && toAdd.length === 0) return; // nothing changed — true no-op
 
@@ -992,6 +987,49 @@ async function applyMenuTemplateForNewDate(companyId, dailyState) {
     return;
   }
   dailyState.menuSetDate = dailyState.date;
+}
+
+// The menu each date in `dates` will have: today's real menu for today, and
+// for a later date, today's menu run through planMenuForWeekday for that
+// date's weekday. (Projecting straight from today gives the same result as
+// rolling over one day at a time — manual dishes persist, repeating dishes
+// appear exactly on their days.) Added dishes use their catalog id as the
+// item id, since they don't have a real one until that day's rollover.
+async function getProjectedMenusByDate(companyId, dailyState, dates) {
+  const menus = new Map();
+  const future = dates.filter(d => d !== dailyState.date);
+  if (future.length === 0) {
+    dates.forEach(d => menus.set(d, dailyState.menu || []));
+    return menus;
+  }
+
+  const [template, dishes] = await Promise.all([getMenuTemplate(companyId), getDishes(companyId)]);
+  const dishesById = new Map(dishes.map(d => [d.id, d]));
+  const activeDishIds = new Set(dishesById.keys());
+
+  for (const date of dates) {
+    if (date === dailyState.date) {
+      menus.set(date, dailyState.menu || []);
+      continue;
+    }
+    const { kept, toAdd } = planMenuForWeekday(dailyState.menu, template, activeDishIds, getWeekdayForDate(date));
+    const added = toAdd
+      .map(item => {
+        if (!item.catalogDishId) return { id: item.id, name: item.name, variantLabel: null, variantOptions: [] };
+        const dish = dishesById.get(item.catalogDishId);
+        return dish && {
+          id: dish.id,
+          name: dish.name,
+          catalogDishId: dish.id,
+          imageId: dish.imageId || null,
+          variantLabel: dish.variantLabel || null,
+          variantOptions: Array.isArray(dish.variantOptions) ? dish.variantOptions : []
+        };
+      })
+      .filter(Boolean);
+    menus.set(date, [...kept, ...added]);
+  }
+  return menus;
 }
 
 // Paths that never need the per-company daily rollover — either genuinely
@@ -2365,7 +2403,9 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
 // a future day. `pastEntry` is the matching `history` doc, or null/undefined
 // when the date isn't in the past (callers other than GET never need it,
 // since PUT/DELETE only ever touch today-or-later dates).
-function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
+// dayMenu: the menu this date will have (see getProjectedMenusByDate) — what
+// the planner offers for that day and what a plan pick is checked against.
+function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry, dayMenu = []) {
   const weekday = getWeekdayForDate(date);
   const dayName = DAY_NAMES[weekday];
   const isToday = date === dailyState.date;
@@ -2414,7 +2454,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
       dishName = planEntry.dishName;
       note = planEntry.note || '';
       variant = planEntry.variant || '';
-      const matched = findMenuItemByName(dailyState.menu, planEntry.dishName);
+      const matched = findMenuItemByName(dayMenu, planEntry.dishName);
       dishStillOnMenu = !!matched;
       imageId = matched?.imageId || null;
     }
@@ -2423,6 +2463,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry) {
   return {
     date, weekday, dayName, isToday, isPast, isOperational, isLocked,
     cutoffTimestamp, source, dishName, note, variant, served, viaWeeklyPlan, dishStillOnMenu, imageId,
+    menu: isPast ? [] : dayMenu,
     editable: !isLocked && isOperational && !!dailyState.menuPublished
   };
 }
@@ -2438,11 +2479,15 @@ app.get('/api/week-plan', authMiddleware, requireCompanyUser, async (req, res) =
   const weekDates = getPlanWeekDates(dailyState);
 
   const pastDates = weekDates.filter(d => dailyState.date && d < dailyState.date);
-  const history = await getHistoryForDates(companyId, pastDates);
+  const upcomingDates = weekDates.filter(d => !pastDates.includes(d));
+  const [history, menusByDate] = await Promise.all([
+    getHistoryForDates(companyId, pastDates),
+    getProjectedMenusByDate(companyId, dailyState, upcomingDates)
+  ]);
   const historyByDate = new Map(history.map(h => [h.date, h]));
 
   const days = weekDates.map(date =>
-    buildWeekDayInfo(dailyState, plan, date, userId, historyByDate.get(date))
+    buildWeekDayInfo(dailyState, plan, date, userId, historyByDate.get(date), menusByDate.get(date))
   );
 
   res.json({
@@ -2482,9 +2527,10 @@ app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, 
   if (!dailyState.menuPublished) {
     return res.status(400).json({ error: 'The menu hasn\'t been published yet.' });
   }
-  const matched = findMenuItemByName(dailyState.menu, dishName);
+  const dayMenu = (await getProjectedMenusByDate(companyId, dailyState, [date])).get(date);
+  const matched = findMenuItemByName(dayMenu, dishName);
   if (!matched) {
-    return res.status(400).json({ error: 'Dish is not on the menu.' });
+    return res.status(400).json({ error: `${dishName || 'That dish'} isn't on the menu on ${dayName}.` });
   }
   const normalizedVariant = validateOrderVariant(matched, variant);
   if (normalizedVariant === null) {
@@ -2515,7 +2561,7 @@ app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, 
     await saveWeeklyPlan(companyId, userId, plan);
   }
 
-  res.json({ success: true, day: buildWeekDayInfo(dailyState, plan, date, userId, null) });
+  res.json({ success: true, day: buildWeekDayInfo(dailyState, plan, date, userId, null, dayMenu) });
 });
 
 // Team Member: Clear one day back to "Skipped". Today follows the same
@@ -2558,7 +2604,8 @@ app.delete('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (re
     await saveWeeklyPlan(companyId, userId, plan);
   }
 
-  res.json({ success: true, day: buildWeekDayInfo(dailyState, plan, date, userId, null) });
+  const dayMenu = (await getProjectedMenusByDate(companyId, dailyState, [date])).get(date);
+  res.json({ success: true, day: buildWeekDayInfo(dailyState, plan, date, userId, null, dayMenu) });
 });
 
 // Team Member: "Use this dish for the rest of the week" — fans one pick out
@@ -2581,7 +2628,8 @@ app.post('/api/week-plan/repeat', authMiddleware, requireCompanyUser, async (req
   if (!dailyState.menuPublished) {
     return res.status(400).json({ error: 'The menu hasn\'t been published yet.' });
   }
-  const matched = findMenuItemByName(dailyState.menu, dishName);
+  const menusByDate = await getProjectedMenusByDate(companyId, dailyState, weekDates.filter(d => d >= startDate));
+  const matched = findMenuItemByName(menusByDate.get(startDate), dishName);
   if (!matched) {
     return res.status(400).json({ error: 'Dish is not on the menu.' });
   }
@@ -2621,6 +2669,11 @@ app.post('/api/week-plan/repeat', authMiddleware, requireCompanyUser, async (req
     }
     if (!isOperationalDate(dailyState, date)) {
       skippedDates.push({ date, reason: 'closed' });
+      continue;
+    }
+    // Only days whose menu actually has this dish (repeat days can differ).
+    if (!findMenuItemByName(menusByDate.get(date), matched.name)) {
+      skippedDates.push({ date, reason: 'not-on-menu' });
       continue;
     }
     plan.entries[date] = { dishName: matched.name, note: '', updatedAt: Date.now(), source: 'repeat' };

@@ -1777,15 +1777,18 @@ function renderWeeklyPlan() {
       ? '<p class="week-day-warning">This dish may no longer be on the menu that day.</p>'
       : '';
 
+    // Each day offers its own menu — dishes with repeat days only show up
+    // on the days they repeat.
+    const dayMenu = day.menu || weekPlan.menu || [];
     const optionsHtml = ['<option value="">Skipped</option>']
-      .concat((weekPlan.menu || []).map(item =>
+      .concat(dayMenu.map(item =>
         `<option value="${escapeHtml(item.name)}" ${item.name === day.dishName ? 'selected' : ''}>${escapeHtml(item.name)}</option>`
       )).join('');
 
     // A dish with variants (e.g. Fufu's soup type) needs a second select
     // before the day counts as fully picked — hidden entirely for dishes
     // that don't have any configured.
-    const matchedMenuItem = (weekPlan.menu || []).find(item => item.name === day.dishName);
+    const matchedMenuItem = dayMenu.find(item => item.name === day.dishName);
     const dayVariantOptions = matchedMenuItem?.variantOptions || [];
     const variantHtml = dayVariantOptions.length > 0
       ? `<select class="week-day-variant" aria-label="${escapeHtml(matchedMenuItem.variantLabel)} for ${escapeHtml(day.dayName)}" ${disabled}>
@@ -1823,7 +1826,8 @@ async function handleWeekDishChange(date, dishName) {
   // no variant, which the server would reject.
   const card = weekGrid.querySelector(`.week-day-card[data-date="${date}"]`);
   const variantSelect = card?.querySelector('.week-day-variant');
-  const matched = (weekPlan?.menu || []).find(item => item.name === dishName);
+  const dayMenu = weekPlan?.days.find(d => d.date === date)?.menu || weekPlan?.menu || [];
+  const matched = dayMenu.find(item => item.name === dishName);
   const options = matched?.variantOptions || [];
   if (dishName && options.length > 0 && variantSelect) {
     variantSelect.classList.remove('hidden');
@@ -1897,7 +1901,7 @@ async function handleRepeatRestOfWeek(date, dishName) {
     const parts = [];
     if (result.appliedDates?.length) parts.push(`${dishName} set for ${result.appliedDates.length} day(s).`);
     if (result.skippedDates?.length) {
-      const reasons = result.skippedDates.map(s => `${s.date} (${s.reason})`).join(', ');
+      const reasons = result.skippedDates.map(s => `${s.date} (${s.reason.replace(/-/g, ' ')})`).join(', ');
       parts.push(`Skipped: ${reasons}.`);
     }
     weeklyPlanStatus.className = 'status-msg-inline success';
