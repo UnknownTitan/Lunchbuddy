@@ -1695,6 +1695,9 @@ function renderWeeklyPlan() {
     if (weekPlanDirtyDates.has(day.date)) return; // in-flight edit — leave it alone
 
     let card = weekGrid.querySelector(`.week-day-card[data-date="${day.date}"]`);
+    // A dropdown open on this card (e.g. a phone's native picker) closes if
+    // the card is rebuilt under it — skip it this poll.
+    if (card?.contains(document.activeElement)) return;
     const isNew = !card;
     if (isNew) {
       card = document.createElement('div');
@@ -1949,6 +1952,12 @@ function updateOrderGreeting() {
 // on a fresh dish pick), same division of responsibility as orderNoteInput.
 function updateOrderVariantOptions(item) {
   const options = Array.isArray(item?.variantOptions) ? item.variantOptions : [];
+  // Skip the rebuild when this dish's options are already showing. The form
+  // re-renders every ~10s poll, and rewriting the options closes a picker
+  // the user has open on a phone and resets what they'd chosen.
+  const key = item ? `${item.id}|${options.join('\u0001')}` : '';
+  if (orderVariantSelect.dataset.optionsKey === key) return;
+  orderVariantSelect.dataset.optionsKey = key;
   if (options.length === 0) {
     orderVariantSection.classList.add('hidden');
     orderVariantSelect.required = false;
@@ -2057,8 +2066,10 @@ function renderFoodOrderForm() {
         if (orderHeroArtImg) orderHeroArtImg.src = getDishImage(item);
         // Switching dishes clears any variant pick from the dish just
         // deselected — a soup type chosen for Fufu has no meaning for Jollof.
+        // Tapping the already-selected dish again keeps the pick.
+        const keyBefore = orderVariantSelect.dataset.optionsKey;
         updateOrderVariantOptions(item);
-        orderVariantSelect.value = '';
+        if (orderVariantSelect.dataset.optionsKey !== keyBefore) orderVariantSelect.value = '';
       }
     });
 
@@ -2172,8 +2183,14 @@ function renderDetailedBreakdownList() {
     }
   });
 
+  // If an admin is mid-pick in the Unconfirmed list (a dropdown open on a
+  // phone, or typing a note), leave it alone this poll — rebuilding it
+  // closes an open native picker. It refreshes on the next poll after they
+  // move on.
+  const keepUnconfirmed = summaryUnconfirmed.contains(document.activeElement);
+
   summaryGroups.innerHTML = '';
-  summaryUnconfirmed.innerHTML = '';
+  if (!keepUnconfirmed) summaryUnconfirmed.innerHTML = '';
 
   const searchVal = summaryListSearch.value.toLowerCase().trim();
 
@@ -2256,6 +2273,8 @@ function renderDetailedBreakdownList() {
     ? 'Everyone has placed an order.'
     : `${pendingList.length} team member${pendingList.length === 1 ? '' : 's'} haven't placed an order yet.`;
 
+  if (keepUnconfirmed) return;
+
   if (pendingList.length === 0) {
     summaryUnconfirmed.innerHTML = '<div class="no-results">Everyone has placed an order.</div>';
     return;
@@ -2292,24 +2311,26 @@ function renderDetailedBreakdownList() {
     const noteInput = row.querySelector('.assign-note-input');
     const button = row.querySelector('.btn-assign-dish');
 
-    const refreshUnlockState = () => {
+    // Only rebuilt when the dish changes — rebuilding the options resets
+    // the select, so doing it on the variant's own change event wiped the
+    // pick the moment it was made and the Assign button never unlocked.
+    const populateVariants = () => {
       const item = dailyState.menu.find(m => m.id === select.value);
-      const needsVariant = (item?.variantOptions || []).length > 0;
-      if (needsVariant) {
-        variantSelect.classList.remove('hidden');
-        variantSelect.innerHTML = '<option value="">Select…</option>'
-          + item.variantOptions.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
-      } else {
-        variantSelect.classList.add('hidden');
-        variantSelect.value = '';
-      }
+      const options = item?.variantOptions || [];
+      variantSelect.classList.toggle('hidden', options.length === 0);
+      variantSelect.innerHTML = '<option value="">Select…</option>'
+        + options.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+    };
+
+    const refreshUnlockState = () => {
+      const needsVariant = !variantSelect.classList.contains('hidden');
       const ready = !!select.value && (!needsVariant || !!variantSelect.value);
       noteInput.disabled = !ready;
       button.disabled = !ready;
     };
 
     select.addEventListener('change', () => {
-      variantSelect.value = ''; // dish changed — any prior variant pick no longer applies
+      populateVariants();
       refreshUnlockState();
     });
     variantSelect.addEventListener('change', refreshUnlockState);
@@ -2326,7 +2347,7 @@ function renderDetailedBreakdownList() {
     const edit = pendingEdits.get(userId);
     if (edit) {
       select.value = edit.itemId;
-      refreshUnlockState();
+      populateVariants();
       if (edit.variant) variantSelect.value = edit.variant;
       refreshUnlockState();
       noteInput.value = edit.note;
@@ -6140,6 +6161,7 @@ function setupEventListeners() {
   // Order Submit Action
   orderForm.addEventListener('submit', handleOrderSubmit);
   orderNoteInput.addEventListener('input', () => { orderFormDirty = true; });
+  orderVariantSelect.addEventListener('change', () => { orderFormDirty = true; });
 
   // Change Selection Action
   btnChangeOrder.addEventListener('click', () => {
