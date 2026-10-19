@@ -1107,6 +1107,44 @@ function dedupeMenuByCatalogDish(dailyState) {
   return true;
 }
 
+// Today's menu holds a snapshot of each dish (so a catalog price edit never
+// rewrites a past day), but that meant variant options or a photo added in
+// the catalog never reached a dish already on today's menu — and an old
+// typed-in entry (no catalog link) never picked them up at all. This pulls
+// the catalog's current variants/photo into today's menu items, linking a
+// typed-in entry to the active catalog dish with the same name. Name and
+// price stay as snapshotted. Archived history is never touched (it's a
+// copy taken at archive time). Returns true if anything changed.
+function syncMenuWithCatalog(dailyState, activeDishes) {
+  const byId = new Map(activeDishes.map(d => [d.id, d]));
+  const byName = new Map(activeDishes.map(d => [normalizeDishName(d.name), d]));
+  let changed = false;
+
+  dailyState.menu = (dailyState.menu || []).map(item => {
+    const dish = item.catalogDishId ? byId.get(item.catalogDishId) : byName.get(normalizeDishName(item.name));
+    if (!dish) return item;
+    const synced = {
+      ...item,
+      catalogDishId: dish.id,
+      imageId: dish.imageId || item.imageId || null,
+      variantLabel: dish.variantLabel || null,
+      variantOptions: Array.isArray(dish.variantOptions) ? dish.variantOptions : []
+    };
+    if (JSON.stringify(synced) !== JSON.stringify(item)) changed = true;
+    return synced;
+  });
+  return changed;
+}
+
+// Bumped whenever a company's catalog changes; the daily middleware re-syncs
+// today's menu (syncMenuWithCatalog) the next time it sees a new version.
+// In-memory, so a server restart also triggers one sync per company.
+const catalogVersions = new Map(); // companyId -> number
+const catalogSyncedVersions = new Map(); // companyId -> "date|version" last synced
+function bumpCatalogVersion(companyId) {
+  catalogVersions.set(companyId, (catalogVersions.get(companyId) || 0) + 1);
+}
+
 async function handleDailyResetMiddleware(req, res, next) {
   if (!req.companyId || ROLLOVER_EXEMPT_PATHS.has(req.path) || req.path.startsWith('/api/companies')) {
     return next();
@@ -1149,7 +1187,15 @@ async function handleDailyResetMiddleware(req, res, next) {
       }
     }
 
-    if (dedupeMenuByCatalogDish(dailyState)) {
+    let menuChanged = false;
+    const syncKey = `${dailyState.date}|${catalogVersions.get(companyId) || 0}`;
+    if (catalogSyncedVersions.get(companyId) !== syncKey) {
+      menuChanged = syncMenuWithCatalog(dailyState, await getDishes(companyId));
+      catalogSyncedVersions.set(companyId, syncKey);
+    }
+    // After syncing: linking a typed-in entry can make it a duplicate.
+    if (dedupeMenuByCatalogDish(dailyState)) menuChanged = true;
+    if (menuChanged) {
       await saveDailyState(companyId, dailyState);
     }
   });
@@ -1904,6 +1950,7 @@ app.post('/api/dishes', authMiddleware, requireAdmin, async (req, res) => {
     throw err;
   }
 
+  bumpCatalogVersion(companyId);
   res.status(201).json(dish);
 });
 
@@ -1946,6 +1993,7 @@ app.put('/api/dishes/:id', authMiddleware, requireAdmin, async (req, res) => {
     throw err;
   }
 
+  bumpCatalogVersion(companyId);
   res.json({ ...existing, ...patch });
 });
 
@@ -1959,6 +2007,7 @@ app.delete('/api/dishes/:id', authMiddleware, requireAdmin, async (req, res) => 
     return res.status(404).json({ error: 'Dish not found.' });
   }
   await setDishActive(companyId, id, false);
+  bumpCatalogVersion(companyId);
   res.json({ success: true });
 });
 
@@ -1972,6 +2021,7 @@ app.post('/api/dishes/:id/restore', authMiddleware, requireAdmin, async (req, re
     return res.status(404).json({ error: 'Dish not found.' });
   }
   await setDishActive(companyId, id, true);
+  bumpCatalogVersion(companyId);
   res.json({ success: true });
 });
 
@@ -2012,6 +2062,7 @@ app.post('/api/dishes/:id/image', authMiddleware, requireAdmin, async (req, res)
   // whole day's menu just to pick up an image. Propagate into today's
   // still-live dailyState.menu only — archived `history` days are never
   // touched, they stay a frozen record of what was actually shown that day.
+  bumpCatalogVersion(companyId);
   const dailyState = await getDailyState(companyId);
   let dailyStateChanged = false;
   const updatedMenu = (dailyState.menu || []).map(item => {
