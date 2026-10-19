@@ -1027,7 +1027,7 @@ async function getProjectedMenusByDate(companyId, dailyState, dates) {
         };
       })
       .filter(Boolean);
-    menus.set(date, [...kept, ...added]);
+    menus.set(date, dedupeMenuItems([...kept, ...added]).items);
   }
   return menus;
 }
@@ -1051,27 +1051,56 @@ const ROLLOVER_EXEMPT_PATHS = new Set([
 // arrive in the same tick. Bounded by company count, so no eviction needed.
 const dailyRolloverChains = new Map();
 
-// Keeps one menu entry per catalog dish. Older rollover logic could add the
-// same catalog dish twice (different item ids, same name), which showed up
-// as duplicate columns in the Roster Breakdown — and Menu Builder hid the
-// copy (one row per catalog dish), so an admin couldn't remove it by hand.
-// Orders placed on a dropped copy are moved to the kept one, so nobody's
-// order disappears. Returns true if anything changed.
-function dedupeMenuByCatalogDish(dailyState) {
-  const keptIdByCatalogId = new Map();
-  const remap = new Map(); // dropped item id -> kept item id
-  const menu = [];
-  for (const item of dailyState.menu || []) {
-    if (item.catalogDishId && keptIdByCatalogId.has(item.catalogDishId)) {
-      remap.set(item.id, keptIdByCatalogId.get(item.catalogDishId));
+// Collapses duplicate menu entries — the same catalog dish twice, or two
+// entries with the same name (e.g. an old typed-in "Jollof Rice" next to
+// the catalog-linked "Jollof Rice"). When duplicates differ, the
+// catalog-linked one wins, since it's the one with a photo/variants/repeat
+// days. Returns the deduped items and a map of dropped item id -> kept id.
+function dedupeMenuItems(items) {
+  const kept = [];
+  const indexByCatalogId = new Map();
+  const indexByName = new Map();
+  const remap = new Map();
+
+  for (const item of items || []) {
+    const name = normalizeDishName(item.name);
+    const idx = (item.catalogDishId && indexByCatalogId.get(item.catalogDishId)) ?? indexByName.get(name);
+    if (idx === undefined) {
+      indexByName.set(name, kept.length);
+      if (item.catalogDishId) indexByCatalogId.set(item.catalogDishId, kept.length);
+      kept.push(item);
       continue;
     }
-    if (item.catalogDishId) keptIdByCatalogId.set(item.catalogDishId, item.id);
-    menu.push(item);
+    const existing = kept[idx];
+    if (!existing.catalogDishId && item.catalogDishId) {
+      kept[idx] = item; // upgrade to the catalog-linked entry
+      indexByCatalogId.set(item.catalogDishId, idx);
+      remap.set(existing.id, item.id);
+    } else {
+      remap.set(item.id, existing.id);
+    }
   }
+
+  // An entry can be dropped after something was already remapped onto it.
+  const keptIds = new Set(kept.map(i => i.id));
+  for (const [from, to] of remap) {
+    let target = to;
+    while (!keptIds.has(target) && remap.has(target)) target = remap.get(target);
+    remap.set(from, target);
+  }
+  return { items: kept, remap };
+}
+
+// Removes duplicate dishes from the stored menu (see dedupeMenuItems). Older
+// logic could add the same dish twice, which showed as duplicate columns in
+// the Roster Breakdown — and Menu Builder hid the copy, so an admin couldn't
+// remove it by hand. Orders on a dropped copy move to the kept one, so
+// nobody's order disappears. Returns true if anything changed.
+function dedupeMenuByCatalogDish(dailyState) {
+  const { items, remap } = dedupeMenuItems(dailyState.menu);
   if (remap.size === 0) return false;
 
-  dailyState.menu = menu;
+  dailyState.menu = items;
   for (const order of Object.values(dailyState.orders || {})) {
     if (order && remap.has(order.itemId)) order.itemId = remap.get(order.itemId);
   }
