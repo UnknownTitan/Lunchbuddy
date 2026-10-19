@@ -708,7 +708,65 @@ async function handleResetPasscodeSubmit() {
 
 // --- App Initialization & Auth ---
 
+// Installed (home-screen) PWAs run without browser chrome, so there's no
+// reload button and no built-in pull-to-refresh. Adds one, only in that
+// mode — a normal browser tab already has its own. A pull only starts at
+// the very top of the page, and never from a dialog, the open side menu,
+// the game, or a form field (a drag there means something else).
+function setupPullToRefresh() {
+  const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if (!standalone) return;
+
+  const indicator = document.createElement('div');
+  indicator.className = 'pull-refresh-indicator';
+  indicator.innerHTML = '<span class="material-symbols-outlined">refresh</span>';
+  document.body.appendChild(indicator);
+
+  const THRESHOLD = 70;
+  let startY = null;
+  let startX = 0;
+  let pull = 0;
+
+  const reset = () => {
+    startY = null;
+    pull = 0;
+    indicator.style.transform = '';
+    indicator.style.opacity = '';
+    indicator.classList.remove('ready');
+  };
+
+  document.addEventListener('touchstart', (e) => {
+    if (window.scrollY > 0 || e.touches.length !== 1) return;
+    if (e.target.closest('.modal-overlay, .nav-sidebar.open, .game-canvas-wrap, input, select, textarea')) return;
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (startY === null) return;
+    const dy = e.touches[0].clientY - startY;
+    const dx = Math.abs(e.touches[0].clientX - startX);
+    if (dy <= 0 || dx > dy) { reset(); return; } // scrolling up or swiping sideways
+    pull = Math.min(dy * 0.5, 110);
+    indicator.style.transform = `translate(-50%, ${pull}px) rotate(${pull * 3}deg)`;
+    indicator.style.opacity = String(Math.min(pull / THRESHOLD, 1));
+    indicator.classList.toggle('ready', pull >= THRESHOLD);
+  }, { passive: true });
+
+  document.addEventListener('touchend', () => {
+    if (startY === null) return;
+    if (pull >= THRESHOLD) {
+      indicator.classList.add('refreshing');
+      location.reload();
+      return;
+    }
+    reset();
+  });
+  document.addEventListener('touchcancel', reset);
+}
+
 async function initApp() {
+  setupPullToRefresh();
   currentCompany = getSavedCompany();
 
   // A reset-passcode link is an explicit, unambiguous action — show it
