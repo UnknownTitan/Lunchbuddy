@@ -2543,7 +2543,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry, dayMenu = [
   return {
     date, weekday, dayName, isToday, isPast, isOperational, isLocked,
     cutoffTimestamp, source, dishName, note, variant, served, viaWeeklyPlan, dishStillOnMenu, imageId,
-    menu: isPast ? [] : dayMenu,
+    menu: isPast ? (pastEntry?.menu || []) : dayMenu, // past: that day's archived menu
     editable: !isLocked && isOperational && !!dailyState.menuPublished
   };
 }

@@ -1779,7 +1779,12 @@ function renderWeeklyPlan() {
 
     // Each day offers its own menu — dishes with repeat days only show up
     // on the days they repeat.
-    const dayMenu = day.menu || weekPlan.menu || [];
+    let dayMenu = day.menu || weekPlan.menu || [];
+    // Never show "Skipped" for a day that has a dish just because that dish
+    // isn't in the menu list we have for it (e.g. it was removed later).
+    if (day.dishName && !dayMenu.some(item => item.name === day.dishName)) {
+      dayMenu = [{ name: day.dishName, variantOptions: [] }, ...dayMenu];
+    }
     const optionsHtml = ['<option value="">Skipped</option>']
       .concat(dayMenu.map(item =>
         `<option value="${escapeHtml(item.name)}" ${item.name === day.dishName ? 'selected' : ''}>${escapeHtml(item.name)}</option>`
@@ -1791,7 +1796,7 @@ function renderWeeklyPlan() {
     const matchedMenuItem = dayMenu.find(item => item.name === day.dishName);
     const dayVariantOptions = matchedMenuItem?.variantOptions || [];
     const variantHtml = dayVariantOptions.length > 0
-      ? `<select class="week-day-variant" aria-label="${escapeHtml(matchedMenuItem.variantLabel)} for ${escapeHtml(day.dayName)}" ${disabled}>
+      ? `<select class="week-day-variant" aria-label="${escapeHtml(matchedMenuItem.variantLabel)} for ${escapeHtml(day.dayName)}" title="${escapeHtml(day.variant || '')}" ${disabled}>
           <option value="">Select ${escapeHtml(matchedMenuItem.variantLabel)}…</option>
           ${dayVariantOptions.map(o => `<option value="${escapeHtml(o)}" ${o === day.variant ? 'selected' : ''}>${escapeHtml(o)}</option>`).join('')}
         </select>`
@@ -1803,7 +1808,9 @@ function renderWeeklyPlan() {
         <span class="week-day-date">${escapeHtml(shortDate)}</span>
         ${badge ? `<span class="week-day-badge">${escapeHtml(badge)}</span>` : ''}
       </div>
-      <div class="week-day-thumb"><img src="${getDishImage(day)}" alt="" loading="lazy"></div>
+      <div class="week-day-thumb">${day.dishName
+        ? `<img src="${getDishImage(day)}" alt="" loading="lazy">`
+        : '<span class="material-symbols-outlined week-day-thumb-empty">no_meals</span>'}</div>
       <select class="week-day-select" aria-label="Dish for ${escapeHtml(day.dayName)}" ${disabled}>${optionsHtml}</select>
       ${variantHtml}
       ${warning}

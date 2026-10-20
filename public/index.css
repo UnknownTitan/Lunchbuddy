@@ -3582,6 +3582,18 @@ input:checked + .slider:before {
   color: var(--text-primary);
 }
 
+.week-day-select,
+.week-day-variant {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.week-day-thumb-empty {
+  font-size: 2.5rem;
+  color: var(--text-muted);
+}
+
 .week-day-variant {
   margin-top: 0.5rem;
   color: var(--status-pending);
