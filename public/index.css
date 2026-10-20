@@ -4044,3 +4044,24 @@ input:checked + .slider:before {
 @keyframes pull-refresh-spin {
   to { transform: rotate(360deg); }
 }
+
+/* Plan My Week: per-card status line (see weekDayStatusHtml in app.js) */
+.week-day-status {
+  font-size: 0.78rem;
+  font-weight: 600;
+  margin: -0.2rem 0 0.1rem;
+  color: var(--text-muted);
+}
+
+.week-day-status.ok {
+  color: var(--status-in-office);
+}
+
+.week-day-status.warn {
+  color: var(--status-on-the-way);
+}
+
+.week-day-card.just-saved {
+  box-shadow: 0 0 0 2px var(--status-in-office);
+  transition: box-shadow 0.3s ease;
+}

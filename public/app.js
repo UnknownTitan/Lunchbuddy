@@ -1773,9 +1773,6 @@ function renderWeeklyPlan() {
     const shortDate = new Date(day.date + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     const badge = day.isLocked ? (day.isPast ? 'Past' : 'Locked') : (!day.isOperational ? 'Closed' : (day.isToday ? 'Today' : ''));
     const disabled = !day.editable ? 'disabled' : '';
-    const warning = day.dishStillOnMenu === false
-      ? '<p class="week-day-warning">This dish may no longer be on the menu that day.</p>'
-      : '';
 
     // Each day offers its own menu — dishes with repeat days only show up
     // on the days they repeat.
@@ -1808,12 +1805,12 @@ function renderWeeklyPlan() {
         <span class="week-day-date">${escapeHtml(shortDate)}</span>
         ${badge ? `<span class="week-day-badge">${escapeHtml(badge)}</span>` : ''}
       </div>
+      ${weekDayStatusHtml(day)}
       <div class="week-day-thumb">${day.dishName
         ? `<img src="${getDishImage(day)}" alt="" loading="lazy">`
         : '<span class="material-symbols-outlined week-day-thumb-empty">no_meals</span>'}</div>
       <select class="week-day-select" aria-label="Dish for ${escapeHtml(day.dayName)}" ${disabled}>${optionsHtml}</select>
       ${variantHtml}
-      ${warning}
       <input type="text" class="week-day-note" maxlength="140" placeholder="Note (optional)" value="${escapeHtml(day.note || '')}" ${disabled}>
       ${(day.editable && day.dishName && dayVariantOptions.length === 0) ? `
         <button type="button" class="btn btn-secondary btn-sm week-day-repeat">
@@ -1823,6 +1820,45 @@ function renderWeeklyPlan() {
       ` : ''}
     `;
   });
+}
+
+// One line under each day's header saying where that day stands, so a pick
+// is visibly confirmed on the card itself rather than only in a status
+// message at the top of the section.
+function weekDayStatusHtml(day) {
+  let kind = 'muted';
+  let text;
+  if (!day.isOperational) {
+    text = 'Closed';
+  } else if (day.source === 'order') {
+    kind = 'ok';
+    text = day.served ? '✓ Served' : (day.isToday ? '✓ Ordered for today' : '✓ Ordered');
+  } else if (day.source === 'plan') {
+    kind = day.dishStillOnMenu === false ? 'warn' : 'ok';
+    text = day.dishStillOnMenu === false
+      ? 'Planned dish isn\'t on this day\'s menu'
+      : `✓ Planned — orders automatically on ${day.dayName}`;
+  } else {
+    text = day.isPast ? 'No order' : (day.isLocked ? 'No order — locked' : 'Not planned yet');
+  }
+  return `<div class="week-day-status ${kind}">${escapeHtml(text)}</div>`;
+}
+
+// Temporary status on one card (saving, waiting on a variant) — replaced by
+// weekDayStatusHtml's permanent status the next time the card re-renders.
+function setWeekCardStatus(date, text, kind = 'muted') {
+  const el = weekGrid.querySelector(`.week-day-card[data-date="${date}"] .week-day-status`);
+  if (!el) return;
+  el.className = `week-day-status ${kind}`;
+  el.textContent = text;
+}
+
+// Briefly highlights a card after a successful save.
+function flashWeekCardSaved(date) {
+  const card = weekGrid.querySelector(`.week-day-card[data-date="${date}"]`);
+  if (!card) return;
+  card.classList.add('just-saved');
+  setTimeout(() => card.classList.remove('just-saved'), 1500);
 }
 
 async function handleWeekDishChange(date, dishName) {
@@ -1842,6 +1878,7 @@ async function handleWeekDishChange(date, dishName) {
     variantSelect.innerHTML = `<option value="">Select ${escapeHtml(matched.variantLabel)}…</option>`
       + options.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
     variantSelect.focus();
+    setWeekCardStatus(date, `Choose a ${matched.variantLabel || 'option'} to save`, 'warn');
     return;
   }
   if (variantSelect) {
@@ -1849,11 +1886,13 @@ async function handleWeekDishChange(date, dishName) {
     variantSelect.value = '';
   }
 
+  setWeekCardStatus(date, 'Saving…');
   try {
     const res = dishName
       ? await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName, variant: '' })
       : await apiCall(`/api/week-plan/${date}`, 'DELETE');
     patchWeekDay(res.day);
+    flashWeekCardSaved(date);
     weeklyPlanStatus.className = 'status-msg-inline success';
     weeklyPlanStatus.textContent = 'Saved!';
     if (date === weekPlan?.businessDate) await fetchDailyState();
@@ -1870,9 +1909,11 @@ async function handleWeekDishChange(date, dishName) {
 async function handleWeekVariantChange(date, dishName, variant) {
   if (!variant) return;
   weekPlanDirtyDates.add(date);
+  setWeekCardStatus(date, 'Saving…');
   try {
     const res = await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName, variant });
     patchWeekDay(res.day);
+    flashWeekCardSaved(date);
     weeklyPlanStatus.className = 'status-msg-inline success';
     weeklyPlanStatus.textContent = 'Saved!';
     if (date === weekPlan?.businessDate) await fetchDailyState();
@@ -1890,6 +1931,7 @@ async function handleWeekNoteCommit(date, note) {
   try {
     const res = await apiCall(`/api/week-plan/${date}`, 'PUT', { dishName: day.dishName, note, variant: day.variant || '' });
     patchWeekDay(res.day);
+    flashWeekCardSaved(date);
     if (date === weekPlan?.businessDate) await fetchDailyState();
   } catch (err) {
     weekPlanDirtyDates.delete(date);
