@@ -1755,7 +1755,7 @@ function renderWeeklyPlan() {
     let card = weekGrid.querySelector(`.week-day-card[data-date="${day.date}"]`);
     // A dropdown open on this card (e.g. a phone's native picker) closes if
     // the card is rebuilt under it — skip it this poll.
-    if (card?.contains(document.activeElement)) return;
+    if (card?.contains(document.activeElement) && document.activeElement.matches('select, input')) return;
     const isNew = !card;
     if (isNew) {
       card = document.createElement('div');
@@ -2298,7 +2298,8 @@ function renderDetailedBreakdownList() {
   // phone, or typing a note), leave it alone this poll — rebuilding it
   // closes an open native picker. It refreshes on the next poll after they
   // move on.
-  const keepUnconfirmed = summaryUnconfirmed.contains(document.activeElement);
+  const focused = document.activeElement;
+  const keepUnconfirmed = summaryUnconfirmed.contains(focused) && focused.matches('select, input');
 
   summaryGroups.innerHTML = '';
   if (!keepUnconfirmed) summaryUnconfirmed.innerHTML = '';
@@ -2446,9 +2447,18 @@ function renderDetailedBreakdownList() {
     });
     variantSelect.addEventListener('change', refreshUnlockState);
 
-    const submit = () => {
-      if (!select.value) return;
-      assignDishToMember(userId, select.value, noteInput.value, variantSelect.value);
+    const submit = async () => {
+      if (!select.value || button.disabled) return;
+      button.disabled = true;
+      button.textContent = 'Assigning…';
+      // Drop focus first, so the refresh after assigning isn't skipped as
+      // "admin is still editing this list" and the card actually goes away.
+      document.activeElement?.blur();
+      const ok = await assignDishToMember(userId, select.value, noteInput.value, variantSelect.value);
+      if (!ok && button.isConnected) {
+        button.disabled = false;
+        button.textContent = 'Assign';
+      }
     };
     button.addEventListener('click', submit);
     noteInput.addEventListener('keydown', (e) => {
@@ -2481,8 +2491,10 @@ async function assignDishToMember(userId, itemId, note = '', variant = '') {
     await apiCall('/api/order/assign', 'POST', { userId, itemId, note, variant });
     showExportFeedback('Order assigned!');
     await fetchDailyState();
+    return true;
   } catch (err) {
     showAlert(err.message || 'Failed to assign order.');
+    return false;
   }
 }
 
