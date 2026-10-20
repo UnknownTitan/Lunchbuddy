@@ -2511,51 +2511,54 @@ async function removeMemberOrder(userId, userName) {
   }
 }
 
-// Copy Summary for WhatsApp clipboard API
+// Copy Summary for WhatsApp clipboard API. Two parts: dish quantities
+// (with each variant's count) for the vendor to cook from, then only the
+// orders that carry a note, so special requests are easy to spot. Notes are
+// quoted as written and never folded into the counts.
 function copyWhatsAppSummary() {
   if (!dailyState) return;
 
   const dateLabel = formatDate(dailyState.date);
-  let text = `*LUNCH ORDER SUMMARY — ${dateLabel.toUpperCase()}*\n\n`;
+  const ordered = dailyState.orders.ordered || [];
+  const dishes = dailyState.dishTotals
+    .filter(d => d.count > 0)
+    .sort((a, b) => b.count - a.count);
 
-  // Dish quantities
-  text += `*DISH QUANTITIES:*\n`;
-  const activeDishTotals = dailyState.dishTotals.filter(d => d.count > 0);
-  if (activeDishTotals.length === 0) {
-    text += `_No food items selected._\n`;
-  } else {
-    activeDishTotals.forEach(d => {
-      text += `• ${d.name}: *${d.count}*\n`;
-      (d.variants || []).forEach(v => {
-        text += `   - ${v.label}: ${v.count}\n`;
-      });
-    });
+  let text = `🍱 *LUNCH ORDER — ${dateLabel}*\n`;
+  text += `*${ordered.length} meal${ordered.length === 1 ? '' : 's'}* in total\n`;
+
+  text += `\n*QUANTITIES*\n`;
+  if (dishes.length === 0) {
+    text += `_No orders yet._\n`;
   }
+  dishes.forEach(d => {
+    text += `\n• *${d.name} — ${d.count}*\n`;
+    const variants = [...(d.variants || [])].sort((a, b) => b.count - a.count);
+    variants.forEach(v => { text += `   – ${v.label} × ${v.count}\n`; });
+    // A dish with options where someone didn't pick one — say so instead of
+    // letting the variant counts silently fall short of the total.
+    const hasOptions = (dailyState.menu.find(m => m.id === d.itemId)?.variantOptions || []).length > 0;
+    const unpicked = d.count - variants.reduce((sum, v) => sum + v.count, 0);
+    if (hasOptions && unpicked > 0) text += `   – No option chosen × ${unpicked}\n`;
+  });
 
-  // Order metrics
-  text += `\n*OVERVIEW:*\n`;
-  text += `• Ordered: ${dailyState.stats.ordered} of ${dailyState.stats.total}\n`;
-
-  // Per-person breakdown, grouped by dish — only people with a variant
-  // choice (soup type, sauce, etc.) or a note are listed, since that's the
-  // only detail the vendor actually needs beyond the dish quantities above.
-  const orderedList = dailyState.orders.ordered || [];
-  const withDetails = orderedList.filter(item => item.note || item.variant);
-  if (withDetails.length > 0) {
+  const withNotes = ordered.filter(o => o.note && o.note.trim());
+  if (withNotes.length > 0) {
+    text += `\n━━━━━━━━━━━━━━\n*NOTES*\n`;
+    const dishOrder = dishes.map(d => d.name);
     const byDish = new Map();
-    withDetails.forEach(item => {
-      if (!byDish.has(item.itemName)) byDish.set(item.itemName, []);
-      byDish.get(item.itemName).push(item);
+    withNotes.forEach(o => {
+      if (!byDish.has(o.itemName)) byDish.set(o.itemName, []);
+      byDish.get(o.itemName).push(o);
     });
-
-    text += `\n*DETAILS:*\n`;
-    byDish.forEach((members, dishName) => {
-      text += `\n*${dishName}:*\n`;
-      members.forEach(m => {
-        const bits = [m.variant, m.note].filter(Boolean).join(' — ');
-        text += `- ${m.name}${bits ? ` (${bits})` : ''}\n`;
+    [...byDish.keys()]
+      .sort((a, b) => dishOrder.indexOf(a) - dishOrder.indexOf(b))
+      .forEach(dishName => {
+        text += `\n*${dishName}*\n`;
+        byDish.get(dishName).forEach(o => {
+          text += `- ${o.name}${o.variant ? ` (${o.variant})` : ''}: "${o.note.trim()}"\n`;
+        });
       });
-    });
   }
 
   navigator.clipboard.writeText(text)
