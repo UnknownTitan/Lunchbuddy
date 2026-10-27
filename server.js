@@ -524,15 +524,54 @@ function validateOrderVariant(menuItem, variant) {
 // dailyState. Shared by the self-serve endpoint, the admin assign endpoint's
 // "today" path, and the weekly-plan rollover applier — one place that
 // decides what an "order" object looks like.
-function writeOrderForUser(dailyState, userId, itemId, note, extra = {}) {
+// Who did something to an order, for the order activity log.
+function orderActor(user) {
+  return { id: user.id, name: user.name };
+}
+const WEEKLY_PLAN_ACTOR = { id: null, name: 'Weekly plan' };
+
+// Append-only record of every order action for the day — placed, changed,
+// cancelled, removed — with the server's time and who did it, so "I did
+// order" disputes can be settled. Never edited or pruned during the day;
+// archived with the day (see archiveCurrentDay). Dish is stored by name so
+// it stays readable even if the menu changes later.
+function logOrderEvent(dailyState, { userId, userName = null, action, itemId = null, variant = '', note = '', by }) {
+  const dish = itemId ? (dailyState.menu || []).find(m => m.id === itemId) : null;
+  dailyState.orderLog = dailyState.orderLog || [];
+  dailyState.orderLog.push({
+    at: Date.now(),
+    userId,
+    userName, // only set when the person may not be on the roster anymore
+    action, // 'placed' | 'changed' | 'cancelled' | 'removed'
+    dish: dish?.name || null,
+    variant: variant || '',
+    note: note || '',
+    by: by || null
+  });
+}
+
+// Logs the removal of `userId`'s current order (if any) before it's deleted.
+function logOrderRemoval(dailyState, userId, action, by, userName = null) {
+  const order = dailyState.orders?.[userId];
+  if (!order) return;
+  logOrderEvent(dailyState, { userId, userName, action, itemId: order.itemId, variant: order.variant, note: order.note, by });
+}
+
+function writeOrderForUser(dailyState, userId, itemId, note, extra = {}, by = null) {
   dailyState.orders = dailyState.orders || {};
+  const hadOrder = !!dailyState.orders[userId];
   dailyState.orders[userId] = {
     itemId,
     timestamp: Date.now(),
     note: sanitizeOrderNote(note),
     ...extra
   };
-  return dailyState.orders[userId];
+  const order = dailyState.orders[userId];
+  logOrderEvent(dailyState, {
+    userId, action: hadOrder ? 'changed' : 'placed',
+    itemId, variant: order.variant, note: order.note, by
+  });
+  return order;
 }
 
 // A small, deliberately-not-exhaustive blocklist of passcodes that defeat
@@ -841,6 +880,7 @@ async function archiveCurrentDay(companyId, dailyState) {
       date: dailyState.date,
       menu: dailyState.menu,
       orders: dailyState.orders || {},
+      orderLog: dailyState.orderLog || [],
       rosterSnapshot: rosterMap,
       archivedAt: new Date().toISOString()
     };
@@ -907,7 +947,7 @@ async function applyWeeklyPlansForDate(companyId, dailyState) {
         // or unintended variant.
         const normalizedVariant = matched ? validateOrderVariant(matched, entry.variant) : null;
         if (matched && normalizedVariant !== null) {
-          writeOrderForUser(dailyState, userId, matched.id, entry.note, { viaWeeklyPlan: true, variant: normalizedVariant });
+          writeOrderForUser(dailyState, userId, matched.id, entry.note, { viaWeeklyPlan: true, variant: normalizedVariant }, WEEKLY_PLAN_ACTOR);
         }
       }
       delete plan.entries[dailyState.date];
@@ -1168,6 +1208,7 @@ async function handleDailyResetMiddleware(req, res, next) {
       // Reset daily state for the new business day
       dailyState.date = businessDate;
       dailyState.orders = {};
+      dailyState.orderLog = []; // yesterday's log went into history with it
       dailyState.isManuallyLocked = null; // clear override; revert to time-based
       dailyState.cutoffExtensionMinutes = 0; // clear any extra time granted yesterday
       dailyState.foodArrival = null; // clear yesterday's "food's in" broadcast
@@ -1750,6 +1791,7 @@ app.delete('/api/roster/:id', authMiddleware, requireAdmin, async (req, res) => 
 
   const dailyState = await getDailyState(companyId);
   if (dailyState.orders && dailyState.orders[id]) {
+    logOrderRemoval(dailyState, id, 'removed', orderActor(req.user), target?.name);
     delete dailyState.orders[id];
     await saveDailyState(companyId, dailyState);
   }
@@ -1844,6 +1886,12 @@ app.get('/api/daily', authMiddleware, requireCompanyUser, async (req, res) => {
       ordered,
       pending
     },
+    // Order activity log (see logOrderEvent): everyone's for admins, only
+    // your own for team members, newest first.
+    orderLog: (dailyState.orderLog || [])
+      .filter(e => req.user.role === 'Admin' || req.user.role === 'Abigail' || e.userId === req.user.id)
+      .slice()
+      .reverse(),
     stats: {
       total: roster.length,
       ordered: ordered.length,
@@ -2389,7 +2437,7 @@ app.post('/api/order', authMiddleware, requireCompanyUser, async (req, res) => {
     return res.status(400).json({ error: `Please choose a ${menuItem.variantLabel} for ${menuItem.name}.` });
   }
 
-  const order = writeOrderForUser(dailyState, userId, itemId, note, { variant: normalizedVariant });
+  const order = writeOrderForUser(dailyState, userId, itemId, note, { variant: normalizedVariant }, orderActor(req.user));
 
   await saveDailyState(companyId, dailyState);
   res.json({ success: true, order });
@@ -2413,6 +2461,7 @@ app.delete('/api/order', authMiddleware, requireCompanyUser, async (req, res) =>
     return res.status(400).json({ error: 'This order has already been served and can\'t be cancelled. Contact an admin.' });
   }
 
+  logOrderRemoval(dailyState, userId, 'cancelled', orderActor(req.user));
   delete dailyState.orders[userId];
   await saveDailyState(companyId, dailyState);
   res.json({ success: true });
@@ -2457,14 +2506,8 @@ app.post('/api/order/assign', authMiddleware, requireAdminOrAbigail, async (req,
     return res.status(400).json({ error: `Please choose a ${menuItem.variantLabel} for ${menuItem.name}.` });
   }
 
-  dailyState.orders = dailyState.orders || {};
-  dailyState.orders[userId] = {
-    itemId,
-    timestamp: Date.now(),
-    assignedBy: req.user.name,
-    note: sanitizeOrderNote(note),
-    variant: normalizedVariant
-  };
+  writeOrderForUser(dailyState, userId, itemId, note,
+    { assignedBy: req.user.name, variant: normalizedVariant }, orderActor(req.user));
 
   await saveDailyState(companyId, dailyState);
   res.json({ success: true, order: dailyState.orders[userId] });
@@ -2621,7 +2664,7 @@ app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, 
   plan.entries = plan.entries || {};
 
   if (date === dailyState.date) {
-    writeOrderForUser(dailyState, userId, matched.id, note, { variant: normalizedVariant });
+    writeOrderForUser(dailyState, userId, matched.id, note, { variant: normalizedVariant }, orderActor(req.user));
     await saveDailyState(companyId, dailyState);
     // A real order now exists for today — drop any lingering plan entry so
     // the two stores never disagree about what "today" means.
@@ -2675,6 +2718,7 @@ app.delete('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (re
       if (existingOrder.served) {
         return res.status(400).json({ error: 'This order has already been served and can\'t be cancelled. Contact an admin.' });
       }
+      logOrderRemoval(dailyState, userId, 'cancelled', orderActor(req.user));
       delete dailyState.orders[userId];
       await saveDailyState(companyId, dailyState);
     }
@@ -2735,7 +2779,7 @@ app.post('/api/week-plan/repeat', authMiddleware, requireCompanyUser, async (req
   // Repeating from today also places today's own order, if not already set —
   // one click does the intuitive thing instead of leaving today untouched.
   if (startDate === dailyState.date && !isDateLocked(dailyState, startDate) && !dailyState.orders?.[userId]) {
-    writeOrderForUser(dailyState, userId, matched.id, note);
+    writeOrderForUser(dailyState, userId, matched.id, note, {}, orderActor(req.user));
     dailyStateChanged = true;
     appliedDates.push(startDate);
     if (plan.entries[startDate]) delete plan.entries[startDate];
@@ -2802,6 +2846,7 @@ app.delete('/api/order/:userId', authMiddleware, requireAdminOrAbigail, async (r
     return res.status(404).json({ error: 'This person has not placed an order.' });
   }
 
+  logOrderRemoval(dailyState, userId, 'removed', orderActor(req.user));
   delete dailyState.orders[userId];
   await saveDailyState(companyId, dailyState);
   res.json({ success: true });
@@ -2811,6 +2856,8 @@ app.delete('/api/order/:userId', authMiddleware, requireAdminOrAbigail, async (r
 app.post('/api/order/clear-all', authMiddleware, requireAdmin, async (req, res) => {
   const companyId = req.user.companyId;
   const dailyState = await getDailyState(companyId);
+  Object.keys(dailyState.orders || {}).forEach(userId =>
+    logOrderRemoval(dailyState, userId, 'removed', orderActor(req.user)));
   dailyState.orders = {};
   await saveDailyState(companyId, dailyState);
   res.json({ success: true });

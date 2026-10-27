@@ -708,6 +708,156 @@ async function handleResetPasscodeSubmit() {
 
 // --- App Initialization & Auth ---
 
+// --- Guided tour ---
+// A step-by-step walkthrough for new users: each step highlights one part
+// of the screen with a short explanation. Shown automatically on a user's
+// first login (per browser), and replayable from "Take the tour" under the
+// user's name. Steps whose target is hidden for this user's role (admin-only
+// tabs for a team member) are skipped; on phones, steps that point at the
+// side menu point at the ☰ button instead, since the menu is off-screen.
+const TOUR_STEPS = [
+  { title: 'Welcome to Lunch Buddy 👋', text: 'Here\'s a quick look around — it takes under a minute. You can skip anytime and replay it later from your name at the top.' },
+  { target: '#order-mode-toggle', title: 'Today or the whole week', text: 'Order just for today, or switch to Plan My Week to pick your lunch for every day ahead in one go.' },
+  { target: '#order-form', title: 'Pick your lunch', text: 'Tap a dish, choose an option if it asks (like the soup), add a note if you need to, then save. You\'ll see a confirmation with the time it was saved.' },
+  { target: '#header-cutoff-badge', title: 'Mind the cutoff', text: 'Orders lock at this time each day. You can change or cancel your order any time before it.' },
+  { target: '#notification-bell-wrap', title: 'Your alerts', text: 'Reminders and "your food has arrived" alerts show up here.' },
+  { nav: 'summary-tab', title: 'Live Summary', text: 'See who has ordered what, assign a dish for someone who couldn\'t, and copy the order summary to send the vendor.' },
+  { nav: 'admin-tab', title: 'Admin Controls', text: 'Build the menu, add dishes and photos, set which days each dish repeats, publish the menu and set the cutoff.' },
+  { nav: 'roster-tab', title: 'Roster Manager', text: 'Add or remove team members and reset passcodes.' },
+  { nav: 'history-tab', title: 'Distribution & History', text: 'Tick people off as you hand food out, look back at past days, and check the Order Activity log — the exact time every order was placed, changed or cancelled.' },
+  { nav: 'trends-tab', title: 'Trends', text: 'Which dishes are popular and what lunch is costing over time.' },
+  { nav: 'notifications-tab', title: 'Notifications', text: 'Send or schedule messages and reminders to the team.' },
+  { nav: 'my-orders-tab', title: 'My Orders', text: 'Every lunch you\'ve ordered, with dates and times.' },
+  { nav: 'game-tab', title: 'Lunch Run', text: 'A quick game while you wait for lunch — with a company leaderboard.' },
+  { target: '#user-profile-toggle', title: 'That\'s it!', text: 'Log out from here — and replay this tour anytime with "Take the tour".' }
+];
+
+let tourState = null; // { steps, index, els }
+
+function tourKey() {
+  return `lunchsync_tour_done_${currentUser?.id || 'anon'}`;
+}
+
+function isElementShown(el) {
+  return !!el && !el.closest('.hidden') && el.getClientRects().length > 0;
+}
+
+// Resolves a step to the element to highlight (or null for a centered card),
+// or false if the step doesn't apply to this user and should be skipped.
+function resolveTourTarget(step) {
+  if (step.nav) {
+    const tab = document.querySelector(`.nav-tab[data-target="${step.nav}"]`);
+    if (!tab || tab.classList.contains('hidden')) return false;
+    const rect = tab.getBoundingClientRect();
+    const offscreen = rect.right <= 0 || rect.width === 0; // phone: side menu is closed
+    return offscreen ? document.getElementById('btn-mobile-menu-toggle') : tab;
+  }
+  if (step.target) {
+    const el = document.querySelector(step.target);
+    return isElementShown(el) ? el : false;
+  }
+  return null;
+}
+
+function startTour() {
+  if (!currentUser || tourState) return;
+  if (activeTab !== 'order-tab') switchTab('order-tab');
+  const steps = TOUR_STEPS.filter(step => resolveTourTarget(step) !== false);
+
+  const spotlight = document.createElement('div');
+  spotlight.className = 'tour-spotlight';
+  const card = document.createElement('div');
+  card.className = 'tour-card';
+  card.setAttribute('role', 'dialog');
+  card.setAttribute('aria-live', 'polite');
+  document.body.append(spotlight, card);
+
+  tourState = { steps, index: 0, els: { spotlight, card } };
+  window.addEventListener('resize', positionTourStep);
+  window.addEventListener('scroll', positionTourStep, { passive: true });
+  showTourStep(0);
+}
+
+function endTour() {
+  if (!tourState) return;
+  tourState.els.spotlight.remove();
+  tourState.els.card.remove();
+  window.removeEventListener('resize', positionTourStep);
+  window.removeEventListener('scroll', positionTourStep);
+  tourState = null;
+  try { localStorage.setItem(tourKey(), '1'); } catch {}
+}
+
+function showTourStep(index) {
+  const { steps, els } = tourState;
+  tourState.index = index;
+  const step = steps[index];
+  const target = resolveTourTarget(step);
+  const onPhoneMenu = step.nav && target?.id === 'btn-mobile-menu-toggle';
+  const last = index === steps.length - 1;
+
+  els.card.innerHTML = `
+    <div class="tour-progress">${index + 1} of ${steps.length}</div>
+    <h3>${escapeHtml(step.title)}</h3>
+    <p>${escapeHtml(step.text)}${onPhoneMenu ? ' <em>Find it in the ☰ menu.</em>' : ''}</p>
+    <div class="tour-actions">
+      ${last ? '' : '<button type="button" class="btn btn-link tour-skip">Skip tour</button>'}
+      <span class="tour-spacer"></span>
+      ${index > 0 ? '<button type="button" class="btn btn-secondary btn-sm tour-back">Back</button>' : ''}
+      <button type="button" class="btn btn-primary btn-sm tour-next">${last ? 'Finish' : 'Next'}</button>
+    </div>`;
+  els.card.querySelector('.tour-skip')?.addEventListener('click', endTour);
+  els.card.querySelector('.tour-back')?.addEventListener('click', () => showTourStep(index - 1));
+  els.card.querySelector('.tour-next').addEventListener('click', () => last ? endTour() : showTourStep(index + 1));
+
+  tourState.target = target;
+  // A section taller than most of the screen (the dish menu) is scrolled to
+  // its top and only that top part is highlighted (see positionTourStep).
+  const tall = target && target.getBoundingClientRect().height > window.innerHeight * 0.5;
+  if (target) target.scrollIntoView({ block: tall ? 'start' : 'center', behavior: 'smooth' });
+  positionTourStep();
+  setTimeout(positionTourStep, 350); // again once smooth scrolling settles
+  els.card.querySelector('.tour-next').focus({ preventScroll: true });
+}
+
+function positionTourStep() {
+  if (!tourState) return;
+  const { spotlight, card } = tourState.els;
+  const target = tourState.target;
+  const margin = 12;
+
+  if (!target) {
+    spotlight.classList.add('centered');
+    spotlight.style.cssText = '';
+    card.style.cssText = 'left:50%;top:50%;transform:translate(-50%,-50%)';
+    return;
+  }
+  spotlight.classList.remove('centered');
+  const full = target.getBoundingClientRect();
+  const r = {
+    left: full.left, top: full.top, width: full.width,
+    height: Math.min(full.height, window.innerHeight * 0.45)
+  };
+  r.bottom = r.top + r.height;
+  const pad = 6;
+  spotlight.style.cssText = `left:${r.left - pad}px;top:${r.top - pad}px;width:${r.width + pad * 2}px;height:${r.height + pad * 2}px`;
+
+  const cardRect = card.getBoundingClientRect();
+  const below = r.bottom + pad + margin;
+  const top = below + cardRect.height < window.innerHeight
+    ? below
+    : Math.max(margin, r.top - pad - margin - cardRect.height);
+  const left = Math.min(Math.max(margin, r.left), window.innerWidth - cardRect.width - margin);
+  card.style.cssText = `left:${left}px;top:${top}px`;
+}
+
+function maybeStartFirstTour() {
+  if (!currentUser || currentUser.role === 'Platform Admin') return;
+  let done = false;
+  try { done = !!localStorage.getItem(tourKey()); } catch {}
+  if (!done) setTimeout(startTour, 600); // let the dashboard finish rendering
+}
+
 // Installed (home-screen) PWAs run without browser chrome, so there's no
 // reload button and no built-in pull-to-refresh. Adds one, only in that
 // mode — a normal browser tab already has its own. A pull only starts at
@@ -989,6 +1139,7 @@ async function loginSuccess() {
 
   // Switch to default tab
   switchTab('order-tab');
+  maybeStartFirstTour();
 }
 
 function logout() {
@@ -2102,7 +2253,10 @@ function renderFoodOrderForm() {
     const noteText = userOrder.note
       ? `<br><span class="text-muted">Note: ${escapeHtml(userOrder.note)}</span>`
       : '';
-    confirmationText.innerHTML = `Selected dish: <strong>${escapeHtml(userOrder.itemName)}${variantText}</strong>${noteText}`;
+    const timeText = userOrder.timestamp
+      ? `<br><span class="text-muted">Saved at ${escapeHtml(formatOrderTime(userOrder.timestamp))}${userOrder.assignedBy ? ` by ${escapeHtml(userOrder.assignedBy)}` : ''}</span>`
+      : '';
+    confirmationText.innerHTML = `Selected dish: <strong>${escapeHtml(userOrder.itemName)}${variantText}</strong>${noteText}${timeText}`;
     btnChangeOrder.classList.toggle('hidden', showForm || dailyState.isLocked);
     btnCancelOrder.classList.toggle('hidden', showForm || dailyState.isLocked || userOrder.served);
 
@@ -2353,7 +2507,7 @@ function renderDetailedBreakdownList() {
         return `
           <div class="summary-member-row">
             <div class="member-row-main">
-              <span>${escapeHtml(member.name)}${variantTag}${assignedTag}</span>
+              <span>${escapeHtml(member.name)}${variantTag}${assignedTag}${member.timestamp ? `<span class="order-time">${escapeHtml(formatOrderTime(member.timestamp))}</span>` : ''}</span>
               <button type="button" class="btn btn-icon btn-remove-order" data-user-id="${member.userId}" data-user-name="${escapeHtml(member.name)}" title="Remove this order">
                 <span class="material-symbols-outlined">close</span>
               </button>
@@ -4067,7 +4221,7 @@ function buildChecklistData(source, isLive) {
     const byDish = new Map();
     ordered.forEach(o => {
       if (!byDish.has(o.itemName)) byDish.set(o.itemName, []);
-      byDish.get(o.itemName).push({ userId: o.userId, name: o.name, served: !!o.served, note: o.note || '', variant: o.variant || '' });
+      byDish.get(o.itemName).push({ userId: o.userId, name: o.name, served: !!o.served, note: o.note || '', variant: o.variant || '', timestamp: o.timestamp });
     });
     const columns = source.menu
       .map(d => ({ title: d.name, members: byDish.get(d.name) || [] }))
@@ -4095,7 +4249,9 @@ function buildChecklistData(source, isLive) {
       rosterRows,
       totalRoster: source.stats.total,
       orderedCount: source.stats.ordered,
-      servedCount: ordered.filter(o => o.served).length
+      servedCount: ordered.filter(o => o.served).length,
+      orderLog: source.orderLog || [], // already newest first
+      namesById: Object.fromEntries([...ordered, ...pending].map(p => [p.userId, p.name]))
     };
   }
 
@@ -4118,7 +4274,7 @@ function buildChecklistData(source, isLive) {
       if (o.itemId) dishTotals[o.itemId] = (dishTotals[o.itemId] || 0) + 1;
       const dishName = archive.menu.find(m => m.id === o.itemId)?.name || 'Unknown Dish';
       if (!byDish.has(dishName)) byDish.set(dishName, []);
-      byDish.get(dishName).push({ userId, name: u.name, served: !!o.served, variant: o.variant || '' });
+      byDish.get(dishName).push({ userId, name: u.name, served: !!o.served, variant: o.variant || '', note: o.note || '', timestamp: o.timestamp });
       rosterRows.push({ name: u.name, status: 'Ordered', dish: dishName, variant: o.variant || '' });
     } else {
       rosterRows.push({ name: u.name, status: 'Unconfirmed', dish: '—', variant: '' });
@@ -4145,7 +4301,9 @@ function buildChecklistData(source, isLive) {
     rosterRows,
     totalRoster: Object.keys(rosterSnapshot).length,
     orderedCount,
-    servedCount
+    servedCount,
+    orderLog: archive.orderLog ? [...archive.orderLog].reverse() : null, // null: day predates the log
+    namesById: Object.fromEntries(Object.entries(rosterSnapshot).map(([id, u]) => [id, u.name]))
   };
 }
 
@@ -4221,14 +4379,66 @@ function renderHistoryDetail(data) {
         <!-- Populated by renderHistoryChecklistGrid -->
       </div>
     </div>
+
+    ${renderOrderActivityPanel(data)}
   `;
 
   document.getElementById('btn-export-history-csv').addEventListener('click', () => {
     exportHistoryCsv(data);
   });
   document.getElementById('history-checklist-search').addEventListener('input', renderHistoryChecklistGrid);
+  historyDetailPanel.querySelector('.activity-search')?.addEventListener('input', e => filterOrderActivity(e.target));
 
   renderHistoryChecklistGrid();
+}
+
+// Every order action that day with its server time and who did it (see
+// logOrderEvent in server.js) — for settling "I did order" disputes.
+function renderOrderActivityPanel(data) {
+  const header = `
+    <div class="card-header">
+      <h2>Order Activity</h2>
+      <p>Every order placed, changed, cancelled or removed, with the exact time and who did it.</p>
+    </div>`;
+  if (!data.orderLog) {
+    return `<div class="panel-card">${header}<div class="no-results">No activity log for this day — the log started after it. Each order's last-saved time is shown in the checklist above.</div></div>`;
+  }
+  if (data.orderLog.length === 0) {
+    return `<div class="panel-card">${header}<div class="no-results">No order activity yet.</div></div>`;
+  }
+
+  const verb = { placed: 'placed', changed: 'changed to', cancelled: 'cancelled', removed: 'had their order removed:' };
+  const rows = data.orderLog.map(e => {
+    const name = data.namesById[e.userId] || e.userName || 'Former team member';
+    const dish = e.dish ? `<strong>${escapeHtml(e.dish)}</strong>${e.variant ? ` (${escapeHtml(e.variant)})` : ''}` : '';
+    const note = e.note ? `<span class="text-muted"> — "${escapeHtml(e.note)}"</span>` : '';
+    let by = '';
+    if (e.by && e.by.id === null) by = ` <span class="text-muted">· via ${escapeHtml(e.by.name)}</span>`;
+    else if (e.by && e.by.id !== e.userId) by = ` <span class="text-muted">· by ${escapeHtml(e.by.name)}</span>`;
+    const time = new Date(e.at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+    return `
+      <li class="activity-row activity-${escapeHtml(e.action)}" data-name="${escapeHtml(name.toLowerCase())}">
+        <span class="activity-time">${escapeHtml(time)}</span>
+        <span>${escapeHtml(name)} ${verb[e.action] || escapeHtml(e.action)} ${dish}${note}${by}</span>
+      </li>`;
+  }).join('');
+
+  return `
+    <details class="panel-card activity-panel">
+      <summary>${header}<span class="activity-count">${data.orderLog.length} event${data.orderLog.length === 1 ? '' : 's'} — tap to view</span></summary>
+      <div class="list-search-wrapper">
+        <span class="material-symbols-outlined">search</span>
+        <input type="text" class="activity-search" placeholder="Search a name...">
+      </div>
+      <ol class="activity-list">${rows}</ol>
+    </details>`;
+}
+
+function filterOrderActivity(input) {
+  const q = input.value.toLowerCase().trim();
+  input.closest('.activity-panel').querySelectorAll('.activity-row').forEach(row => {
+    row.classList.toggle('hidden', !!q && !row.dataset.name.includes(q));
+  });
 }
 
 function renderHistoryChecklistGrid() {
@@ -4252,7 +4462,7 @@ function renderHistoryChecklistGrid() {
     const rows = col.members.map(member => `
       <button type="button" class="summary-member-row distribution-row ${member.served ? 'served' : ''}" data-user-id="${member.userId}">
         <span class="material-symbols-outlined">${member.served ? 'check_box' : 'check_box_outline_blank'}</span>
-        <span>${escapeHtml(member.name)}${member.variant ? `<span class="text-muted"> — ${escapeHtml(member.variant)}</span>` : ''}${member.note ? `<span class="text-muted"> — ${escapeHtml(member.note)}</span>` : ''}</span>
+        <span>${escapeHtml(member.name)}${member.variant ? `<span class="text-muted"> — ${escapeHtml(member.variant)}</span>` : ''}${member.note ? `<span class="text-muted"> — ${escapeHtml(member.note)}</span>` : ''}${member.timestamp ? `<span class="order-time">${escapeHtml(formatOrderTime(member.timestamp))}</span>` : ''}</span>
       </button>
     `).join('');
 
@@ -6362,6 +6572,14 @@ function setupEventListeners() {
     e.stopPropagation();
     toggleNotificationDropdown();
   });
+  document.getElementById('btn-start-tour').addEventListener('click', (e) => {
+    e.stopPropagation();
+    userProfileDropdown.classList.add('hidden');
+    startTour();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && tourState) endTour();
+  });
   userProfileToggle.addEventListener('click', (e) => {
     e.stopPropagation();
     toggleUserProfileDropdown();
@@ -6514,6 +6732,11 @@ const DEFAULT_DISH_IMAGE = 'assets/jollof-hero.webp';
 // MongoDB); otherwise falls back to the static name-lookup table above,
 // then the generic default — this is also the graceful-degradation path for
 // pre-catalog history and one-off dishes with no photo.
+// Time an order was placed/changed (server clock), e.g. "9:42 AM".
+function formatOrderTime(ms) {
+  return ms ? new Date(ms).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
+}
+
 function getDishImage(item) {
   if (item && typeof item === 'object' && item.imageId) {
     return `/api/dish-images/${item.imageId}`;
