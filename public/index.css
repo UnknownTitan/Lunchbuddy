@@ -178,6 +178,8 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  color: inherit;
+  text-decoration: none;
 }
 
 button.mobile-menu-toggle {
@@ -918,6 +920,13 @@ select {
   color: var(--text-secondary);
   font-size: 0.85rem;
   text-decoration: underline;
+}
+
+/* The installed app always opens straight into /app, so the landing page
+   link would just bounce back here. */
+@media (display-mode: standalone) {
+  .link-landing { display: none; }
+  .header-logo { pointer-events: none; }
 }
 
 .error-text {

@@ -13,10 +13,12 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <script>
   (function () {
-    // Staff who are signed in (or opened the installed app) go straight to the app.
+    // Staff who are signed in (or opened the installed app) go straight to the
+    // app, unless they came here on purpose via the app's logo (/?home).
     try {
       const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
-      if (standalone || localStorage.getItem('lunchsync_token')) {
+      const visitingFromApp = new URLSearchParams(location.search).has('home');
+      if (standalone || (localStorage.getItem('lunchsync_token') && !visitingFromApp)) {
         location.replace('/app');
         return;
       }
@@ -578,7 +580,7 @@
 
 <footer>
   <div class="wrap">
-    <span>© 2026 Lunch Buddy</span>
+    <span>© 2016 Lunch Buddy</span>
     <span><a href="https://wa.me/233500035981" target="_blank" rel="noopener">WhatsApp</a> · <a href="tel:+233500035981">050 003 5981</a> · <a href="/app">Log in</a></span>
   </div>
 </footer>
@@ -588,6 +590,11 @@
     entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
   }, { threshold: 0.12 });
   document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+  let signedIn = false;
+  try { signedIn = !!localStorage.getItem('lunchsync_token'); } catch (e) {}
+  if (signedIn) {
+    document.querySelectorAll('a[href="/app"]').forEach((a) => { if (a.textContent.trim() === 'Log in') a.textContent = 'Open app'; });
+  }
   const root = document.documentElement;
   const themeIcon = document.getElementById('theme-icon');
   const syncThemeIcon = () => { themeIcon.textContent = root.dataset.theme === 'light' ? 'dark_mode' : 'light_mode'; };
