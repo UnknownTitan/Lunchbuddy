@@ -693,7 +693,7 @@ async function handleResetPasscodeSubmit() {
   try {
     await apiCall('/api/reset-passcode', 'POST', { token, newPasscode: p1 });
     await showAlert('Your passcode has been reset. You can now log in with it.', { title: 'Passcode Reset' });
-    history.pushState({}, '', '/');
+    history.pushState({}, '', '/app');
     if (currentCompany) {
       await loadLoginList();
       showLoginView();
@@ -6447,7 +6447,7 @@ function setupEventListeners() {
   });
   linkBackToCompany.addEventListener('click', (e) => {
     e.preventDefault();
-    history.pushState({}, '', '/');
+    history.pushState({}, '', '/app');
     if (currentCompany) {
       loadLoginList();
       showLoginView();

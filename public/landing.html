@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lunch Buddy — Office lunch, sorted</title>
+<meta name="description" content="Lunch Buddy collects your staff's lunch orders in one place, so your lunch coordinator can send the vendor one clean list. Timestamped orders, weekly planning and a hand-out checklist.">
+<meta property="og:title" content="Lunch Buddy — Office lunch, sorted">
+<meta property="og:description" content="Staff pick lunch on their phones. Lunch Buddy collects and counts every order. Your coordinator sends one list to the vendor.">
+<meta property="og:image" content="/assets/jollof-hero.webp">
+<meta name="theme-color" content="#6366f1">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<script>
+  (function () {
+    // Staff who are signed in (or opened the installed app) go straight to the app.
+    try {
+      const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+      if (standalone || localStorage.getItem('lunchsync_token')) {
+        location.replace('/app');
+        return;
+      }
+    } catch (e) {}
+    let saved = null;
+    try { saved = localStorage.getItem('lunchsync_theme'); } catch (e) {}
+    const sys = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    document.documentElement.dataset.theme = saved || sys;
+  })();
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #07070c;
+    --bg-2: #0d0d16;
+    --ink: #f4f4f8;
+    --muted: #9a9cb0;
+    --dim: #5f6177;
+    --line: rgba(255,255,255,.08);
+    --glass: rgba(255,255,255,.035);
+    --glass-2: rgba(255,255,255,.06);
+    --violet: #8b5cf6;
+    --indigo: #6366f1;
+    --pink: #ec4899;
+    --amber: #f59e0b;
+    --mint: #34d399;
+    --grad: linear-gradient(120deg, #a78bfa 0%, #6366f1 35%, #ec4899 70%, #f59e0b 100%);
+    --ink-2: #d6d7e4;
+    --surface: rgba(255,255,255,.04);
+    --surface-2: rgba(255,255,255,.06);
+    --sunken: rgba(0,0,0,.28);
+    --card-grad: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.012));
+    --nav-bg: rgba(13,13,22,.6);
+    --float-bg: rgba(20,20,32,.7);
+    --accent-soft: #c4b5fd;
+    --on-accent: #e9e5ff;
+    --btn-bg: #fff;
+    --btn-ink: #0a0a12;
+    --shadow: rgba(0,0,0,.7);
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --bg: #fafafc;
+    --bg-2: #f3f1fd;
+    --ink: #0b0b16;
+    --ink-2: #2a2c3d;
+    --muted: #565a70;
+    --dim: #8a8da2;
+    --line: rgba(20,20,60,.09);
+    --glass: rgba(255,255,255,.7);
+    --glass-2: rgba(255,255,255,.95);
+    --violet: #7c3aed;
+    --surface: rgba(20,20,60,.04);
+    --surface-2: rgba(20,20,60,.06);
+    --sunken: rgba(20,20,60,.045);
+    --card-grad: linear-gradient(180deg, #ffffff, rgba(255,255,255,.75));
+    --nav-bg: rgba(255,255,255,.7);
+    --float-bg: rgba(255,255,255,.8);
+    --accent-soft: #7c3aed;
+    --on-accent: #4c1d95;
+    --btn-bg: #0b0b16;
+    --btn-ink: #fff;
+    --shadow: rgba(30,30,80,.18);
+    color-scheme: light;
+  }
+  [data-theme="light"] .aurora { opacity: .22; }
+  [data-theme="light"] .a2 { opacity: .16; }
+  [data-theme="light"] .a3 { opacity: .12; }
+  [data-theme="light"] .grain { opacity: .03; }
+  [data-theme="light"] .bg-grid { opacity: .7; }
+  [data-theme="light"] .node.core { background: linear-gradient(180deg, rgba(139,92,246,.12), rgba(255,255,255,.8)); box-shadow: 0 20px 60px -20px rgba(139,92,246,.45); }
+  [data-theme="light"] .tally .total { background: rgba(139,92,246,.14); }
+  [data-theme="light"] .chat { background: #efeae2; }
+  [data-theme="light"] .chat-top { border-color: rgba(0,0,0,.08); }
+  [data-theme="light"] .chat-top small { color: #667781; }
+  [data-theme="light"] .bubble { background: #d9fdd3; color: #111b21; }
+  [data-theme="light"] .bubble .t { color: #667781; }
+  [data-theme="light"] .cta { background: radial-gradient(ellipse at 50% 0%, rgba(139,92,246,.18), transparent 60%), radial-gradient(ellipse at 80% 100%, rgba(236,72,153,.12), transparent 55%), var(--bg-2); }
+  .theme-btn { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--line); background: var(--glass); color: var(--ink); cursor: pointer; flex: none; }
+  .theme-btn:hover { background: var(--glass-2); }
+  .theme-btn .ms { font-size: 20px; }
+  .nav-right { display: flex; align-items: center; gap: 8px; }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; overflow-x: clip; }
+  body { margin: 0; font-family: 'Geist', system-ui, sans-serif; color: var(--ink); background: var(--bg); line-height: 1.55; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+  a { color: inherit; text-decoration: none; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 20px; }
+  .ms { font-family: 'Material Symbols Outlined'; font-weight: normal; font-style: normal; font-size: 22px; line-height: 1; letter-spacing: normal; text-transform: none; white-space: nowrap; direction: ltr; font-feature-settings: 'liga'; -webkit-font-feature-settings: 'liga'; display: inline-block; }
+  .mono { font-family: 'Geist Mono', ui-monospace, monospace; }
+  .grad-text { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; background-size: 200% auto; animation: shimmer 8s linear infinite; }
+  @keyframes shimmer { to { background-position: 200% center; } }
+
+  /* background: grid + aurora + grain */
+  .bg-grid { position: fixed; inset: 0; z-index: -2; background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px); background-size: 64px 64px; mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 30%, transparent 75%); opacity: .5; }
+  .aurora { position: absolute; z-index: -1; filter: blur(90px); opacity: .55; border-radius: 50%; pointer-events: none; animation: drift 18s ease-in-out infinite alternate; }
+  .a1 { width: 560px; height: 560px; background: #6d28d9; top: -180px; left: -120px; }
+  .a2 { width: 480px; height: 480px; background: #db2777; top: -60px; right: -160px; animation-delay: -6s; opacity: .35; }
+  .a3 { width: 420px; height: 420px; background: #f59e0b; top: 380px; left: 40%; animation-delay: -12s; opacity: .18; }
+  @keyframes drift { to { transform: translate(60px, 40px) scale(1.1); } }
+  .grain { position: fixed; inset: 0; z-index: 100; pointer-events: none; opacity: .05; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+
+  /* nav */
+  nav { position: fixed; top: 14px; left: 0; right: 0; z-index: 50; }
+  nav .bar { max-width: 980px; margin: 0 auto; display: flex; align-items: center; gap: 24px; height: 56px; padding: 0 8px 0 18px; border-radius: 999px; background: var(--nav-bg); border: 1px solid var(--line); backdrop-filter: blur(18px) saturate(1.4); -webkit-backdrop-filter: blur(18px) saturate(1.4); }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: -.01em; }
+  .brand img { width: 28px; height: 28px; }
+  .nav-links { display: flex; gap: 26px; margin-left: auto; font-size: .92rem; color: var(--muted); }
+  .nav-links a:hover { color: var(--ink); }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 999px; font-weight: 600; font-size: .95rem; border: 1px solid transparent; cursor: pointer; transition: transform .2s, box-shadow .2s, background .2s; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-primary { background: var(--btn-bg); color: var(--btn-ink); box-shadow: 0 0 0 1px rgba(255,255,255,.2), 0 10px 40px -8px rgba(139,92,246,.7); }
+  .btn-primary:hover { box-shadow: 0 0 0 1px rgba(255,255,255,.3), 0 14px 50px -6px rgba(236,72,153,.7); }
+  .btn-ghost { border-color: var(--line); background: var(--glass); color: var(--ink); }
+  .btn-ghost:hover { background: var(--glass-2); }
+  .btn-sm { padding: 9px 18px; font-size: .88rem; }
+
+  /* hero */
+  .hero { position: relative; padding: 170px 0 90px; }
+  .hero .wrap { display: grid; grid-template-columns: 1.1fr .9fr; gap: 56px; align-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px 6px 6px; border-radius: 999px; background: var(--glass); border: 1px solid var(--line); font-size: .85rem; color: var(--muted); }
+  .pill b { padding: 3px 10px; border-radius: 999px; background: var(--grad); color: #fff; font-weight: 600; font-size: .75rem; }
+  h1 { font-size: clamp(2.6rem, 6.4vw, 5.2rem); line-height: .98; margin: 22px 0 22px; letter-spacing: -.045em; font-weight: 700; }
+  .lead { font-size: 1.15rem; color: var(--muted); max-width: 540px; margin: 0; }
+  .lead strong { color: var(--ink); font-weight: 500; }
+  .hero-cta { display: flex; gap: 12px; margin-top: 34px; flex-wrap: wrap; }
+  .hero-meta { display: flex; gap: 22px; margin-top: 30px; flex-wrap: wrap; color: var(--dim); font-size: .85rem; }
+  .hero-meta span { display: inline-flex; align-items: center; gap: 6px; }
+  .hero-meta .ms { font-size: 18px; color: var(--mint); }
+
+  /* phone */
+  .phone-stage { position: relative; justify-self: center; perspective: 1400px; }
+  .phone { width: 300px; border-radius: 44px; padding: 10px; background: linear-gradient(160deg, #2a2a3a, #0e0e16); box-shadow: 0 0 0 1px rgba(255,255,255,.1), 0 50px 100px -20px var(--shadow), 0 0 120px -20px rgba(139,92,246,.5); transform: rotateY(-14deg) rotateX(6deg); transition: transform .6s; }
+  .phone:hover { transform: rotateY(-4deg) rotateX(2deg); }
+  .screen { border-radius: 35px; background: #f5f5fa; overflow: hidden; color: #0f172a; }
+  .notch { height: 26px; display: grid; place-items: center; }
+  .notch i { width: 90px; height: 22px; border-radius: 20px; background: #0e0e16; display: block; }
+  .screen-head { padding: 6px 16px 10px; }
+  .screen-head b { display: block; font-size: 1rem; }
+  .screen-head small { color: #64748b; font-size: .8rem; }
+  .cutoff { margin: 0 14px 4px; padding: 8px 12px; border-radius: 12px; background: #ecfdf5; color: #047857; font-size: .78rem; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .cutoff i { width: 7px; height: 7px; border-radius: 50%; background: #10b981; animation: pulse 1.6s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  .dishes { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; padding: 10px 14px 12px; }
+  .dish { background: #fff; border-radius: 14px; overflow: hidden; border: 2px solid transparent; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .dish.sel { border-color: #6366f1; }
+  .dish img { width: 100%; height: 78px; object-fit: cover; display: block; background: #eef0f6; }
+  .dish span { display: block; padding: 5px 8px 7px; font-size: .76rem; font-weight: 600; }
+  .saved { margin: 0 14px 16px; padding: 10px 12px; border-radius: 12px; background: #fff; font-size: .78rem; display: flex; gap: 8px; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .saved .ms { color: #10b981; font-size: 20px; }
+  .float { position: absolute; padding: 10px 14px; border-radius: 16px; background: var(--float-bg); border: 1px solid var(--line); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); font-size: .82rem; display: flex; align-items: center; gap: 10px; box-shadow: 0 20px 40px -10px var(--shadow); animation: bob 5s ease-in-out infinite; white-space: nowrap; }
+  .float .ms { font-size: 20px; }
+  .float small { display: block; color: var(--muted); font-size: .72rem; }
+  .f1 { top: 70px; left: -110px; }
+  .f1 .ms { color: var(--amber); }
+  .f2 { bottom: 90px; right: -100px; animation-delay: -2.5s; }
+  .f2 .ms { color: var(--mint); }
+  @keyframes bob { 50% { transform: translateY(-10px); } }
+
+  /* marquee */
+  .marquee { border-block: 1px solid var(--line); background: rgba(255,255,255,.015); overflow: hidden; padding: 18px 0; mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); }
+  .track { display: flex; gap: 44px; width: max-content; animation: scroll 40s linear infinite; }
+  .track span { display: inline-flex; align-items: center; gap: 12px; color: var(--muted); font-weight: 500; }
+  .track img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; }
+  @keyframes scroll { to { transform: translateX(-50%); } }
+
+  /* sections */
+  section { position: relative; padding: 110px 0; }
+  .kicker { font-family: 'Geist Mono', monospace; font-size: .78rem; letter-spacing: .14em; text-transform: uppercase; color: var(--violet); }
+  .head { max-width: 720px; margin: 0 auto 56px; text-align: center; }
+  .head h2 { font-size: clamp(2rem, 4.4vw, 3.4rem); line-height: 1.04; letter-spacing: -.035em; margin: 14px 0 14px; font-weight: 700; }
+  .head p { color: var(--muted); font-size: 1.08rem; margin: 0; }
+
+  /* flow: staff -> lunch buddy -> coordinator -> vendor */
+  .flow { display: grid; grid-template-columns: 1fr 64px 1fr 64px 1fr; align-items: stretch; }
+  .node { position: relative; border-radius: 24px; padding: 26px; background: var(--card-grad); border: 1px solid var(--line); }
+  .node.core { background: linear-gradient(180deg, rgba(139,92,246,.18), rgba(99,102,241,.05)); border-color: rgba(139,92,246,.45); box-shadow: 0 0 80px -20px rgba(139,92,246,.6); }
+  .node .tag { font-family: 'Geist Mono', monospace; font-size: .72rem; color: var(--dim); letter-spacing: .1em; text-transform: uppercase; }
+  .node h3 { margin: 8px 0 8px; font-size: 1.3rem; letter-spacing: -.02em; }
+  .node p { margin: 0 0 18px; color: var(--muted); font-size: .95rem; }
+  .people { display: grid; gap: 8px; }
+  .person { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; background: var(--surface); font-size: .85rem; }
+  .av { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: .72rem; font-weight: 700; color: #fff; flex: none; }
+  .person em { margin-left: auto; font-style: normal; color: var(--muted); font-size: .78rem; }
+  .tally { display: grid; gap: 8px; }
+  .tally div { display: flex; justify-content: space-between; align-items: center; padding: 9px 12px; border-radius: 12px; background: var(--sunken); font-size: .88rem; }
+  .tally b { font-family: 'Geist Mono', monospace; color: var(--accent-soft); }
+  .tally .total { background: rgba(139,92,246,.2); }
+  .send { display: grid; gap: 10px; }
+  .send .who { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--surface); font-size: .88rem; }
+  .send .who .ms { color: var(--amber); }
+  .wa-btn { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 11px; border-radius: 12px; background: #25d366; color: #052e16; font-weight: 600; font-size: .9rem; }
+  .send .arrive { display: flex; align-items: center; gap: 10px; font-size: .85rem; color: var(--muted); padding: 0 4px; }
+  .send .arrive .ms { color: var(--mint); font-size: 20px; }
+  .pipe { position: relative; align-self: center; height: 2px; margin: 0 8px; background: linear-gradient(90deg, rgba(139,92,246,.1), rgba(139,92,246,.6), rgba(236,72,153,.1)); }
+  .pipe::after { content: ''; position: absolute; top: -3px; left: 0; width: 8px; height: 8px; border-radius: 50%; background: #fff; box-shadow: 0 0 12px 3px rgba(167,139,250,.9); animation: travel 2.2s ease-in-out infinite; }
+  @keyframes travel { from { left: 0; opacity: 0; } 15% { opacity: 1; } 85% { opacity: 1; } to { left: calc(100% - 8px); opacity: 0; } }
+  .flow-note { margin: 34px auto 0; max-width: 760px; text-align: center; color: var(--muted); font-size: 1rem; display: flex; gap: 10px; align-items: center; justify-content: center; }
+  .flow-note .ms { color: var(--violet); }
+
+  /* pains */
+  .pains { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .pain { padding: 28px; border-radius: 22px; border: 1px solid var(--line); background: var(--glass); }
+  .pain .q { font-size: 1.35rem; font-weight: 600; letter-spacing: -.02em; line-height: 1.2; margin-bottom: 12px; }
+  .pain .q::before { content: '“'; color: var(--pink); }
+  .pain .q::after { content: '”'; color: var(--pink); }
+  .pain p { margin: 0; color: var(--muted); font-size: .95rem; }
+
+  /* bento */
+  .bento { display: grid; grid-template-columns: repeat(6, 1fr); grid-auto-rows: minmax(200px, auto); gap: 14px; }
+  .cell { position: relative; overflow: hidden; border-radius: 24px; padding: 28px; border: 1px solid var(--line); background: var(--card-grad); transition: border-color .3s; }
+  .cell:hover { border-color: rgba(167,139,250,.35); }
+  .cell::before { content: ''; position: absolute; inset: 0; background: radial-gradient(400px circle at var(--mx, 50%) var(--my, 0%), rgba(139,92,246,.14), transparent 50%); opacity: 0; transition: opacity .3s; pointer-events: none; }
+  .cell:hover::before { opacity: 1; }
+  .cell .ico { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; background: var(--surface-2); border: 1px solid var(--line); margin-bottom: 18px; }
+  .cell .ico .ms { color: var(--accent-soft); }
+  .cell h3 { margin: 0 0 8px; font-size: 1.2rem; letter-spacing: -.02em; }
+  .cell p { margin: 0; color: var(--muted); font-size: .95rem; max-width: 420px; }
+  .c-a { grid-column: span 4; }
+  .c-b { grid-column: span 2; }
+  .c-c { grid-column: span 2; }
+  .c-d { grid-column: span 2; }
+  .c-e { grid-column: span 2; }
+  .c-f { grid-column: span 6; }
+  .menu-strip { display: flex; gap: 10px; margin-top: 22px; }
+  .menu-strip img { width: 25%; aspect-ratio: 4/3; object-fit: cover; border-radius: 14px; border: 1px solid var(--line); }
+  .week { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 20px; }
+  .week div { padding: 8px 0; border-radius: 10px; text-align: center; font-size: .72rem; background: var(--surface); color: var(--muted); }
+  .week div.on { background: rgba(139,92,246,.25); color: var(--on-accent); }
+  .countdown { margin-top: 18px; font-family: 'Geist Mono', monospace; font-size: 2rem; letter-spacing: -.02em; }
+  .log { margin-top: 20px; display: grid; gap: 8px; font-family: 'Geist Mono', monospace; font-size: .82rem; }
+  .log div { min-width: 0; display: flex; gap: 14px; padding: 10px 14px; border-radius: 12px; background: var(--sunken); border: 1px solid var(--line); }
+  .log time { color: var(--violet); flex: none; }
+  .log span { min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log b { color: var(--ink); font-weight: 500; }
+  .bento > *, .flow > *, .c-f .inner > * { min-width: 0; }
+  .c-f .inner { display: grid; grid-template-columns: 1fr 1.2fr; gap: 30px; align-items: center; }
+
+  /* vendor summary */
+  .summary { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+  .summary h2 { font-size: clamp(2rem, 4vw, 3rem); line-height: 1.05; letter-spacing: -.035em; margin: 14px 0; }
+  .summary > div > p { color: var(--muted); font-size: 1.05rem; }
+  .checks { list-style: none; padding: 0; margin: 24px 0 0; display: grid; gap: 12px; }
+  .checks li { display: flex; gap: 12px; align-items: center; color: var(--ink-2); }
+  .checks .ms { color: var(--mint); font-size: 20px; }
+  .chat { border-radius: 26px; padding: 18px; background: #0b141a; border: 1px solid var(--line); box-shadow: 0 40px 80px -30px var(--shadow); }
+  .chat-top { display: flex; align-items: center; gap: 10px; padding: 4px 6px 14px; border-bottom: 1px solid rgba(255,255,255,.06); margin-bottom: 14px; font-size: .9rem; }
+  .chat-top .av { width: 34px; height: 34px; background: #25d366; color: #052e16; }
+  .chat-top small { display: block; color: #8696a0; font-size: .75rem; }
+  .bubble { margin-left: auto; max-width: 92%; background: #005c4b; color: #e9edef; border-radius: 14px 4px 14px 14px; padding: 12px 14px; font-size: .86rem; white-space: pre-line; line-height: 1.5; }
+  .bubble .t { display: block; text-align: right; font-size: .68rem; color: #8fbfb3; margin-top: 4px; }
+
+  /* proof + cta */
+  .proof { display: flex; align-items: center; gap: 30px; padding: 34px 38px; border-radius: 26px; border: 1px solid var(--line); background: var(--glass); }
+  .proof .big { font-size: clamp(3rem, 7vw, 5rem); font-weight: 700; letter-spacing: -.05em; line-height: 1; }
+  .proof p { margin: 0; color: var(--muted); font-size: 1.1rem; }
+  .cta { position: relative; overflow: hidden; text-align: center; padding: 90px 28px; border-radius: 34px; border: 1px solid rgba(167,139,250,.3); background: radial-gradient(ellipse at 50% 0%, rgba(139,92,246,.35), transparent 60%), radial-gradient(ellipse at 80% 100%, rgba(236,72,153,.25), transparent 55%), var(--bg-2); }
+  .cta h2 { font-size: clamp(2.2rem, 5vw, 4rem); line-height: 1; letter-spacing: -.045em; margin: 0 0 16px; }
+  .cta p { margin: 0 auto 32px; max-width: 520px; color: var(--muted); font-size: 1.1rem; }
+
+  .contact-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn-wa { background: #25d366; color: #052e16; box-shadow: 0 10px 40px -10px rgba(37,211,102,.7); }
+  .cta .contact-note { margin: 18px auto 0; font-size: .92rem; color: var(--dim); }
+  .cta .contact-note b { color: var(--ink); font-family: 'Geist Mono', monospace; font-weight: 500; }
+  @media (max-width: 520px) { .contact-btns .btn { width: 100%; justify-content: center; } }
+  footer { padding: 40px 0 60px; color: var(--dim); font-size: .88rem; }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; border-top: 1px solid var(--line); padding-top: 28px; }
+
+
+  /* reveal */
+  .reveal { opacity: 0; transform: translateY(24px); transition: opacity .8s cubic-bezier(.2,.7,.2,1), transform .8s cubic-bezier(.2,.7,.2,1); }
+  .reveal.in { opacity: 1; transform: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .reveal { opacity: 1; transform: none; }
+  }
+
+  @media (max-width: 960px) {
+    .hero { padding-top: 130px; }
+    .hero .wrap, .summary { grid-template-columns: 1fr; }
+    .phone { transform: none; }
+    .f1 { left: -40px; } .f2 { right: -40px; }
+    .flow { grid-template-columns: 1fr; }
+    .pipe { width: 2px; height: 40px; margin: 0 auto; background: linear-gradient(180deg, rgba(139,92,246,.1), rgba(139,92,246,.6), rgba(236,72,153,.1)); }
+    .pipe::after { left: -3px !important; animation-name: travelY; }
+    @keyframes travelY { from { top: 0; opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } to { top: calc(100% - 8px); opacity: 0; } }
+    .pains { grid-template-columns: 1fr; }
+    .bento { grid-template-columns: 1fr; }
+    .c-a, .c-b, .c-c, .c-d, .c-e, .c-f { grid-column: auto; }
+    .c-f .inner { grid-template-columns: 1fr; }
+    .nav-links { display: none; }
+    nav { padding: 0 12px; }
+    nav .bar { justify-content: space-between; }
+    .proof { flex-direction: column; text-align: center; }
+    section { padding: 80px 0; }
+  }
+  @media (max-width: 520px) {
+    .f1, .f2 { display: none; }
+    .phone { width: 280px; }
+    .hero-cta .btn { width: 100%; justify-content: center; }
+  }
+</style>
+</head>
+<body>
+<div class="bg-grid"></div>
+<div class="grain"></div>
+
+<nav>
+  <div class="bar">
+    <a class="brand" href="#"><img src="assets/burger-logo.webp" alt="">Lunch Buddy</a>
+    <div class="nav-links">
+      <a href="#flow">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#summary">Vendor summary</a>
+    </div>
+    <div class="nav-right">
+      <button class="theme-btn" id="theme-btn" type="button" aria-label="Switch light or dark mode"><span class="ms" id="theme-icon">light_mode</span></button>
+      <a class="btn btn-ghost btn-sm" href="/app">Log in</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="aurora a1"></div><div class="aurora a2"></div><div class="aurora a3"></div>
+  <div class="wrap">
+    <div class="reveal">
+      <span class="pill"><b>New</b> Timestamped order log for every pick</span>
+      <h1>Office lunch,<br><span class="grad-text">sorted before<br>the cutoff.</span></h1>
+      <p class="lead">Lunch Buddy <strong>collects every staff member's lunch order</strong> in one place. Your lunch coordinator then <strong>sends one clean list to the vendor</strong>. No more group-chat chasing or hand tallies.</p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#contact">Get Lunch Buddy for your office <span class="ms" style="font-size:20px">arrow_forward</span></a>
+        <a class="btn btn-ghost" href="#flow">See how it works</a>
+      </div>
+      <div class="hero-meta">
+        <span><span class="ms">check</span>Works on any phone</span>
+        <span><span class="ms">check</span>Nothing to install</span>
+        <span><span class="ms">check</span>Your own company space</span>
+      </div>
+    </div>
+
+    <div class="phone-stage reveal" aria-hidden="true">
+      <div class="phone">
+        <div class="screen">
+          <div class="notch"><i></i></div>
+          <div class="screen-head"><b>Good morning, Ama 👋</b><small>Pick today's lunch</small></div>
+          <div class="cutoff"><i></i> 1h 12m until cutoff</div>
+          <div class="dishes">
+            <div class="dish sel"><img src="assets/dishes/jollof-rice.webp" alt=""><span>Jollof Rice</span></div>
+            <div class="dish"><img src="assets/dishes/waakye.webp" alt=""><span>Waakye</span></div>
+            <div class="dish"><img src="assets/dishes/fufu.webp" alt=""><span>Fufu</span></div>
+            <div class="dish"><img src="assets/dishes/fried-rice.webp" alt=""><span>Fried Rice</span></div>
+          </div>
+          <div class="saved"><span class="ms">verified</span><span><b>Jollof Rice</b> saved at 9:42 AM</span></div>
+        </div>
+      </div>
+      <div class="float f1"><span class="ms">groups</span><div>42 of 60 ordered<small>18 reminders sent</small></div></div>
+      <div class="float f2"><span class="ms">send</span><div>List sent to vendor<small>11:05 AM · 60 meals</small></div></div>
+    </div>
+  </div>
+</header>
+
+<div class="marquee" aria-hidden="true">
+  <div class="track">
+    <span><img src="assets/dishes/jollof-rice.webp" alt="">Jollof Rice</span>
+    <span><img src="assets/dishes/waakye.webp" alt="">Waakye</span>
+    <span><img src="assets/dishes/fufu.webp" alt="">Fufu</span>
+    <span><img src="assets/dishes/fried-rice.webp" alt="">Fried Rice</span>
+    <span><img src="assets/salad-bowl.webp" alt="">Salads</span>
+    <span><img src="assets/soup-bowl-1.webp" alt="">Soups</span>
+    <span><img src="assets/smoothie.webp" alt="">Smoothies</span>
+    <span><img src="assets/jollof-hero.webp" alt="">Your vendor's menu</span>
+    <span><img src="assets/dishes/jollof-rice.webp" alt="">Jollof Rice</span>
+    <span><img src="assets/dishes/waakye.webp" alt="">Waakye</span>
+    <span><img src="assets/dishes/fufu.webp" alt="">Fufu</span>
+    <span><img src="assets/dishes/fried-rice.webp" alt="">Fried Rice</span>
+    <span><img src="assets/salad-bowl.webp" alt="">Salads</span>
+    <span><img src="assets/soup-bowl-1.webp" alt="">Soups</span>
+    <span><img src="assets/smoothie.webp" alt="">Smoothies</span>
+    <span><img src="assets/jollof-hero.webp" alt="">Your vendor's menu</span>
+  </div>
+</div>
+
+<section id="flow">
+  <div class="wrap">
+    <div class="head reveal">
+      <span class="kicker">How it works</span>
+      <h2>From every desk to <span class="grad-text">one list for the vendor.</span></h2>
+      <p>Staff pick their lunch on their phones. Lunch Buddy collects and counts every order. The person in charge of lunch sends the finished list to your vendor.</p>
+    </div>
+
+    <div class="flow reveal">
+      <div class="node">
+        <span class="tag">01 · Staff</span>
+        <h3>Everyone picks lunch</h3>
+        <p>Each person chooses from today's menu before the cutoff, or plans the whole week ahead.</p>
+        <div class="people">
+          <div class="person"><span class="av" style="background:#6366f1">AM</span>Ama<em>Jollof Rice</em></div>
+          <div class="person"><span class="av" style="background:#ec4899">KO</span>Kofi<em>Waakye</em></div>
+          <div class="person"><span class="av" style="background:#f59e0b">ES</span>Esi<em>Fried Rice</em></div>
+        </div>
+      </div>
+      <div class="pipe"></div>
+      <div class="node core">
+        <span class="tag">02 · Lunch Buddy</span>
+        <h3>Collects &amp; counts</h3>
+        <p>Every order lands in one place, tallied by dish and option, with each person's notes kept.</p>
+        <div class="tally">
+          <div>Jollof Rice <b>× 18</b></div>
+          <div>Waakye <b>× 14</b></div>
+          <div>Fried Rice <b>× 9</b></div>
+          <div class="total">Total <b>60 meals</b></div>
+        </div>
+      </div>
+      <div class="pipe"></div>
+      <div class="node">
+        <span class="tag">03 · Lunch coordinator</span>
+        <h3>Sends it to the vendor</h3>
+        <p>The person responsible for lunch copies the ready-made list and sends it to your vendor in one tap.</p>
+        <div class="send">
+          <div class="who"><span class="ms">badge</span>Abigail, office manager</div>
+          <div class="wa-btn"><span class="ms" style="font-size:20px">send</span>Send list to vendor</div>
+          <div class="arrive"><span class="ms">task_alt</span>Food arrives, tick people off as it's handed out</div>
+        </div>
+      </div>
+    </div>
+
+    <p class="flow-note reveal"><span class="ms">info</span>Lunch Buddy does the collecting. Your coordinator stays in charge of the vendor relationship and sends the order.</p>
+  </div>
+</section>
+
+<section style="padding-top:20px">
+  <div class="wrap">
+    <div class="head reveal">
+      <span class="kicker">Sound familiar?</span>
+      <h2>Lunch for a whole office shouldn't take all morning.</h2>
+    </div>
+    <div class="pains reveal">
+      <div class="pain"><div class="q">Who hasn't ordered yet?</div><p>Scrolling a group chat to work out who's in, who's out, and what they wanted.</p></div>
+      <div class="pain"><div class="q">The vendor got it wrong again.</div><p>Counts tallied by hand, special requests lost somewhere in the messages.</p></div>
+      <div class="pain"><div class="q">But I did order!</div><p>No record of who picked what, or when, so every mix-up turns into an argument.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="head reveal">
+      <span class="kicker">Features</span>
+      <h2>Everything lunch, <span class="grad-text">in one place.</span></h2>
+      <p>Built for the daily office lunch run, from the menu to the hand-out.</p>
+    </div>
+    <div class="bento">
+      <div class="cell c-a reveal">
+        <div class="ico"><span class="ms">menu_book</span></div>
+        <h3>A daily menu with real photos</h3>
+        <p>Add your vendor's dishes once, with options like soup or sauce, and choose the days each one is served. The menu builds itself every morning.</p>
+        <div class="menu-strip">
+          <img src="assets/dishes/jollof-rice.webp" alt="">
+          <img src="assets/dishes/waakye.webp" alt="">
+          <img src="assets/dishes/fufu.webp" alt="">
+          <img src="assets/dishes/fried-rice.webp" alt="">
+        </div>
+      </div>
+      <div class="cell c-b reveal">
+        <div class="ico"><span class="ms">schedule</span></div>
+        <h3>Cutoff &amp; reminders</h3>
+        <p>Orders lock on time. Anyone who hasn't ordered gets a nudge first.</p>
+        <div class="countdown grad-text">01:12:08</div>
+      </div>
+      <div class="cell c-c reveal">
+        <div class="ico"><span class="ms">calendar_month</span></div>
+        <h3>Plan the week</h3>
+        <p>Pick every day's lunch in one go. Each pick becomes an order on the day.</p>
+        <div class="week"><div class="on">Mon</div><div class="on">Tue</div><div>Wed</div><div class="on">Thu</div><div class="on">Fri</div></div>
+      </div>
+      <div class="cell c-d reveal">
+        <div class="ico"><span class="ms">receipt_long</span></div>
+        <h3>One-tap vendor list</h3>
+        <p>Dish counts first, then special requests, ready for WhatsApp.</p>
+      </div>
+      <div class="cell c-e reveal">
+        <div class="ico"><span class="ms">checklist</span></div>
+        <h3>Hand-out checklist</h3>
+        <p>Tick people off as the food is handed out, so everyone gets the right meal.</p>
+      </div>
+      <div class="cell c-f reveal">
+        <div class="inner">
+          <div>
+            <div class="ico"><span class="ms">history</span></div>
+            <h3>A timestamped record of every order</h3>
+            <p>Every order placed, changed or cancelled is logged with the exact time and who did it. "But I did order" gets settled in seconds.</p>
+          </div>
+          <div class="log">
+            <div><time>09:42:13</time><span><b>Ama</b> placed Jollof Rice</span></div>
+            <div><time>10:05:47</time><span><b>Kofi</b> changed to Waakye (with egg)</span></div>
+            <div><time>10:31:02</time><span><b>Esi</b> cancelled Fried Rice</span></div>
+            <div><time>11:00:00</time><span><b>Cutoff</b> orders locked · 60 meals</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="summary">
+  <div class="wrap summary">
+    <div class="reveal">
+      <span class="kicker">The vendor list</span>
+      <h2>Your vendor gets <span class="grad-text">exactly what to cook.</span></h2>
+      <p>When orders close, Lunch Buddy turns them into one clear message. Your coordinator sends it, and the vendor sees the totals first, then any special requests.</p>
+      <ul class="checks">
+        <li><span class="ms">check_circle</span>Counts per dish and per option, largest first</li>
+        <li><span class="ms">check_circle</span>Special requests listed separately, word for word</li>
+        <li><span class="ms">check_circle</span>Copied in one tap, ready to paste into WhatsApp</li>
+      </ul>
+    </div>
+    <div class="chat reveal">
+      <div class="chat-top"><span class="av">V</span><div>Mama's Kitchen<small>Vendor</small></div></div>
+      <div class="bubble">🍱 *LUNCH ORDER — Tuesday, 20 October*
+*15 meals* in total
+
+*QUANTITIES*
+• *Beans and Plantain — 4*
+   – Beans and plantain only × 3
+   – With chicken × 1
+• *Fried Rice — 3*
+• *Jollof Rice — 1*
+
+*NOTES*
+*Waakye*
+- Isaac: "with chicken"<span class="t">11:05 ✓✓</span></div>
+    </div>
+  </div>
+</section>
+
+<section style="padding-top:20px">
+  <div class="wrap">
+    <div class="proof reveal">
+      <div class="big grad-text">60+</div>
+      <p>Staff at one growing office already order their lunch through Lunch Buddy every working day, with one list going to the vendor each morning.</p>
+    </div>
+  </div>
+</section>
+
+<section id="contact" style="padding-top:20px">
+  <div class="wrap">
+    <div class="cta reveal">
+      <span class="kicker">Get started</span>
+      <h2 style="margin-top:14px">Bring Lunch Buddy<br>to your office.</h2>
+      <p>Tell us about your team and we'll set you up with your own company space.</p>
+      <div class="contact-btns">
+        <a class="btn btn-wa" href="https://wa.me/233500035981?text=Hi%2C%20I%27d%20like%20to%20get%20Lunch%20Buddy%20for%20my%20office." target="_blank" rel="noopener"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2Zm0 18.2a8.2 8.2 0 0 1-4.2-1.1l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2Zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.3-.4.2-.4.7-1.4.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 0 0-.7.3 3 3 0 0 0-.9 2.2 5.2 5.2 0 0 0 1.1 2.7 11.8 11.8 0 0 0 4.5 4c1.7.7 2.4.8 3.2.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.2-1.2-.1-.1-.3-.2-.5-.3Z"/></svg>WhatsApp us</a>
+        <a class="btn btn-ghost" href="tel:+233500035981"><span class="ms" style="font-size:20px">call</span>Call 050 003 5981</a>
+      </div>
+      <p class="contact-note">WhatsApp or call <b>050 003 5981</b></p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 Lunch Buddy</span>
+    <span><a href="https://wa.me/233500035981" target="_blank" rel="noopener">WhatsApp</a> · <a href="tel:+233500035981">050 003 5981</a> · <a href="/app">Log in</a></span>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach((el) => io.observe(el));
+  const root = document.documentElement;
+  const themeIcon = document.getElementById('theme-icon');
+  const syncThemeIcon = () => { themeIcon.textContent = root.dataset.theme === 'light' ? 'dark_mode' : 'light_mode'; };
+  syncThemeIcon();
+  document.getElementById('theme-btn').addEventListener('click', () => {
+    root.dataset.theme = root.dataset.theme === 'light' ? 'dark' : 'light';
+    try { localStorage.setItem('lunchsync_theme', root.dataset.theme); } catch (e) {}
+    syncThemeIcon();
+  });
+  window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', (e) => {
+    let saved = null;
+    try { saved = localStorage.getItem('lunchsync_theme'); } catch (err) {}
+    if (!saved) { root.dataset.theme = e.matches ? 'light' : 'dark'; syncThemeIcon(); }
+  });
+  document.querySelectorAll('.cell').forEach((cell) => {
+    cell.addEventListener('pointermove', (e) => {
+      const r = cell.getBoundingClientRect();
+      cell.style.setProperty('--mx', `${e.clientX - r.left}px`);
+      cell.style.setProperty('--my', `${e.clientY - r.top}px`);
+    });
+  });
+</script>
+</body>
+</html>

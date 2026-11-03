@@ -2,7 +2,7 @@
   "name": "Lunch Buddy",
   "short_name": "Lunch Buddy",
   "description": "Daily office lunch ordering and coordination",
-  "start_url": "/",
+  "start_url": "/app",
   "scope": "/",
   "display": "standalone",
   "background_color": "#f3f4f8",

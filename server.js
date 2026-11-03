@@ -620,12 +620,27 @@ app.use(express.json({ limit: '2mb' }));
 // cheap 304 when unchanged) so a deploy is picked up immediately rather than
 // users being stuck on a stale app.js.
 app.use(express.static(path.join(__dirname, 'public'), {
+  // "/" is the public landing page (route below), not the app's index.html.
+  index: false,
   setHeaders: (res, filePath) => {
     if (/[\\/](assets|icons)[\\/]/.test(filePath)) {
       res.set('Cache-Control', 'public, max-age=604800');
     }
   }
 }));
+
+// Public landing page for companies discovering Lunch Buddy. Signed-in staff
+// and the installed PWA are sent on to /app by a script in landing.html.
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'landing.html'));
+});
+
+// The app itself. "/app/" redirects so index.html's relative asset paths
+// (index.css, app.js) keep resolving from the site root.
+app.get('/app', (req, res) => {
+  if (req.path !== '/app') return res.redirect(301, '/app');
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // Client-side route: the Platform Admin login screen lives at the same
 // index.html, keyed off location.pathname in app.js.
