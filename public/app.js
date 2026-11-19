@@ -280,6 +280,9 @@ const btnSaveOperationalDays = document.getElementById('btn-save-operational-day
 const adminOperationalDaysStatus = document.getElementById('admin-operational-days-status');
 const companyDefaultPrice = document.getElementById('company-default-price');
 const btnSaveCompanySettings = document.getElementById('btn-save-company-settings');
+const weeklyPlanEnabledToggle = document.getElementById('weekly-plan-enabled-toggle');
+const weeklyPlanEnabledLabel = document.getElementById('weekly-plan-enabled-label');
+const weeklyPlanSettingStatus = document.getElementById('weekly-plan-setting-status');
 const companySettingsStatus = document.getElementById('company-settings-status');
 const closedDayPanel = document.getElementById('closed-day-panel');
 const closedDayNextLabel = document.getElementById('closed-day-next-label');
@@ -1278,6 +1281,7 @@ function onTabLoad(tabId) {
 async function fetchDailyState() {
   try {
     dailyState = await apiCall('/api/daily');
+    applyWeeklyPlanAvailability();
     updateHeaderDisplay();
     updateCountdownBanner();
     updateReminderBanner();
@@ -1827,6 +1831,25 @@ function applyClosedDayState() {
 }
 
 // --- Order mode: "Order for today" vs. "Plan my week" ---
+
+// An admin can switch Plan My Week off for the whole company: hide the
+// toggle and drop back to today's order. The saved preference is left alone
+// so the planner comes back as it was if it's switched on again.
+function applyWeeklyPlanAvailability() {
+  const enabled = dailyState?.weeklyPlanEnabled !== false;
+  orderModeToggle.classList.toggle('hidden', !enabled);
+  if (!enabled && orderMode === 'week') {
+    orderMode = 'today';
+    orderModeToggle.querySelectorAll('.order-mode-btn').forEach(btn => {
+      const active = btn.dataset.mode === 'today';
+      btn.classList.toggle('selected', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+    applyOrderModeVisibility();
+  } else if (enabled && orderMode === 'today' && localStorage.getItem('lunchsync_order_mode') === 'week') {
+    setOrderMode('week');
+  }
+}
 
 function setOrderMode(mode) {
   orderMode = mode === 'week' ? 'week' : 'today';
@@ -3427,10 +3450,16 @@ async function saveOperationalDays() {
   }
 }
 
+function setWeeklyPlanToggleLabel() {
+  weeklyPlanEnabledLabel.textContent = weeklyPlanEnabledToggle.checked ? 'Plan My Week is on' : 'Plan My Week is off';
+}
+
 async function loadCompanySettings() {
   try {
     const settings = await apiCall('/api/settings/company');
     companyDefaultPrice.value = settings.defaultPricePerHead != null ? settings.defaultPricePerHead : '';
+    weeklyPlanEnabledToggle.checked = settings.weeklyPlanEnabled !== false;
+    setWeeklyPlanToggleLabel();
   } catch (err) {
     companySettingsStatus.className = 'status-msg-inline error-text';
     companySettingsStatus.textContent = err.message || 'Failed to load catering cost settings.';
@@ -3452,6 +3481,31 @@ async function saveCompanySettingsForm() {
   } catch (err) {
     companySettingsStatus.className = 'status-msg-inline error-text';
     companySettingsStatus.textContent = err.message || 'Failed to save catering cost settings.';
+  }
+}
+
+async function saveWeeklyPlanSetting() {
+  const enabled = weeklyPlanEnabledToggle.checked;
+  setWeeklyPlanToggleLabel();
+  weeklyPlanEnabledToggle.disabled = true;
+  weeklyPlanSettingStatus.className = 'status-msg-inline';
+  weeklyPlanSettingStatus.style.color = '';
+  weeklyPlanSettingStatus.textContent = 'Saving...';
+  try {
+    await apiCall('/api/settings/weekly-plan', 'PUT', { enabled });
+    weeklyPlanSettingStatus.className = 'status-msg-inline success';
+    weeklyPlanSettingStatus.style.color = 'var(--status-in-office)';
+    weeklyPlanSettingStatus.textContent = enabled
+      ? 'Plan My Week is now on for everyone.'
+      : 'Plan My Week is now off for everyone.';
+    await fetchDailyState();
+  } catch (err) {
+    weeklyPlanEnabledToggle.checked = !enabled; // put the switch back
+    setWeeklyPlanToggleLabel();
+    weeklyPlanSettingStatus.className = 'status-msg-inline error-text';
+    weeklyPlanSettingStatus.textContent = err.message || 'Failed to update Plan My Week.';
+  } finally {
+    weeklyPlanEnabledToggle.disabled = false;
   }
 }
 
@@ -6607,6 +6661,7 @@ function setupEventListeners() {
   btnSaveArchiveTime.addEventListener('click', saveAdminArchiveTime);
   btnSaveOperationalDays.addEventListener('click', saveOperationalDays);
   btnSaveCompanySettings.addEventListener('click', saveCompanySettingsForm);
+  weeklyPlanEnabledToggle.addEventListener('change', saveWeeklyPlanSetting);
   operationalDaysPicker.querySelectorAll('.day-toggle').forEach(btn => {
     btn.addEventListener('click', () => btn.classList.toggle('selected'));
   });

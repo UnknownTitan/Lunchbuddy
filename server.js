@@ -732,6 +732,26 @@ function invalidateSecuritySettingsCache(companyId) {
   securitySettingsCache.delete(companyId);
 }
 
+// Whether a company has Plan My Week switched on (Admin > Settings). On by
+// default. Cached because /api/daily (polled every 10s by everyone) reports
+// it; the settings endpoint clears the entry when an admin changes it.
+const weeklyPlanEnabledCache = new Map();
+
+async function isWeeklyPlanEnabled(companyId) {
+  if (!weeklyPlanEnabledCache.has(companyId)) {
+    const settings = await getCompanySettings(companyId);
+    weeklyPlanEnabledCache.set(companyId, settings.weeklyPlanEnabled !== false);
+  }
+  return weeklyPlanEnabledCache.get(companyId);
+}
+
+async function requireWeeklyPlanEnabled(req, res, next) {
+  if (!(await isWeeklyPlanEnabled(req.user.companyId))) {
+    return res.status(403).json({ error: 'Plan My Week is turned off for your company.' });
+  }
+  next();
+}
+
 // Helper: Format a Date as YYYY-MM-DD (local time)
 function formatDateString(d) {
   const year = d.getFullYear();
@@ -920,6 +940,12 @@ async function archiveCurrentDay(companyId, dailyState) {
 // dailyState either way in that case — even if no order actually changed,
 // the applied-date marker did); false if it bailed out to retry later.
 async function applyWeeklyPlansForDate(companyId, dailyState) {
+  // Switched off: saved plans are left untouched (they come back if it's
+  // switched on again) but nothing turns into an order today.
+  if (dailyState.date && !(await isWeeklyPlanEnabled(companyId))) {
+    dailyState.weeklyPlansAppliedDate = dailyState.date;
+    return true;
+  }
   if (
     !dailyState.date ||
     !dailyState.menuPublished ||
@@ -1877,6 +1903,7 @@ app.get('/api/daily', authMiddleware, requireCompanyUser, async (req, res) => {
 
   res.json({
     date: dailyState.date,
+    weeklyPlanEnabled: await isWeeklyPlanEnabled(companyId),
     operationalDays: dailyState.operationalDays || [],
     isOperationalToday,
     nextOperationalDayName: isOperationalToday ? null : getNextOperationalDayName(dailyState),
@@ -2608,7 +2635,7 @@ function buildWeekDayInfo(dailyState, plan, date, userId, pastEntry, dayMenu = [
 
 // Team Member: Read this week's plan — one card per operational day in the
 // current Mon-Sun week, sourced from history/today's order/plan as above.
-app.get('/api/week-plan', authMiddleware, requireCompanyUser, async (req, res) => {
+app.get('/api/week-plan', authMiddleware, requireCompanyUser, requireWeeklyPlanEnabled, async (req, res) => {
   const userId = req.user.id;
   const companyId = req.user.companyId;
   // getWeeklyPlan doesn't depend on dailyState, so run them concurrently
@@ -2639,7 +2666,7 @@ app.get('/api/week-plan', authMiddleware, requireCompanyUser, async (req, res) =
 // Team Member: Set (or change) one day's plan pick. If :date is today, this
 // writes a real order through the same path POST /api/order uses — today is
 // never a "plan", it's the live order.
-app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, res) => {
+app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, requireWeeklyPlanEnabled, async (req, res) => {
   const { date } = req.params;
   const { dishName, note, variant } = req.body;
   const userId = req.user.id;
@@ -2704,7 +2731,7 @@ app.put('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, 
 
 // Team Member: Clear one day back to "Skipped". Today follows the same
 // already-served guard as DELETE /api/order.
-app.delete('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (req, res) => {
+app.delete('/api/week-plan/:date', authMiddleware, requireCompanyUser, requireWeeklyPlanEnabled, async (req, res) => {
   const { date } = req.params;
   const userId = req.user.id;
   const companyId = req.user.companyId;
@@ -2752,7 +2779,7 @@ app.delete('/api/week-plan/:date', authMiddleware, requireCompanyUser, async (re
 // today), overwriting any existing picks on those days. Deliberately does
 // NOT propagate the note — a note like "for the client meeting" should
 // never silently apply to four other days, only the dish does.
-app.post('/api/week-plan/repeat', authMiddleware, requireCompanyUser, async (req, res) => {
+app.post('/api/week-plan/repeat', authMiddleware, requireCompanyUser, requireWeeklyPlanEnabled, async (req, res) => {
   const { dishName, note, fromDate } = req.body;
   const userId = req.user.id;
   const companyId = req.user.companyId;
@@ -3161,9 +3188,25 @@ app.put('/api/settings/company', authMiddleware, requireAdmin, async (req, res) 
       return res.status(400).json({ error: 'defaultPricePerHead must be a non-negative number, or null to clear it.' });
     }
   }
-  const settings = { defaultPricePerHead: defaultPricePerHead ?? null };
+  // Merge, so saving the price doesn't wipe the other settings stored
+  // alongside it (reminder checkpoints, Plan My Week).
+  const current = await getCompanySettings(req.user.companyId);
+  const settings = { ...current, defaultPricePerHead: defaultPricePerHead ?? null };
   await saveCompanySettings(req.user.companyId, settings);
   res.json(settings);
+});
+
+// Admin: switch Plan My Week on or off for the whole company.
+app.put('/api/settings/weekly-plan', authMiddleware, requireAdmin, async (req, res) => {
+  const { enabled } = req.body;
+  if (typeof enabled !== 'boolean') {
+    return res.status(400).json({ error: 'enabled must be true or false.' });
+  }
+  const companyId = req.user.companyId;
+  const current = await getCompanySettings(companyId);
+  await saveCompanySettings(companyId, { ...current, weeklyPlanEnabled: enabled });
+  weeklyPlanEnabledCache.delete(companyId);
+  res.json({ weeklyPlanEnabled: enabled });
 });
 
 // --- Trends ---
